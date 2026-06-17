@@ -2802,6 +2802,10 @@ def _launch_gui() -> None:
     root.title(APP_TITLE)
     root.geometry("1320x930")
 
+    gui_style = ttk.Style(root)
+    gui_style.configure("Title.TLabel", font=("TkDefaultFont", 15, "bold"))
+    gui_style.configure("Section.TLabelframe.Label", font=("TkDefaultFont", 10, "bold"))
+
     script_dir = Path(__file__).resolve().parent
     icon_candidates = [
         script_dir / "assets" / "icon.png",
@@ -2927,13 +2931,13 @@ def _launch_gui() -> None:
     title_label = ttk.Label(
         outer,
         text=APP_TITLE,
-        font=("TkDefaultFont", 15, "bold"),
+        style="Title.TLabel",
         wraplength=1100,
         justify="left",
     )
     title_label.pack(fill="x", padx=2, pady=(0, 8))
 
-    basics = ttk.LabelFrame(outer, text="Inputs", padding=10)
+    basics = ttk.LabelFrame(outer, text="Inputs", padding=10, style="Section.TLabelframe")
     basics.pack(fill="x", padx=2, pady=4)
 
     ttk.Label(basics, text="Input PDB file").grid(row=0, column=0, sticky="w")
@@ -2974,7 +2978,7 @@ def _launch_gui() -> None:
 
     basics.columnconfigure(1, weight=1)
 
-    options = ttk.LabelFrame(outer, text="Options", padding=10)
+    options = ttk.LabelFrame(outer, text="Options", padding=10, style="Section.TLabelframe")
     options.pack(fill="x", padx=2, pady=4)
 
     ttk.Label(options, text="axis_dist (Å)").grid(row=0, column=0, sticky="w")
@@ -3009,7 +3013,7 @@ def _launch_gui() -> None:
     ttk.Entry(options, textvariable=cir_shift_var, width=8).grid(row=0, column=14, sticky="w", padx=4)
     make_help_button(options, "cir_shift", "cir_shift").grid(row=0, column=15, sticky="w")
 
-    pairs_box = ttk.LabelFrame(outer, text="Exchange pairs", padding=10)
+    pairs_box = ttk.LabelFrame(outer, text="Exchange pairs", padding=10, style="Section.TLabelframe")
     pairs_box.pack(fill="x", padx=2, pady=4)
     pairs_header = ttk.Frame(pairs_box)
     pairs_header.pack(fill="x")
@@ -3037,7 +3041,7 @@ def _launch_gui() -> None:
     ttk.Label(pair_rows_frame, text="rho angle (deg, optional)").grid(row=0, column=3, sticky="w", padx=4)
     ttk.Label(pair_rows_frame, text="kind").grid(row=0, column=4, sticky="w", padx=4)
 
-    axis_box = ttk.LabelFrame(outer, text="Axis residue ranges", padding=10)
+    axis_box = ttk.LabelFrame(outer, text="Axis residue ranges", padding=10, style="Section.TLabelframe")
     axis_box.pack(fill="x", padx=2, pady=4)
     axis_header = ttk.Frame(axis_box)
     axis_header.pack(fill="x")
@@ -3059,15 +3063,18 @@ def _launch_gui() -> None:
     ttk.Label(axis_rows_frame, text="").grid(row=0, column=0, sticky="w")
     ttk.Label(axis_rows_frame, text="range spec (nt)").grid(row=0, column=1, sticky="w", padx=4)
 
+    other_tools_box = ttk.LabelFrame(outer, text="Other tools", padding=10, style="Section.TLabelframe")
+    other_tools_box.pack(fill="x", padx=2, pady=4)
+    bend_helix_button = ttk.Button(other_tools_box, text="Bend Helix")
+    bend_helix_button.pack(side="left")
+
     buttons = ttk.Frame(outer)
     buttons.pack(fill="x", padx=2, pady=4)
     run_button = ttk.Button(buttons, text="Run")
     run_button.pack(side="left")
-    bend_helix_button = ttk.Button(buttons, text="Bend Helix")
-    bend_helix_button.pack(side="left", padx=(6, 0))
     ttk.Button(buttons, text="Close", command=root.destroy).pack(side="left", padx=6)
 
-    log_box = ttk.LabelFrame(outer, text="Run log", padding=10)
+    log_box = ttk.LabelFrame(outer, text="Run log", padding=10, style="Section.TLabelframe")
     log_box.pack(fill="both", expand=True, padx=2, pady=4)
     log_widget = scrolledtext.ScrolledText(log_box, wrap="word", height=24)
     log_widget.pack(fill="both", expand=True)

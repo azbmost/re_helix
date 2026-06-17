@@ -5,6 +5,8 @@
 - Bumped `re_helix` to V3.7.
 - Bundled Bend Helix V2.4 as `re_helix_lib/bend_helix.py`.
 - Added a `Bend Helix` button to the `re_helix` GUI. The button opens the Bend Helix GUI in a separate process and pre-fills the current input PDB when available.
+- Moved tool launchers into a dedicated bold-titled `Other tools` GUI area for future expansion.
+- Used bold styling for the main GUI title and section titles.
 - Updated the README with Bend Helix GUI and CLI usage.
 
 ## V3.6 - 2026-06-16

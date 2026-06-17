@@ -27,7 +27,7 @@ Launch the GUI:
 python3 re_helix.py
 ```
 
-In the GUI, click `Bend Helix` to open the bundled Bend Helix tool. If an input PDB is already selected in `re_helix`, the Bend Helix window is opened with that input pre-filled.
+In the GUI, use the `Other tools` area and click `Bend Helix` to open the bundled Bend Helix tool. If an input PDB is already selected in `re_helix`, the Bend Helix window is opened with that input pre-filled.
 
 Run alignment plus reciprocal exchange from the command line:
 
