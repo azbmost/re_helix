@@ -4,12 +4,13 @@
 
 It aligns nucleic-acid helices from reciprocal-exchange-style P-atom pairs and then applies reciprocal exchanges to the aligned structure. It can also run reciprocal exchange only, without alignment.
 
-Current version: V3.6
+Current version: V3.7
 
 ## Contents
 
 - `re_helix.py`: main CLI/GUI script.
 - `re_helix_lib/`: helper modules for PDB parsing, LINK records, and reciprocal-exchange graph handling.
+- `re_helix_lib/bend_helix.py`: bundled Bend Helix tool for bending a straight two-chain helix.
 - `assets/icon.png`: optional GUI/task-menu icon. The script uses it when present and falls back to the default Tk icon when it is missing.
 
 ## Requirements
@@ -25,6 +26,8 @@ Launch the GUI:
 ```bash
 python3 re_helix.py
 ```
+
+In the GUI, click `Bend Helix` to open the bundled Bend Helix tool. If an input PDB is already selected in `re_helix`, the Bend Helix window is opened with that input pre-filled.
 
 Run alignment plus reciprocal exchange from the command line:
 
@@ -46,6 +49,32 @@ python3 re_helix.py input.pdb 9C 23A d 23C 23F b --re_only -o model
 This writes:
 
 - `model_rex.pdb`: reciprocal-exchanged structure generated directly from `input.pdb`.
+
+## Bend Helix Tool
+
+The bundled Bend Helix tool bends a straight two-chain nucleic-acid helix at a selected phosphorus residue. It treats the helix as two rigid pieces: piece #1 stays fixed, while piece #2 is moved by a beta bend and optional tau twist.
+
+Open its GUI directly:
+
+```bash
+python3 re_helix_lib/bend_helix.py --gui
+```
+
+Run it from the command line:
+
+```bash
+python3 re_helix_lib/bend_helix.py --input straight_helix.pdb --pivot A36 --phi 0 --beta 30 --tau 0
+```
+
+Useful Bend Helix options:
+
+- `--pivot A36`: P-bearing residue that marks the border between fixed piece #1 and movable piece #2.
+- `--phi 0`: hinge direction around the helix axis, in degrees.
+- `--beta 30`: bend angle for movable piece #2, in degrees.
+- `--tau 10`: optional twist of movable piece #2 around its bent axis, in degrees.
+- `--axis_range A1-A35,B60-B26`: optional local-axis range for already-bent inputs.
+- `--sep y`: give movable piece #2 new chain IDs in the output.
+- `--origin y`: also write an origin-overlay PDB for comparing the original and transformed helix.
 
 ## What Reciprocal Exchange Means
 

@@ -2,6 +2,11 @@
 """
 re_helix.py
 
+V3.7 update (2026-06-16):
+- Add a Bend Helix tool button to the GUI. The button launches the bundled
+  re_helix_lib/bend_helix.py GUI for bending a straight two-chain helix.
+- Bump the re_helix app version to V3.7.
+
 V3.6 update (2026-06-16):
 - Rename the main script to re_helix.py and move helper modules/resources into
   re_helix_lib/.
@@ -236,10 +241,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.6"
+SOFTWARE_VERSION = "V3.7"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix: AZBMOST Package Module #2 - "
+    "re_helix V3.7: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -3058,6 +3063,8 @@ def _launch_gui() -> None:
     buttons.pack(fill="x", padx=2, pady=4)
     run_button = ttk.Button(buttons, text="Run")
     run_button.pack(side="left")
+    bend_helix_button = ttk.Button(buttons, text="Bend Helix")
+    bend_helix_button.pack(side="left", padx=(6, 0))
     ttk.Button(buttons, text="Close", command=root.destroy).pack(side="left", padx=6)
 
     log_box = ttk.LabelFrame(outer, text="Run log", padding=10)
@@ -3069,6 +3076,29 @@ def _launch_gui() -> None:
         log_widget.insert("end", message)
         log_widget.see("end")
         log_widget.update_idletasks()
+
+    def launch_bend_helix_tool() -> None:
+        bend_script = Path(__file__).resolve().parent / "re_helix_lib" / "bend_helix.py"
+        if not bend_script.exists():
+            messagebox.showerror(
+                APP_TITLE,
+                f"Could not find Bend Helix tool at:\n{bend_script}",
+            )
+            return
+
+        cmd = [sys.executable, str(bend_script), "--gui"]
+        current_pdb = pdb_var.get().strip()
+        if current_pdb:
+            cmd.extend(["--input", current_pdb])
+
+        append_log("[GUI] Launching Bend Helix tool:\n")
+        append_log("    " + " ".join(shlex.quote(part) for part in cmd) + "\n\n")
+
+        try:
+            subprocess.Popen(cmd)
+        except OSError as exc:
+            messagebox.showerror(APP_TITLE, f"Failed to launch Bend Helix tool:\n{exc}")
+            append_log(f"[GUI] Failed to launch Bend Helix tool: {exc}\n")
 
     row_targets = {"pair": 3, "axis": 0}
     render_state = {"pair_pending": False, "axis_pending": False}
@@ -3262,6 +3292,7 @@ def _launch_gui() -> None:
     axis_count_var.trace_add("write", schedule_axis_rows)
 
     run_button.configure(command=start_run)
+    bend_helix_button.configure(command=launch_bend_helix_tool)
     render_pair_rows()
     render_axis_rows()
     schedule_scrollbar_refresh()

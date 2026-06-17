@@ -1,5 +1,12 @@
 # Changelog
 
+## V3.7 - 2026-06-16
+
+- Bumped `re_helix` to V3.7.
+- Bundled Bend Helix V2.4 as `re_helix_lib/bend_helix.py`.
+- Added a `Bend Helix` button to the `re_helix` GUI. The button opens the Bend Helix GUI in a separate process and pre-fills the current input PDB when available.
+- Updated the README with Bend Helix GUI and CLI usage.
+
 ## V3.6 - 2026-06-16
 
 - Renamed the main entry script from `align_re_helicesV3_5.py` to `re_helix.py`.
