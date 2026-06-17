@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.python-version
+.venv/
+venv/
+env/
+
+# OS/editor metadata
+.DS_Store
+.idea/
+.vscode/
+
+# Build/package outputs
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Generated PDB outputs
+*_aligned.pdb
+*_aligned_rex.pdb
+*_rex.pdb
+output/
+test/
