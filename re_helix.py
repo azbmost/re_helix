@@ -9,6 +9,7 @@ V3.6 update (2026-06-16):
   to the input PDB without the helix-alignment stage.
 - Load the optional GUI/task-menu icon from assets/icon.png when present;
   the script still runs normally if the icon asset is absent.
+- Add -v / --version to print the app version from the command line.
 
 V3.5 update (2026-06-14):
 - Add optional fixed rho-angle syntax for single-site inter-helix reciprocal
@@ -3331,6 +3332,13 @@ def main() -> None:
             "Launch the Tk GUI instead of running directly from the command line. "
             "If no command-line arguments are given, GUI mode is entered automatically."
         ),
+    )
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"{SOFTWARE_NAME} {SOFTWARE_VERSION}",
+        help="Show the app version and exit.",
     )
     parser.add_argument(
         "--axis_range",

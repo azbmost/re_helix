@@ -10,6 +10,7 @@
 - Updated the Tk GUI title and controls for `re_helix V3.6`, including an RE-only checkbox.
 - Added AZBMOST Package Module #2 wording to the GUI title/header and README.
 - Expanded the README explanation of reciprocal exchange as a virtual DNA-nanostructure topology operation in the Seeman design tradition.
+- Added `-v` / `--version` to print the app version from the command line.
 - Added GitHub-ready project files: README, MIT license, changelog, and `.gitignore`.
 
 ## V3.5 - 2026-06-14

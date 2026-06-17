@@ -96,6 +96,7 @@ python3 re_helix.py input.pdb '(AB)' '(CD)' 26A 9C 90 d --axis_parallel n -o ang
 
 - `-o, --output`: output base path. A `.pdb` suffix is stripped before output suffixes are added.
 - `--gui`: launch the Tk GUI explicitly.
+- `-v, --version`: show the app version and exit.
 - `--re_only` or `--re-only`: apply reciprocal exchange only and write `<base>_rex.pdb`.
 - `--axis_dist 22.0`: target helix-axis distance in angstroms during alignment.
 - `--axis_parallel y|n`: keep axes parallel (`y`) or allow a rho tilt (`n`).
