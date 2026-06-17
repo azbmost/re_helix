@@ -1,6 +1,8 @@
 # re_helix
 
-`re_helix` aligns nucleic-acid helices from reciprocal-exchange-style P-atom pairs and then applies reciprocal exchanges to the aligned structure. It can also run reciprocal exchange only, without alignment.
+`re_helix` is AZBMOST Package Module #2: Align Helices and Performing Reciprocal Exchanges.
+
+It aligns nucleic-acid helices from reciprocal-exchange-style P-atom pairs and then applies reciprocal exchanges to the aligned structure. It can also run reciprocal exchange only, without alignment.
 
 Current version: V3.6
 
@@ -44,6 +46,23 @@ python3 re_helix.py input.pdb 9C 23A d 23C 23F b --re_only -o model
 This writes:
 
 - `model_rex.pdb`: reciprocal-exchanged structure generated directly from `input.pdb`.
+
+## What Reciprocal Exchange Means
+
+In this package, a reciprocal exchange is a virtual topology edit on a PDB model. The operation identifies residues on two DNA strands or helices, cuts the original backbone graph at the specified sites, and reconnects the graph so the strand continuities are exchanged. This is a design operation, not an enzymatic simulation: it is meant to help build the intended crossover, junction, or bowtie connectivity before later structural refinement, sequence design, synthesis, or visualization.
+
+The idea sits in the design tradition introduced by Nadrian C. Seeman, who founded structural DNA nanotechnology by treating DNA as a programmable construction material rather than only as genetic information. Seeman's key move was to use designed sequence asymmetry to make immobile branched junctions, avoiding the branch migration of natural Holliday junctions, so junctions could serve as predictable vertices for DNA objects, arrays, and lattices. A reciprocal-exchange operation is useful for that style of design because it gives a compact way to say: "these helices meet here, and their backbone routes trade partners here." In practice, that lets a designer specify the intended strand routing and junction topology without manually rebuilding every atom record, residue number, chain break, TER record, and LINK record.
+
+`re_helix` supports three exchange kinds:
+
+- `double`: exchange both local backbone continuities between two specified residues.
+- `single`: exchange one strand-continuity relationship while leaving the complementary local relationship unchanged.
+- `bowtie`: create paired 3'-3' and 5'-5' junction behavior, including LINK records and X33 linker-phosphate records where needed.
+
+Background reading:
+
+- Nadrian C. Seeman, "Nucleic acid junctions and lattices," Journal of Theoretical Biology, 1982.
+- [DNA nanotechnology history overview](https://en.wikipedia.org/wiki/DNA_nanotechnology#History), including Seeman's motivation for designed immobile junctions and lattices.
 
 ## Exchange Syntax
 

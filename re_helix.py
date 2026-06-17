@@ -237,6 +237,10 @@ from pathlib import Path
 SOFTWARE_NAME = "re_helix"
 SOFTWARE_VERSION = "V3.6"
 SOFTWARE_DEVELOPER = "DiLiuLab"
+APP_TITLE = (
+    "re_helix: AZBMOST Package Module #2 - "
+    "Align Helices and Performing Reciprocal Exchanges"
+)
 
 
 def _load_rex_module():
@@ -2789,7 +2793,7 @@ def _launch_gui() -> None:
         ) from exc
 
     root = tk.Tk()
-    root.title("re_helix V3.6")
+    root.title(APP_TITLE)
     root.geometry("1320x930")
 
     script_dir = Path(__file__).resolve().parent
@@ -2913,6 +2917,15 @@ def _launch_gui() -> None:
 
     outer = ttk.Frame(scroll_root, padding=10)
     outer.pack(fill="both", expand=True)
+
+    title_label = ttk.Label(
+        outer,
+        text=APP_TITLE,
+        font=("TkDefaultFont", 15, "bold"),
+        wraplength=1100,
+        justify="left",
+    )
+    title_label.pack(fill="x", padx=2, pady=(0, 8))
 
     basics = ttk.LabelFrame(outer, text="Inputs", padding=10)
     basics.pack(fill="x", padx=2, pady=4)
@@ -3182,7 +3195,7 @@ def _launch_gui() -> None:
 
     def start_run() -> None:
         if process_state.get("proc") is not None:
-            messagebox.showinfo("re_helix V3.6", "A run is already in progress.")
+            messagebox.showinfo(APP_TITLE, "A run is already in progress.")
             return
 
         try:
