@@ -4,13 +4,14 @@
 
 It aligns nucleic-acid helices from reciprocal-exchange-style P-atom pairs and then applies reciprocal exchanges to the aligned structure. It can also run reciprocal exchange only, without alignment.
 
-Current version: V3.7
+Current version: V3.8
 
 ## Contents
 
 - `re_helix.py`: main CLI/GUI script.
 - `re_helix_lib/`: helper modules for PDB parsing, LINK records, and reciprocal-exchange graph handling.
 - `re_helix_lib/bend_helix.py`: bundled Bend Helix tool for bending a straight two-chain helix.
+- `re_helix_lib/do_symmetry.py`: bundled Do Symmetry tool for averaging a pseudosymmetric assembly into an idealized symmetric PDB.
 - `assets/icon.png`: optional GUI/task-menu icon. The script uses it when present and falls back to the default Tk icon when it is missing.
 
 ## Requirements
@@ -27,7 +28,7 @@ Launch the GUI:
 python3 re_helix.py
 ```
 
-In the GUI, use the `Other tools` area and click `Bend Helix` to open the bundled Bend Helix tool. If an input PDB is already selected in `re_helix`, the Bend Helix window is opened with that input pre-filled.
+In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, and `Do Symmetry` opens the symmetry-averaging GUI. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
 
 Run alignment plus reciprocal exchange from the command line:
 
@@ -75,6 +76,42 @@ Useful Bend Helix options:
 - `--axis_range A1-A35,B60-B26`: optional local-axis range for already-bent inputs.
 - `--sep y`: give movable piece #2 new chain IDs in the output.
 - `--origin y`: also write an origin-overlay PDB for comparing the original and transformed helix.
+
+## Do Symmetry Tool
+
+The bundled Do Symmetry tool generates an averaged, idealized symmetric PDB model from a pseudosymmetric homomeric assembly. It is useful when a model is expected to have rotational symmetry, such as C3 symmetry, but the coordinates are only approximately symmetric after building, editing, minimization, or conversion.
+
+Open its GUI directly:
+
+```bash
+python3 re_helix_lib/do_symmetry.py --gui
+```
+
+Run it with explicit symmetry-related chain groups:
+
+```bash
+python3 re_helix_lib/do_symmetry.py model.pdb --groups ABCDMNOP EFGHQRST IJKLUVWX -o model_C3
+```
+
+Run it with a symmetry fold and continuous chain range:
+
+```bash
+python3 re_helix_lib/do_symmetry.py model.pdb --fold 3 --chains A-X -o model_C3
+```
+
+This writes `model_C3_symmetric.pdb`. Without `-o`, it writes `<input>_symmetric.pdb`.
+
+Useful Do Symmetry options:
+
+- `--groups ABCDMNOP EFGHQRST IJKLUVWX`: safest mode for noncontinuous or custom chain organization.
+- `--fold 3 --chains A-X`: convenience mode when chains are continuous and evenly divisible by the fold number.
+- `--fit-atoms all|p|phosphorus|backbone|ca|calpha`: choose atoms used for rigid-body alignment before averaging.
+- `--keep-intermediate`: write reordered and aligned intermediate PDB files for visual checking.
+- `--no-align`: average symmetry-permuted structures without fitting; use only when copies are already in the same coordinate frame.
+- `--ignore-resname`: match atoms without requiring residue names to be identical.
+- `--allow-missing`: average available matching atoms instead of stopping on missing atoms.
+
+Working principle: the script builds cyclic chain permutations from the symmetry definition, reorders each symmetry-equivalent copy into the same chain organization, rigidly aligns each copy to a reference using a pure-Python quaternion/Kabsch-style least-squares fit, and averages matching atom coordinates. The result is a consensus structure that is closer to the intended symmetry than the original pseudosymmetric input.
 
 ## What Reciprocal Exchange Means
 

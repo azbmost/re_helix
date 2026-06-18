@@ -1,5 +1,13 @@
 # Changelog
 
+## V3.8 - 2026-06-18
+
+- Bumped `re_helix` to V3.8.
+- Bundled Do Symmetry V1.0 as `re_helix_lib/do_symmetry.py`.
+- Added a `Do Symmetry` button to the `re_helix` GUI `Other tools` area. The button opens the Do Symmetry GUI in a separate process and pre-fills the current input PDB when available.
+- Improved the bundled Do Symmetry GUI with a bold title and bold option-section headings.
+- Updated the README with Do Symmetry GUI/CLI usage and its symmetry-averaging working principle.
+
 ## V3.7 - 2026-06-16
 
 - Bumped `re_helix` to V3.7.

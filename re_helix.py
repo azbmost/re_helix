@@ -2,6 +2,11 @@
 """
 re_helix.py
 
+V3.8 update (2026-06-18):
+- Add Do Symmetry to the GUI Other tools area. The button launches the bundled
+  re_helix_lib/do_symmetry.py GUI for generating averaged symmetric PDB models.
+- Bump the re_helix app version to V3.8.
+
 V3.7 update (2026-06-16):
 - Add a Bend Helix tool button to the GUI. The button launches the bundled
   re_helix_lib/bend_helix.py GUI for bending a straight two-chain helix.
@@ -241,10 +246,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.7"
+SOFTWARE_VERSION = "V3.8"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V3.7: AZBMOST Package Module #2 - "
+    "re_helix V3.8: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -3067,6 +3072,8 @@ def _launch_gui() -> None:
     other_tools_box.pack(fill="x", padx=2, pady=4)
     bend_helix_button = ttk.Button(other_tools_box, text="Bend Helix")
     bend_helix_button.pack(side="left")
+    do_symmetry_button = ttk.Button(other_tools_box, text="Do Symmetry")
+    do_symmetry_button.pack(side="left", padx=(6, 0))
 
     buttons = ttk.Frame(outer)
     buttons.pack(fill="x", padx=2, pady=4)
@@ -3084,28 +3091,38 @@ def _launch_gui() -> None:
         log_widget.see("end")
         log_widget.update_idletasks()
 
-    def launch_bend_helix_tool() -> None:
-        bend_script = Path(__file__).resolve().parent / "re_helix_lib" / "bend_helix.py"
-        if not bend_script.exists():
+    def launch_bundled_gui_tool(tool_label: str, script_name: str, extra_args: list) -> None:
+        tool_script = Path(__file__).resolve().parent / "re_helix_lib" / script_name
+        if not tool_script.exists():
             messagebox.showerror(
                 APP_TITLE,
-                f"Could not find Bend Helix tool at:\n{bend_script}",
+                f"Could not find {tool_label} tool at:\n{tool_script}",
             )
             return
 
-        cmd = [sys.executable, str(bend_script), "--gui"]
-        current_pdb = pdb_var.get().strip()
-        if current_pdb:
-            cmd.extend(["--input", current_pdb])
+        cmd = [sys.executable, str(tool_script), "--gui"]
+        cmd.extend(extra_args)
 
-        append_log("[GUI] Launching Bend Helix tool:\n")
+        append_log(f"[GUI] Launching {tool_label} tool:\n")
         append_log("    " + " ".join(shlex.quote(part) for part in cmd) + "\n\n")
 
         try:
             subprocess.Popen(cmd)
         except OSError as exc:
-            messagebox.showerror(APP_TITLE, f"Failed to launch Bend Helix tool:\n{exc}")
-            append_log(f"[GUI] Failed to launch Bend Helix tool: {exc}\n")
+            messagebox.showerror(APP_TITLE, f"Failed to launch {tool_label} tool:\n{exc}")
+            append_log(f"[GUI] Failed to launch {tool_label} tool: {exc}\n")
+
+    def launch_bend_helix_tool() -> None:
+        current_pdb = pdb_var.get().strip()
+        extra_args = []
+        if current_pdb:
+            extra_args.extend(["--input", current_pdb])
+        launch_bundled_gui_tool("Bend Helix", "bend_helix.py", extra_args)
+
+    def launch_do_symmetry_tool() -> None:
+        current_pdb = pdb_var.get().strip()
+        extra_args = [current_pdb] if current_pdb else []
+        launch_bundled_gui_tool("Do Symmetry", "do_symmetry.py", extra_args)
 
     row_targets = {"pair": 3, "axis": 0}
     render_state = {"pair_pending": False, "axis_pending": False}
@@ -3300,6 +3317,7 @@ def _launch_gui() -> None:
 
     run_button.configure(command=start_run)
     bend_helix_button.configure(command=launch_bend_helix_tool)
+    do_symmetry_button.configure(command=launch_do_symmetry_tool)
     render_pair_rows()
     render_axis_rows()
     schedule_scrollbar_refresh()
