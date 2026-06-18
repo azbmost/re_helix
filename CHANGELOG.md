@@ -1,5 +1,13 @@
 # Changelog
 
+## V3.9 - 2026-06-18
+
+- Bumped `re_helix` to V3.9.
+- Bundled Add PDB Link Record V1.0 as `re_helix_lib/add_pdb_link_record.py`.
+- Added an `Add PDB Link Record` button to the `re_helix` GUI `Other tools` area. The button opens the bundled GUI in a separate process and pre-fills the current input PDB when available.
+- Updated the bundled tool title, CLI program name, and `-v` / `--version` output for package-friendly presentation.
+- Updated the README with Add PDB Link Record GUI and CLI usage.
+
 ## V3.8 - 2026-06-18
 
 - Bumped `re_helix` to V3.8.
