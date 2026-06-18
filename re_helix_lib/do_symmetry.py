@@ -37,6 +37,7 @@ import argparse
 import copy
 import math
 import os
+import shlex
 import sys
 
 try:
@@ -900,7 +901,30 @@ class SymmetryGUI(object):
                 path = path[:-4]
             self.output_var.set(path)
 
+    def _build_equivalent_cli_command(self):
+        input_pdb = self.input_var.get().strip()
+        parts = [sys.executable, os.path.basename(__file__), input_pdb]
+        if self.mode_var.get() == "groups":
+            groups = self.groups_var.get().strip().replace(",", " ").split()
+            parts.extend(["--groups"] + groups)
+        else:
+            parts.extend(["--fold", self.fold_var.get().strip(), "--chains", self.chains_var.get().strip()])
+        output_base = self.output_var.get().strip()
+        if output_base:
+            parts.extend(["-o", output_base])
+        parts.extend(["--fit-atoms", self.fit_atoms_var.get()])
+        if self.no_align_var.get():
+            parts.append("--no-align")
+        if self.keep_var.get():
+            parts.append("--keep-intermediate")
+        if self.ignore_resname_var.get():
+            parts.append("--ignore-resname")
+        if self.allow_missing_var.get():
+            parts.append("--allow-missing")
+        return " ".join(shlex.quote(str(part)) for part in parts if str(part) != "")
+
     def run(self):
+        cli_cmd = ""
         try:
             input_pdb = self.input_var.get().strip()
             if not input_pdb:
@@ -916,6 +940,9 @@ class SymmetryGUI(object):
                 chains = parse_chain_range(self.chains_var.get().strip())
                 groups = groups_from_fold_and_chains(fold, chains)
 
+            cli_cmd = self._build_equivalent_cli_command()
+            print("Equivalent CLI command:", flush=True)
+            print(cli_cmd, flush=True)
             output_base = self.output_var.get().strip() or None
             final_path, rmsds = symmetrize_pdb(
                 input_pdb=input_pdb,
@@ -934,8 +961,15 @@ class SymmetryGUI(object):
                 if values:
                     rmsd_text = "\nAlignment RMSDs: " + ", ".join("%.4f Å" % r for r in values)
             self.status_var.set("Done. Wrote:\n%s%s" % (final_path, rmsd_text))
+            print("Done. Wrote:", final_path, flush=True)
+            if rmsd_text:
+                print(rmsd_text.strip(), flush=True)
             messagebox.showinfo("do_symmetry.py", "Done.\n\nWrote:\n%s" % final_path)
         except Exception as exc:
+            if cli_cmd:
+                print("Equivalent CLI command:", flush=True)
+                print(cli_cmd, flush=True)
+            print("Error: %s" % exc, flush=True)
             self.status_var.set("Error: %s" % exc)
             messagebox.showerror("do_symmetry.py", str(exc))
 

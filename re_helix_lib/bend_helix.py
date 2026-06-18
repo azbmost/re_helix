@@ -1609,6 +1609,9 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             result_text.insert("1.0", f"CLI: {cli_cmd}\nPiece #1 is fixed; piece #2 is movable.\nRunning...\n")
             result_text.see(tk.END)
             root.update_idletasks()
+            print("Equivalent CLI command:", flush=True)
+            print(cli_cmd, flush=True)
+            print("Piece #1 is fixed; piece #2 is movable.", flush=True)
 
             out_path, info = run_bending(
                 input_pdb=input_pdb,
@@ -1625,6 +1628,10 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             summary = format_run_summary(out_path, info)
         except Exception as exc:
             if cli_cmd:
+                print("Equivalent CLI command:", flush=True)
+                print(cli_cmd, flush=True)
+            print(f"Error: {exc}", flush=True)
+            if cli_cmd:
                 result_text.delete("1.0", tk.END)
                 result_text.insert("1.0", f"CLI: {cli_cmd}\n\nError: {exc}\n")
             else:
@@ -1636,6 +1643,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         result_text.delete("1.0", tk.END)
         result_text.insert("1.0", f"CLI: {cli_cmd}\n\n{summary}")
         result_text.see(tk.END)
+        print(summary, flush=True)
         messagebox.showinfo("bend_helixV2_4", f"Wrote {out_path}", parent=root)
 
     ttk.Button(button_frame, text="Run", command=run_from_gui).grid(row=0, column=0, padx=(0, 6))

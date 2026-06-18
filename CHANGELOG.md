@@ -1,12 +1,20 @@
 # Changelog
 
+## V3.10 - 2026-06-18
+
+- Bumped `re_helix` to V3.10.
+- Mirrored stdout/stderr from bundled `Other tools` processes into the main `re_helix` run log after launch.
+- Updated Bend Helix and Do Symmetry GUI runs to print equivalent CLI commands and completion/error summaries for the main log.
+- Updated Add PDB LINK Record GUI runs to print related CLI information when applicable, selected LINK records, output paths, and errors for the main log.
+- Updated the README with the main-log mirroring behavior.
+
 ## V3.9 - 2026-06-18
 
 - Bumped `re_helix` to V3.9.
-- Bundled Add PDB Link Record V1.0 as `re_helix_lib/add_pdb_link_record.py`.
-- Added an `Add PDB Link Record` button to the `re_helix` GUI `Other tools` area. The button opens the bundled GUI in a separate process and pre-fills the current input PDB when available.
+- Bundled Add PDB LINK Record V1.0 as `re_helix_lib/add_pdb_link_record.py`.
+- Added an `Add PDB LINK Record` button to the `re_helix` GUI `Other tools` area. The button opens the bundled GUI in a separate process and pre-fills the current input PDB when available.
 - Updated the bundled tool title, CLI program name, and `-v` / `--version` output for package-friendly presentation.
-- Updated the README with Add PDB Link Record GUI and CLI usage.
+- Updated the README with Add PDB LINK Record GUI and CLI usage.
 
 ## V3.8 - 2026-06-18
 

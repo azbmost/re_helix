@@ -56,12 +56,13 @@ from __future__ import annotations
 
 import argparse
 import math
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-TOOL_NAME = "Add PDB Link Record"
+TOOL_NAME = "Add PDB LINK Record"
 VERSION = "1.0"
 
 
@@ -1306,14 +1307,48 @@ def run_gui(initial_path: Optional[str] = None) -> None:
         def _run(self) -> None:
             try:
                 inp_path, out_path = self._get_input_and_output_paths()
-                _ = inp_path  # keep for symmetry and future readability
                 new_links = self._build_selected_links()
+                auto_chains = [
+                    chain for chain in sorted(self.auto_chain_vars.keys()) if self.auto_chain_vars[chain].get()
+                ]
+                manual_count = sum(1 for item in self.manual_items if item.var.get())
+
+                if manual_count == 0 and auto_chains and all(chain.strip() for chain in auto_chains):
+                    cli_parts = [
+                        sys.executable,
+                        Path(__file__).name,
+                        str(inp_path),
+                        "--chains",
+                        *auto_chains,
+                        "-o",
+                        str(out_path),
+                    ]
+                    print("Related CLI command for automatic terminal LINK insertion:", flush=True)
+                    print(" ".join(shlex.quote(str(part)) for part in cli_parts), flush=True)
+                else:
+                    print("GUI operation summary:", flush=True)
+                    print(f"Input PDB: {inp_path}", flush=True)
+                    print(f"Output PDB: {out_path}", flush=True)
+                    if manual_count:
+                        print(
+                            "No single CLI command is available for staged manual GUI LINK records.",
+                            flush=True,
+                        )
+                    elif auto_chains:
+                        print("Automatic circularization chains: " + ", ".join(auto_chains), flush=True)
+
+                print("Selected LINK records:", flush=True)
+                for idx, link in enumerate(new_links, start=1):
+                    print(f"{idx}. {link.label}: {link.to_link_line().strip()}", flush=True)
 
                 out_text = build_relinked_pdb_text(self.current_lines, self.current_atoms, new_links)
                 out_path.write_text(out_text)
                 self.out_path_var.set(str(out_path))
+                print(f"Wrote: {out_path}", flush=True)
+                print(f"Added {len(new_links)} LINK record(s).", flush=True)
                 messagebox.showinfo("Done", f"Wrote: {out_path}\n\nAdded {len(new_links)} LINK record(s).")
             except Exception as e:
+                print(f"Error: {e}", flush=True)
                 messagebox.showerror("Error", f"Failed to write PDB:\n\n{e}")
 
     app = App()

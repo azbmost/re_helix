@@ -2,8 +2,14 @@
 """
 re_helix.py
 
+V3.10 update (2026-06-18):
+- Mirror stdout/stderr from bundled Other tools into the main re_helix run log
+  after launch, so tool commands and run summaries remain visible even when
+  the helper window has no log box.
+- Bump the re_helix app version to V3.10.
+
 V3.9 update (2026-06-18):
-- Add the Add PDB Link Record tool to the GUI Other tools area. The button
+- Add the Add PDB LINK Record tool to the GUI Other tools area. The button
   launches the bundled re_helix_lib/add_pdb_link_record.py GUI for staging PDB
   LINK records and rebuilding chain topology.
 - Bump the re_helix app version to V3.9.
@@ -252,10 +258,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.9"
+SOFTWARE_VERSION = "V3.10"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V3.9: AZBMOST Package Module #2 - "
+    "re_helix V3.10: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -3080,7 +3086,7 @@ def _launch_gui() -> None:
     bend_helix_button.pack(side="left")
     do_symmetry_button = ttk.Button(other_tools_box, text="Do Symmetry")
     do_symmetry_button.pack(side="left", padx=(6, 0))
-    add_pdb_link_button = ttk.Button(other_tools_box, text="Add PDB Link Record")
+    add_pdb_link_button = ttk.Button(other_tools_box, text="Add PDB LINK Record")
     add_pdb_link_button.pack(side="left", padx=(6, 0))
 
     buttons = ttk.Frame(outer)
@@ -3115,10 +3121,30 @@ def _launch_gui() -> None:
         append_log("    " + " ".join(shlex.quote(part) for part in cmd) + "\n\n")
 
         try:
-            subprocess.Popen(cmd)
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
         except OSError as exc:
             messagebox.showerror(APP_TITLE, f"Failed to launch {tool_label} tool:\n{exc}")
             append_log(f"[GUI] Failed to launch {tool_label} tool: {exc}\n")
+            return
+
+        append_log(f"[GUI] {tool_label} process started; stdout/stderr will be mirrored here.\n\n")
+
+        def worker() -> None:
+            assert proc.stdout is not None
+            q = process_state["queue"]
+            for line in proc.stdout:
+                q.put(f"[{tool_label}] {line}")
+            proc.stdout.close()
+            returncode = proc.wait()
+            q.put(f"[{tool_label}] Process exited with code {returncode}.\n")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def launch_bend_helix_tool() -> None:
         current_pdb = pdb_var.get().strip()
@@ -3135,7 +3161,7 @@ def _launch_gui() -> None:
     def launch_add_pdb_link_record_tool() -> None:
         current_pdb = pdb_var.get().strip()
         extra_args = [current_pdb] if current_pdb else []
-        launch_bundled_gui_tool("Add PDB Link Record", "add_pdb_link_record.py", extra_args)
+        launch_bundled_gui_tool("Add PDB LINK Record", "add_pdb_link_record.py", extra_args)
 
     row_targets = {"pair": 3, "axis": 0}
     render_state = {"pair_pending": False, "axis_pending": False}

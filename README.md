@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from reciprocal-exchange-style P-atom pairs and then applies reciprocal exchanges to the aligned structure. It can also run reciprocal exchange only, without alignment.
 
-Current version: V3.9
+Current version: V3.10
 
 ## Contents
 
@@ -12,7 +12,7 @@ Current version: V3.9
 - `re_helix_lib/`: helper modules for PDB parsing, LINK records, and reciprocal-exchange graph handling.
 - `re_helix_lib/bend_helix.py`: bundled Bend Helix tool for bending a straight two-chain helix.
 - `re_helix_lib/do_symmetry.py`: bundled Do Symmetry tool for averaging a pseudosymmetric assembly into an idealized symmetric PDB.
-- `re_helix_lib/add_pdb_link_record.py`: bundled Add PDB Link Record tool for staging P/O3' LINK records and rebuilding chain topology.
+- `re_helix_lib/add_pdb_link_record.py`: bundled Add PDB LINK Record tool for staging P/O3' LINK records and rebuilding chain topology.
 - `assets/icon.png`: optional GUI/task-menu icon. The script uses it when present and falls back to the default Tk icon when it is missing.
 
 ## Requirements
@@ -29,7 +29,9 @@ Launch the GUI:
 python3 re_helix.py
 ```
 
-In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, and `Add PDB Link Record` opens the LINK-record/topology helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
+In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, and `Add PDB LINK Record` opens the LINK-record/topology helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
+
+The main `re_helix` run log also mirrors stdout/stderr from bundled tools launched through `Other tools`, so equivalent CLI commands, selected LINK summaries, completion messages, and errors remain visible in the main window even when the helper window has no log box.
 
 Run alignment plus reciprocal exchange from the command line:
 
@@ -114,9 +116,9 @@ Useful Do Symmetry options:
 
 Working principle: the script builds cyclic chain permutations from the symmetry definition, reorders each symmetry-equivalent copy into the same chain organization, rigidly aligns each copy to a reference using a pure-Python quaternion/Kabsch-style least-squares fit, and averages matching atom coordinates. The result is a consensus structure that is closer to the intended symmetry than the original pseudosymmetric input.
 
-## Add PDB Link Record Tool
+## Add PDB LINK Record Tool
 
-The bundled Add PDB Link Record tool helps create PDB `LINK` records between phosphate `P` atoms and `O3'`/`O3*`/`O3` atoms. In GUI mode, it can automatically stage terminal-chain circularization links and manually stage internal or inter-chain P/O3' links, then rebuild the chain topology, chain IDs, TER records, residue numbering, and LINK records in one pass.
+The bundled Add PDB LINK Record tool helps create PDB `LINK` records between phosphate `P` atoms and `O3'`/`O3*`/`O3` atoms. In GUI mode, it can automatically stage terminal-chain circularization links and manually stage internal or inter-chain P/O3' links, then rebuild the chain topology, chain IDs, TER records, residue numbering, and LINK records in one pass.
 
 Open its GUI directly:
 
@@ -132,7 +134,7 @@ python3 re_helix_lib/add_pdb_link_record.py input.pdb --chains A B -o input_link
 
 If `--chains` is omitted, the command-line mode attempts automatic circularization for every chain with usable terminal `P` and `O3'` atoms. Without `-o`, the default output inserts `_circ` before the input extension, for example `input.pdb` becomes `input_circ.pdb`.
 
-Useful Add PDB Link Record options:
+Useful Add PDB LINK Record options:
 
 - `--gui`: open the GUI for automatic and manual LINK staging.
 - `--chains A B` or `--chains A,B`: choose chains for automatic terminal circularization.
