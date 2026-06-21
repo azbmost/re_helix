@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from reciprocal-exchange-style P-atom pairs and then applies reciprocal exchanges to the aligned structure. It can also run reciprocal exchange only, without alignment.
 
-Current version: V3.10
+Current version: V3.11
 
 ## Contents
 
@@ -13,6 +13,7 @@ Current version: V3.10
 - `re_helix_lib/bend_helix.py`: bundled Bend Helix tool for bending a straight two-chain helix.
 - `re_helix_lib/do_symmetry.py`: bundled Do Symmetry tool for averaging a pseudosymmetric assembly into an idealized symmetric PDB.
 - `re_helix_lib/add_pdb_link_record.py`: bundled Add PDB LINK Record tool for staging P/O3' LINK records and rebuilding chain topology.
+- `re_helix_lib/insert_virtual_resi.py`: bundled Insert Virtual Resi tool for inserting residue-numbering gaps and updating LINK endpoints.
 - `assets/icon.png`: optional GUI/task-menu icon. The script uses it when present and falls back to the default Tk icon when it is missing.
 
 ## Requirements
@@ -29,7 +30,7 @@ Launch the GUI:
 python3 re_helix.py
 ```
 
-In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, and `Add PDB LINK Record` opens the LINK-record/topology helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
+In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, and `Insert Virtual Resi` opens the residue-renumbering helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
 
 The main `re_helix` run log also mirrors stdout/stderr from bundled tools launched through `Other tools`, so equivalent CLI commands, selected LINK summaries, completion messages, and errors remain visible in the main window even when the helper window has no log box.
 
@@ -140,6 +141,37 @@ Useful Add PDB LINK Record options:
 - `--chains A B` or `--chains A,B`: choose chains for automatic terminal circularization.
 - `-o output.pdb`: choose the output file.
 - `-q`: suppress console messages.
+- `-v` or `--version`: show the bundled tool version.
+
+## Insert Virtual Resi Tool
+
+The bundled Insert Virtual Resi tool inserts virtual residue-numbering gaps after selected residues. It does not create new atom records; it shifts residue numbers after each specified point. For example, inserting `3` virtual residues after `A55` changes original `A56` to `A59`, then `A57` to `A60`, and so on.
+
+Open its GUI directly:
+
+```bash
+python3 re_helix_lib/insert_virtual_resi.py --gui
+```
+
+Run it from the command line:
+
+```bash
+python3 re_helix_lib/insert_virtual_resi.py input.pdb --insert A55 3 -o input_vresi.pdb
+```
+
+Multiple insertion points can be repeated:
+
+```bash
+python3 re_helix_lib/insert_virtual_resi.py input.pdb --insert A55 3 --insert B.20 2 -o input_vresi.pdb
+```
+
+Accepted residue token formats are `A55`, `A.55`, `55A`, and `55.A`. Multiple insertions are interpreted against the original input residue numbering. The tool updates coordinate-like records, `TER` records, and both residue endpoints of fixed-column `LINK` records using the same renumbering map.
+
+Useful Insert Virtual Resi options:
+
+- `--insert A55 3`: add a gap of 3 residue numbers after residue 55 in chain A.
+- Repeat `--insert` for more chains or residue positions.
+- `-o output.pdb`: choose the output file. Without `-o`, the default output inserts `_vresi` before the input extension.
 - `-v` or `--version`: show the bundled tool version.
 
 ## What Reciprocal Exchange Means

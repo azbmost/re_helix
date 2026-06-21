@@ -1,5 +1,14 @@
 # Changelog
 
+## V3.11 - 2026-06-20
+
+- Bumped `re_helix` to V3.11.
+- Added the bundled Insert Virtual Resi V1.0 tool as `re_helix_lib/insert_virtual_resi.py`.
+- Added an `Insert Virtual Resi` button to the `re_helix` GUI `Other tools` area. The button opens the bundled GUI in a separate process and pre-fills the current input PDB when available.
+- Supported insertion specs such as `A55 3`, `A.55 3`, `55A 3`, and `55.A 3`, with repeated specs for multiple residue-numbering gaps.
+- Updated coordinate-like records, `TER` records, and both residue endpoints of fixed-column `LINK` records using the same virtual-residue renumbering map.
+- Updated the README with Insert Virtual Resi GUI and CLI usage.
+
 ## V3.10 - 2026-06-18
 
 - Bumped `re_helix` to V3.10.

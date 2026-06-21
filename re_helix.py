@@ -2,6 +2,12 @@
 """
 re_helix.py
 
+V3.11 update (2026-06-20):
+- Add Insert Virtual Resi to the GUI Other tools area. The bundled
+  re_helix_lib/insert_virtual_resi.py tool inserts residue-numbering gaps after
+  selected residues and updates LINK record endpoints with the same mapping.
+- Bump the re_helix app version to V3.11.
+
 V3.10 update (2026-06-18):
 - Mirror stdout/stderr from bundled Other tools into the main re_helix run log
   after launch, so tool commands and run summaries remain visible even when
@@ -258,10 +264,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.10"
+SOFTWARE_VERSION = "V3.11"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V3.10: AZBMOST Package Module #2 - "
+    "re_helix V3.11: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -3088,6 +3094,8 @@ def _launch_gui() -> None:
     do_symmetry_button.pack(side="left", padx=(6, 0))
     add_pdb_link_button = ttk.Button(other_tools_box, text="Add PDB LINK Record")
     add_pdb_link_button.pack(side="left", padx=(6, 0))
+    insert_virtual_resi_button = ttk.Button(other_tools_box, text="Insert Virtual Resi")
+    insert_virtual_resi_button.pack(side="left", padx=(6, 0))
 
     buttons = ttk.Frame(outer)
     buttons.pack(fill="x", padx=2, pady=4)
@@ -3162,6 +3170,11 @@ def _launch_gui() -> None:
         current_pdb = pdb_var.get().strip()
         extra_args = [current_pdb] if current_pdb else []
         launch_bundled_gui_tool("Add PDB LINK Record", "add_pdb_link_record.py", extra_args)
+
+    def launch_insert_virtual_resi_tool() -> None:
+        current_pdb = pdb_var.get().strip()
+        extra_args = [current_pdb] if current_pdb else []
+        launch_bundled_gui_tool("Insert Virtual Resi", "insert_virtual_resi.py", extra_args)
 
     row_targets = {"pair": 3, "axis": 0}
     render_state = {"pair_pending": False, "axis_pending": False}
@@ -3358,6 +3371,7 @@ def _launch_gui() -> None:
     bend_helix_button.configure(command=launch_bend_helix_tool)
     do_symmetry_button.configure(command=launch_do_symmetry_tool)
     add_pdb_link_button.configure(command=launch_add_pdb_link_record_tool)
+    insert_virtual_resi_button.configure(command=launch_insert_virtual_resi_tool)
     render_pair_rows()
     render_axis_rows()
     schedule_scrollbar_refresh()
