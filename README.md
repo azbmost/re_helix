@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from reciprocal-exchange-style P-atom pairs and then applies reciprocal exchanges to the aligned structure. It can also run reciprocal exchange only, without alignment.
 
-Current version: V3.11
+Current version: V3.12
 
 ## Contents
 
@@ -14,6 +14,7 @@ Current version: V3.11
 - `re_helix_lib/do_symmetry.py`: bundled Do Symmetry tool for averaging a pseudosymmetric assembly into an idealized symmetric PDB.
 - `re_helix_lib/add_pdb_link_record.py`: bundled Add PDB LINK Record tool for staging P/O3' LINK records and rebuilding chain topology.
 - `re_helix_lib/insert_virtual_resi.py`: bundled Insert Virtual Resi tool for inserting residue-numbering gaps and updating LINK endpoints.
+- `re_helix_lib/generate_lattice.py`: bundled Generate Lattice tool for writing a P1 CRYST1 lattice record from three lattice vectors.
 - `assets/icon.png`: optional GUI/task-menu icon. The script uses it when present and falls back to the default Tk icon when it is missing.
 
 ## Requirements
@@ -30,7 +31,7 @@ Launch the GUI:
 python3 re_helix.py
 ```
 
-In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, and `Insert Virtual Resi` opens the residue-renumbering helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
+In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, `Insert Virtual Resi` opens the residue-renumbering helper, and `Generate Lattice` opens the P1 lattice/CRYST1 helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
 
 The main `re_helix` run log also mirrors stdout/stderr from bundled tools launched through `Other tools`, so equivalent CLI commands, selected LINK summaries, completion messages, and errors remain visible in the main window even when the helper window has no log box.
 
@@ -172,6 +173,36 @@ Useful Insert Virtual Resi options:
 - `--insert A55 3`: add a gap of 3 residue numbers after residue 55 in chain A.
 - Repeat `--insert` for more chains or residue positions.
 - `-o output.pdb`: choose the output file. Without `-o`, the default output inserts `_vresi` before the input extension.
+- `-v` or `--version`: show the bundled tool version.
+
+## Generate Lattice Tool
+
+The bundled Generate Lattice tool writes or replaces the PDB `CRYST1` record for a P1 lattice from three user-provided lattice directions and distances. By default, it also rotates `ATOM`/`HETATM` coordinates and `ANISOU` tensors into the standard PDB crystallographic Cartesian frame, where `a` is along +X, `b` is in the XY plane, and `c` has positive Z. It preserves non-coordinate records, including `REMARK`, `LINK`, `TITLE`, and `SEQRES`, unless an option explicitly changes that behavior.
+
+Open its GUI directly:
+
+```bash
+python3 re_helix_lib/generate_lattice.py --gui
+```
+
+Run it from the command line:
+
+```bash
+python3 re_helix_lib/generate_lattice.py input.pdb \
+  --u1 1 0 0 --d1 80 \
+  --u2 0 1 0 --d2 80 \
+  --u3 0 0 1 --d3 80 \
+  -o input_cryst.pdb
+```
+
+Useful Generate Lattice options:
+
+- `--u1 X Y Z`, `--u2 X Y Z`, `--u3 X Y Z`: lattice direction vectors; each is normalized before use.
+- `--d1`, `--d2`, `--d3`: distances along the three lattice directions.
+- `--no-rotate-to-cryst-frame`: write/update `CRYST1` without rotating coordinates.
+- `--allow-reflection`: allow an improper transform if the supplied lattice-vector order is left-handed.
+- `--no-cryst1-update`: preserve existing `CRYST1` records.
+- `--drop-conect`: remove `CONECT` records from the output.
 - `-v` or `--version`: show the bundled tool version.
 
 ## What Reciprocal Exchange Means

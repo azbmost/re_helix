@@ -1,5 +1,14 @@
 # Changelog
 
+## V3.12 - 2026-06-23
+
+- Bumped `re_helix` to V3.12.
+- Added the bundled Generate Lattice V3.1 tool as `re_helix_lib/generate_lattice.py`.
+- Added a `Generate Lattice` button to the `re_helix` GUI `Other tools` area. The button opens the bundled GUI in a separate process and pre-fills the current input PDB when available.
+- Increased the Generate Lattice GUI window height and minimum size so all controls fit more comfortably.
+- Updated the bundled tool title, `--gui` prefill handling, `-v` / `--version` output, and stdout run summaries for the main `re_helix` log.
+- Updated the README with Generate Lattice GUI and CLI usage.
+
 ## V3.11 - 2026-06-20
 
 - Bumped `re_helix` to V3.11.
