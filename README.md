@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from reciprocal-exchange-style P-atom pairs and then applies reciprocal exchanges to the aligned structure. It can also run reciprocal exchange only, without alignment.
 
-Current version: V3.12
+Current version: V3.13
 
 ## Contents
 

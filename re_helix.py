@@ -2,6 +2,10 @@
 """
 re_helix.py
 
+V3.13 update (2026-06-24):
+- Internal package maintenance for bundled library utilities.
+- Bump the re_helix app version to V3.13.
+
 V3.12 update (2026-06-23):
 - Add Generate Lattice to the GUI Other tools area. The bundled
   re_helix_lib/generate_lattice.py tool prepares a P1 CRYST1 lattice record
@@ -270,10 +274,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.12"
+SOFTWARE_VERSION = "V3.13"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V3.12: AZBMOST Package Module #2 - "
+    "re_helix V3.13: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## V3.13 - 2026-06-24
+
+- Bumped `re_helix` to V3.13.
+- Internal package maintenance for bundled library utilities.
+
 ## V3.12 - 2026-06-23
 
 - Bumped `re_helix` to V3.12.
