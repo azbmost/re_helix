@@ -54,8 +54,8 @@ class CyclicAlignmentLauncher:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("re_helix cyclic alignment V3")
-        self.root.geometry("920x760")
-        self.root.minsize(760, 560)
+        self.root.geometry("1040x650")
+        self.root.minsize(880, 520)
 
         self.output_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.proc: subprocess.Popen[str] | None = None
@@ -110,59 +110,67 @@ class CyclicAlignmentLauncher:
         self.script_label = ttk.Label(top, text="")
         self.script_label.grid(row=0, column=4, sticky="e", padx=8)
 
-        form = ttk.Frame(outer)
+        form = ttk.LabelFrame(outer, text="Inputs")
         form.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         form.columnconfigure(1, weight=1)
-        form.columnconfigure(4, weight=1)
+        form.columnconfigure(6, weight=1)
 
-        self._entry_row(
+        self._inline_entry(
             form,
+            0,
             0,
             "Input PDB",
             self.pdb_var,
             browse=lambda: self._browse_file(self.pdb_var, [("PDB files", "*.pdb *.pdb.txt"), ("All files", "*")]),
             help_text="Input PDB file to align.",
+            width=30,
         )
-        self._entry_row(
+        self._inline_entry(
             form,
-            1,
+            0,
+            5,
             "Output base",
             self.output_var,
             browse=lambda: self._browse_save_base(self.output_var),
             help_text="Optional output base path. The method-specific suffixes are added automatically.",
+            width=28,
         )
 
-        ttk.Label(form, text="Exchange ops").grid(row=2, column=0, sticky="nw", padx=(0, 6), pady=4)
-        self.ops_text = tk.Text(form, height=4, wrap="word", undo=True)
-        self.ops_text.grid(row=2, column=1, columnspan=4, sticky="ew", pady=4)
+        ttk.Label(form, text="Exchange ops").grid(row=1, column=0, sticky="nw", padx=(8, 6), pady=4)
+        self.ops_text = tk.Text(form, height=3, wrap="word", undo=True)
+        self.ops_text.grid(row=1, column=1, columnspan=9, sticky="ew", pady=4)
         self._help_button(
             form,
             "Tokens may include helix definitions and reciprocal-exchange specs, for example: (AB) (CD) 30A 8D d 13B 24C s",
-        ).grid(row=2, column=5, sticky="n", padx=(6, 0), pady=4)
+        ).grid(row=1, column=10, sticky="n", padx=(6, 8), pady=4)
 
-        self._entry_row(form, 3, "axis_dist", self.axis_dist_var, help_text="Target helix-axis distance in Angstroms.")
-        self._combo_row(
+        self._inline_entry(form, 2, 0, "axis_dist", self.axis_dist_var, help_text="Target helix-axis distance in Angstroms.", width=8)
+        self._inline_combo(
             form,
-            4,
+            2,
+            3,
             "axis_parallel",
             self.axis_parallel_var,
             ["n", "y"],
             "Use n for cyclic tilt/refinement; y keeps the original tree alignment behavior.",
+            width=5,
         )
-        self._entry_row(form, 5, "fix chain", self.fix_var, help_text="Optional chain ID whose helix should remain fixed.")
-        ttk.Checkbutton(form, text="replicate", variable=self.replicate_var).grid(row=5, column=3, sticky="w", padx=(14, 6), pady=4)
-        self._help_button(form, "Replicate all chains using the same semantics as re_helix.py.").grid(row=5, column=4, sticky="w", pady=4)
+        self._inline_entry(form, 2, 6, "fix", self.fix_var, help_text="Optional chain ID whose helix should remain fixed.", width=5)
+        ttk.Checkbutton(form, text="replicate", variable=self.replicate_var).grid(row=2, column=9, sticky="w", padx=(10, 2), pady=4)
+        self._help_button(form, "Replicate all chains using the same semantics as re_helix.py.").grid(row=2, column=10, sticky="w", padx=(0, 8), pady=4)
 
-        self._entry_row(form, 6, "cir_shift", self.cir_shift_var, help_text="Residue shift for circular strands during reciprocal exchange.")
-        self._entry_row(form, 7, "w_pp", self.w_pp_var, help_text="Weight for phosphate-pair distance residuals or scores.")
-        self._entry_row(form, 8, "w_line", self.w_line_var, help_text="Weight for line-topology residuals or scores.")
-        self._entry_row(form, 9, "w_axis", self.w_axis_var, help_text="Weight for target axis-distance mismatch.")
+        self._inline_entry(form, 3, 0, "cir_shift", self.cir_shift_var, help_text="Residue shift for circular strands during reciprocal exchange.", width=8)
+        self._inline_entry(form, 3, 3, "w_pp", self.w_pp_var, help_text="Weight for phosphate-pair distance residuals or scores.", width=8)
+        self._inline_entry(form, 3, 6, "w_line", self.w_line_var, help_text="Weight for line-topology residuals or scores.", width=8)
+        self._inline_entry(form, 3, 9, "w_axis", self.w_axis_var, help_text="Weight for target axis-distance mismatch.", width=9)
         self._entry_row(
             form,
-            10,
+            4,
             "extra args",
             self.extra_args_var,
             help_text="Optional raw command-line arguments appended after the launcher-generated options.",
+            entry_colspan=9,
+            help_col=10,
         )
 
         options = ttk.Frame(outer)
@@ -173,33 +181,33 @@ class CyclicAlignmentLauncher:
         self.ccg_frame = ttk.LabelFrame(options, text="CCG options")
         self.ccg_frame.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         self.ccg_frame.columnconfigure(1, weight=1)
-        self._entry_row(self.ccg_frame, 0, "geom_attempts", self.geom_attempts_var, help_text="Number of geometry least-squares starts per cyclic component.")
-        self._entry_row(self.ccg_frame, 1, "geom_max_nfev", self.geom_max_nfev_var, help_text="Maximum function evaluations in the coarse geometry stage.")
+        self._inline_entry(self.ccg_frame, 0, 0, "geom_attempts", self.geom_attempts_var, help_text="Number of geometry least-squares starts per cyclic component.", width=8)
+        self._inline_entry(self.ccg_frame, 0, 3, "geom_max_nfev", self.geom_max_nfev_var, help_text="Maximum function evaluations in the coarse geometry stage.", width=8)
 
         self.cck_frame = ttk.LabelFrame(options, text="CCK options")
         self.cck_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         self.cck_frame.columnconfigure(1, weight=1)
-        self._entry_row(self.cck_frame, 0, "max_root_attempts", self.max_root_attempts_var, help_text="Number of deterministic closure-root starts per cyclic component.")
-        self._entry_row(self.cck_frame, 1, "root_maxfev", self.root_maxfev_var, help_text="Maximum function evaluations per closure solve attempt.")
-        self._entry_row(self.cck_frame, 2, "closure_rel_tol", self.closure_rel_tol_var, help_text="Relative tolerance for the near-best closure candidate set.")
-        self._entry_row(self.cck_frame, 3, "closure_abs_tol", self.closure_abs_tol_var, help_text="Absolute tolerance for the near-best closure candidate set.")
-        ttk.Checkbutton(self.cck_frame, text="geom_polish", variable=self.geom_polish_var).grid(row=4, column=0, sticky="w", padx=(0, 6), pady=4)
-        self._help_button(self.cck_frame, "Run final CCG geometry polish after the CCK closure solve.").grid(row=4, column=1, sticky="w", pady=4)
-        ttk.Checkbutton(self.cck_frame, text="twist_report", variable=self.twist_report_var).grid(row=5, column=0, sticky="w", padx=(0, 6), pady=4)
+        self._inline_entry(self.cck_frame, 0, 0, "max_root_attempts", self.max_root_attempts_var, help_text="Number of deterministic closure-root starts per cyclic component.", width=8)
+        self._inline_entry(self.cck_frame, 0, 3, "root_maxfev", self.root_maxfev_var, help_text="Maximum function evaluations per closure solve attempt.", width=8)
+        self._inline_entry(self.cck_frame, 0, 6, "closure_rel_tol", self.closure_rel_tol_var, help_text="Relative tolerance for the near-best closure candidate set.", width=8)
+        self._inline_entry(self.cck_frame, 0, 9, "closure_abs_tol", self.closure_abs_tol_var, help_text="Absolute tolerance for the near-best closure candidate set.", width=8)
+        ttk.Checkbutton(self.cck_frame, text="geom_polish", variable=self.geom_polish_var).grid(row=1, column=0, sticky="w", padx=(8, 2), pady=4)
+        self._help_button(self.cck_frame, "Run final CCG geometry polish after the CCK closure solve.").grid(row=1, column=1, sticky="w", pady=4)
+        ttk.Checkbutton(self.cck_frame, text="twist_report", variable=self.twist_report_var).grid(row=1, column=2, sticky="w", padx=(12, 2), pady=4)
         self._help_button(
             self.cck_frame,
             "Write the post-alignment twist TSV. twist_rod is measured from axis-to-axis co-perpendicular connector vectors; twist_helix is measured from RE-site phosphate radial vectors.",
-        ).grid(row=5, column=1, sticky="w", pady=4)
+        ).grid(row=1, column=3, sticky="w", pady=4)
+        self._inline_combo(self.cck_frame, 1, 4, "twist pairing", self.twist_pairing_var, ["consecutive", "all"], "Report consecutive exchange-site pairs or all pairwise combinations on each helix.", width=12)
+        self._inline_entry(self.cck_frame, 1, 8, "helical repeat", self.twist_helical_repeat_var, help_text="Fallback bp/turn used only when observed phosphate-step information is unavailable.", width=8)
         self._entry_row(
             self.cck_frame,
-            6,
+            2,
             "twist file",
             self.twist_report_file_var,
             browse=lambda: self._browse_save_base(self.twist_report_file_var, default_ext=".tsv"),
             help_text="Optional TSV output path for the twist report.",
         )
-        self._entry_row(self.cck_frame, 7, "helical repeat", self.twist_helical_repeat_var, help_text="Fallback bp/turn used only when observed phosphate-step information is unavailable.")
-        self._combo_row(self.cck_frame, 8, "twist pairing", self.twist_pairing_var, ["consecutive", "all"], "Report consecutive exchange-site pairs or all pairwise combinations on each helix.")
 
         log_frame = ttk.LabelFrame(options, text="Run log")
         log_frame.grid(row=2, column=0, sticky="nsew")
@@ -230,6 +238,43 @@ class CyclicAlignmentLauncher:
             command=lambda: messagebox.showinfo("Help", text, parent=self.root),
         )
 
+    def _inline_entry(
+        self,
+        parent: ttk.Frame,
+        row: int,
+        col: int,
+        label: str,
+        variable: tk.StringVar,
+        browse=None,
+        help_text: str | None = None,
+        width: int = 10,
+    ) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=col, sticky="w", padx=(8, 4), pady=3)
+        entry = ttk.Entry(parent, textvariable=variable, width=width)
+        entry.grid(row=row, column=col + 1, sticky="ew", pady=3)
+        next_col = col + 2
+        if browse is not None:
+            ttk.Button(parent, text="Browse", command=browse).grid(row=row, column=next_col, sticky="ew", padx=(4, 0), pady=3)
+            next_col += 1
+        if help_text is not None:
+            self._help_button(parent, help_text).grid(row=row, column=next_col, sticky="w", padx=(4, 8), pady=3)
+
+    def _inline_combo(
+        self,
+        parent: ttk.Frame,
+        row: int,
+        col: int,
+        label: str,
+        variable: tk.StringVar,
+        values: list[str],
+        help_text: str,
+        width: int = 8,
+    ) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=col, sticky="w", padx=(8, 4), pady=3)
+        combo = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly", width=width)
+        combo.grid(row=row, column=col + 1, sticky="w", pady=3)
+        self._help_button(parent, help_text).grid(row=row, column=col + 2, sticky="w", padx=(4, 8), pady=3)
+
     def _entry_row(
         self,
         parent: ttk.Frame,
@@ -238,14 +283,21 @@ class CyclicAlignmentLauncher:
         variable: tk.StringVar,
         browse=None,
         help_text: str | None = None,
+        entry_colspan: int | None = None,
+        help_col: int | None = None,
     ) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6), pady=4)
+        span = entry_colspan if entry_colspan is not None else (3 if browse is None else 2)
         entry = ttk.Entry(parent, textvariable=variable)
-        entry.grid(row=row, column=1, columnspan=3 if browse is None else 2, sticky="ew", pady=4)
+        entry.grid(row=row, column=1, columnspan=span, sticky="ew", pady=4)
         if browse is not None:
-            ttk.Button(parent, text="Browse", command=browse).grid(row=row, column=3, sticky="ew", padx=(6, 0), pady=4)
+            ttk.Button(parent, text="Browse", command=browse).grid(row=row, column=1 + span, sticky="ew", padx=(6, 0), pady=4)
         if help_text is not None:
-            self._help_button(parent, help_text).grid(row=row, column=5, sticky="w", padx=(6, 0), pady=4)
+            if help_col is None:
+                help_col = 5 if entry_colspan is None else 1 + span
+                if browse is not None:
+                    help_col += 2
+            self._help_button(parent, help_text).grid(row=row, column=help_col, sticky="w", padx=(6, 0), pady=4)
 
     def _combo_row(
         self,
@@ -320,8 +372,8 @@ class CyclicAlignmentLauncher:
         if not Path(pdb_path).exists():
             raise FileNotFoundError("Input PDB does not exist: %s" % pdb_path)
 
-        cmd = [sys.executable, str(script), pdb_path]
-        cmd.extend(self._parse_ops())
+        ops = self._parse_ops()
+        cmd = [sys.executable, str(script)]
 
         self._add_option(cmd, "-o", self.output_var.get())
         self._add_option(cmd, "--axis_dist", self.axis_dist_var.get())
@@ -352,6 +404,8 @@ class CyclicAlignmentLauncher:
         if extra:
             cmd.extend(shlex.split(extra))
 
+        cmd.append(pdb_path)
+        cmd.extend(ops)
         return cmd
 
     def _run(self) -> None:

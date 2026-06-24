@@ -53,8 +53,8 @@ for path in (str(PARENT), str(HERE)):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from edit_pdb_atom import file2rec, rec2file, pdb_atom_record  # type: ignore
-from edit_pdb_link import rec2file_link  # type: ignore
+from re_helix_lib.edit_pdb_atom import file2rec, rec2file, pdb_atom_record  # type: ignore
+from re_helix_lib.edit_pdb_link import rec2file_link  # type: ignore
 
 
 def _load_module(module_name: str, filenames: List[str]):
@@ -79,7 +79,7 @@ def _load_module(module_name: str, filenames: List[str]):
 
 alignmod = _load_module(
     "re_helix_current_mod",
-    ["../re_helix.py", "align_re_helicesV3_5.py", "align_re_helicesV2.2.py", "align_re_helicesV2.1.py", "align_re_helices.py"],
+    ["../re_helix.py"],
 )
 
 # Aliases to the latest project helpers.
@@ -497,7 +497,7 @@ def refine_cyclic_components_geometry(
             return "%s--%s" % (helix_id_str(h1), helix_id_str(h2))
 
         sys.stderr.write(
-            "[align_re_helices_ccg] Geometric refinement for cyclic component: "
+            "[re_helix_ccg] Geometric refinement for cyclic component: "
             + ", ".join(helix_id_str(h) for h in sorted(comp))
             + "; cycle edges="
             + (", ".join(sorted(_edge_label(edge) for edge in cycle_edges)) if cycle_edges else "(none)")
@@ -597,7 +597,7 @@ def refine_cyclic_components_geometry(
                 )
             except Exception as exc:
                 sys.stderr.write(
-                    "[align_re_helices_ccg]   coarse attempt {} failed: {}\n".format(
+                    "[re_helix_ccg]   coarse attempt {} failed: {}\n".format(
                         trial_idx, exc
                     )
                 )
@@ -605,7 +605,7 @@ def refine_cyclic_components_geometry(
 
             cost = float(np.dot(sol.fun, sol.fun))
             sys.stderr.write(
-                "[align_re_helices_ccg]   coarse attempt {}: cost={:.6f}, success={}, nfev={}\n".format(
+                "[re_helix_ccg]   coarse attempt {}: cost={:.6f}, success={}, nfev={}\n".format(
                     trial_idx, cost, bool(sol.success), getattr(sol, 'nfev', -1)
                 )
             )
@@ -616,7 +616,7 @@ def refine_cyclic_components_geometry(
 
         if not coarse_results or best_x is None or best_cost is None:
             sys.stderr.write(
-                "[align_re_helices_ccg]   Warning: no successful geometric solve; keeping baseline geometry.\n"
+                "[re_helix_ccg]   Warning: no successful geometric solve; keeping baseline geometry.\n"
             )
             continue
 
@@ -636,7 +636,7 @@ def refine_cyclic_components_geometry(
                 )
             except Exception as exc:
                 sys.stderr.write(
-                    "[align_re_helices_ccg]   polish attempt {} failed: {}\n".format(
+                    "[re_helix_ccg]   polish attempt {} failed: {}\n".format(
                         polish_idx, exc
                     )
                 )
@@ -644,7 +644,7 @@ def refine_cyclic_components_geometry(
 
             cost = float(np.dot(sol.fun, sol.fun))
             sys.stderr.write(
-                "[align_re_helices_ccg]   polish attempt {}: coarse={:.6f} -> final={:.6f}, success={}, nfev={}\n".format(
+                "[re_helix_ccg]   polish attempt {}: coarse={:.6f} -> final={:.6f}, success={}, nfev={}\n".format(
                     polish_idx, coarse_cost, cost, bool(sol.success), getattr(sol, 'nfev', -1)
                 )
             )
@@ -654,7 +654,7 @@ def refine_cyclic_components_geometry(
 
         apply_component_solution_in_place(rec_list, solver_data, comp, root, best_x)
         sys.stderr.write(
-            "[align_re_helices_ccg]   applied geometric solution with final cost {:.6f}.\n".format(best_cost)
+            "[re_helix_ccg]   applied geometric solution with final cost {:.6f}.\n".format(best_cost)
         )
 
 
@@ -870,7 +870,7 @@ def main() -> None:
 
     axis_parallel_flag = args.axis_parallel.lower() == 'y'
 
-    # 1) Baseline tree/pairwise alignment from the latest align_re_helices code.
+    # 1) Baseline tree/pairwise alignment from the latest re_helix code.
     try:
         align_helices_for_exchanges(
             rec_list,

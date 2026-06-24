@@ -92,8 +92,8 @@ for path in (str(PARENT), str(HERE)):
         sys.path.insert(0, path)
 
 
-from edit_pdb_atom import file2rec, rec2file, pdb_atom_record  # type: ignore
-from edit_pdb_link import rec2file_link  # type: ignore
+from re_helix_lib.edit_pdb_atom import file2rec, rec2file, pdb_atom_record  # type: ignore
+from re_helix_lib.edit_pdb_link import rec2file_link  # type: ignore
 
 
 def _load_module(module_name: str, filenames: List[str]):
@@ -113,7 +113,7 @@ def _load_module(module_name: str, filenames: List[str]):
 
 alignmod = _load_module(
     "re_helix_current_mod",
-    ["../re_helix.py", "align_re_helicesV3_5.py", "align_re_helicesV2.2.py", "align_re_helicesV2.1.py", "align_re_helices.py"],
+    ["../re_helix.py"],
 )
 
 # Aliases to the latest project helpers.
@@ -152,8 +152,8 @@ def _load_ccg_module():
     """
     try:
         return _load_module(
-            "align_re_helices_ccg_mod",
-            ["re_helix_ccgV3.py", "align_re_helices_ccgV2.py", "align_re_helices_ccg.py"],
+            "re_helix_ccg_mod",
+            ["re_helix_ccgV3.py"],
         )
     except Exception:
         return None
@@ -354,7 +354,7 @@ def line_closure_vector(p1, d1, p2, d2, eps=1.0e-9):
 def unpack_exchange_spec_compat(spec):
     """Return (pos1, pos2, kind, rho_deg_or_None) for V2/V3-style specs.
 
-    Older align_re_helices versions use (pos1, pos2, kind). Newer versions can
+    Older helper versions use (pos1, pos2, kind). Newer versions can
     carry an alignment-only rho angle as (pos1, pos2, kind, rho_deg). This helper
     keeps the cck layer compatible with either form.
     """
@@ -673,7 +673,7 @@ def enforce_detected_cyclic_symmetry(
         base_keys = group_keys[0]
         if any(keys != base_keys for keys in group_keys[1:]):
             sys.stderr.write(
-                "[align_re_helices_cck] Symmetry pattern detected, but atom correspondence differs across replicated helices; skipping exact symmetry projection.\n"
+                "[re_helix_cck] Symmetry pattern detected, but atom correspondence differs across replicated helices; skipping exact symmetry projection.\n"
             )
             continue
 
@@ -738,7 +738,7 @@ def enforce_detected_cyclic_symmetry(
             max_p_mismatch = float(np.max(p_mismatches))
             if max_p_mismatch > float(max_allowed_p_mismatch):
                 sys.stderr.write(
-                    "[align_re_helices_cck] Symmetry pattern detected, but exact C_%d projection would worsen repeated P-atom contacts (mean=%.3f Å, max=%.3f Å); skipping projection.\n"
+                    "[re_helix_cck] Symmetry pattern detected, but exact C_%d projection would worsen repeated P-atom contacts (mean=%.3f Å, max=%.3f Å); skipping projection.\n"
                     % (n_fold, mean_p_mismatch, max_p_mismatch)
                 )
                 continue
@@ -750,7 +750,7 @@ def enforce_detected_cyclic_symmetry(
                 atom.update_xyz(float(xyz[0]), float(xyz[1]), float(xyz[2]))
 
         sys.stderr.write(
-            "[align_re_helices_cck] Applied exact C_%d symmetry projection to cyclic component: %s\n"
+            "[re_helix_cck] Applied exact C_%d symmetry projection to cyclic component: %s\n"
             % (n_fold, ", ".join(helix_id_str(h) for h in order))
         )
 
@@ -860,7 +860,7 @@ def pairwise_align_component_sequential(
             d_opt, theta_opt, phi_opt, rho_opt = best_params
 
         sys.stderr.write(
-            "[align_re_helices_cck]   Pairwise optimised: d = %.3f Å, theta = %.2f°, phi = %.2f°" %
+            "[re_helix_cck]   Pairwise optimised: d = %.3f Å, theta = %.2f°, phi = %.2f°" %
             (d_opt, theta_opt * 180.0 / math.pi, phi_opt * 180.0 / math.pi)
         )
         if not axis_parallel:
@@ -1006,7 +1006,7 @@ def pairwise_align_component_base_for_closure(
         d_opt, theta_opt, phi_opt = best3
 
         sys.stderr.write(
-            "[align_re_helices_cck]   Base closure edge %s->%s: d = %.3f Å, theta = %.2f°, phi = %.2f°; sum(dist^2) = %.3f.\n"
+            "[re_helix_cck]   Base closure edge %s->%s: d = %.3f Å, theta = %.2f°, phi = %.2f°; sum(dist^2) = %.3f.\n"
             % (
                 helix_id_str(parent_h),
                 helix_id_str(child),
@@ -2150,7 +2150,7 @@ def refine_cyclic_components_closure(
             return "%s--%s" % (helix_id_str(h1), helix_id_str(h2))
 
         sys.stderr.write(
-            "[align_re_helices_cck] Closure refinement for cyclic component: "
+            "[re_helix_cck] Closure refinement for cyclic component: "
             + ", ".join(helix_id_str(h) for h in sorted(comp))
             + "; cycle edges="
             + (", ".join(sorted(_edge_label(edge) for edge in cycle_edges)) if cycle_edges else "(none)")
@@ -2176,7 +2176,7 @@ def refine_cyclic_components_closure(
 
         if not tree_edges:
             sys.stderr.write(
-                "[align_re_helices_cck]   Warning: no valid tree edges for closure solve; keeping base geometry.\n"
+                "[re_helix_cck]   Warning: no valid tree edges for closure solve; keeping base geometry.\n"
             )
             continue
 
@@ -2233,7 +2233,7 @@ def refine_cyclic_components_closure(
         n_resid = int(len(res0))
         use_root = (n_resid == n_params and n_params > 0)
         sys.stderr.write(
-            "[align_re_helices_cck]   closure system: vars=%d, residuals=%d, solver=%s\n"
+            "[re_helix_cck]   closure system: vars=%d, residuals=%d, solver=%s\n"
             % (n_params, n_resid, "root" if use_root else "least_squares")
         )
 
@@ -2282,7 +2282,7 @@ def refine_cyclic_components_closure(
                     nfev = int(getattr(sol2, "nfev", -1))
             except Exception as exc:
                 sys.stderr.write(
-                    "[align_re_helices_cck]   attempt %d failed with exception: %s\n"
+                    "[re_helix_cck]   attempt %d failed with exception: %s\n"
                     % (attempt_idx, exc)
                 )
                 continue
@@ -2292,14 +2292,14 @@ def refine_cyclic_components_closure(
             gscore = float(geometry_score(x))
 
             sys.stderr.write(
-                "[align_re_helices_cck]   attempt %d: closure=%.6f, geom=%.6f, success=%s, nfev=%d\n"
+                "[re_helix_cck]   attempt %d: closure=%.6f, geom=%.6f, success=%s, nfev=%d\n"
                 % (attempt_idx, closure_norm, gscore, str(success), nfev)
             )
             candidates.append((closure_norm, gscore, x, success, nfev, str(msg)))
 
         if not candidates:
             sys.stderr.write(
-                "[align_re_helices_cck]   Warning: no closure candidates found; keeping base geometry.\n"
+                "[re_helix_cck]   Warning: no closure candidates found; keeping base geometry.\n"
             )
             continue
 
@@ -2316,7 +2316,7 @@ def refine_cyclic_components_closure(
         chosen_closure, chosen_geom, chosen_x, chosen_success, chosen_nfev, chosen_msg = near_candidates[0]
 
         sys.stderr.write(
-            "[align_re_helices_cck]   selected solution: closure=%.6f, geom=%.6f, success=%s\n"
+            "[re_helix_cck]   selected solution: closure=%.6f, geom=%.6f, success=%s\n"
             % (chosen_closure, chosen_geom, str(chosen_success))
         )
 
@@ -2663,7 +2663,7 @@ def main():
         if helix_defs_for_align:
             chain_to_helix = build_chain_to_helix_from_defs(helix_defs_for_align, chain_to_P_atoms)
             sys.stderr.write(
-                "[align_re_helices_cck] Using user-defined helices: "
+                "[re_helix_cck] Using user-defined helices: "
                 + ", ".join(helix_id_str(tuple(sorted(h))) for h in helix_defs_for_align)
                 + "\n"
             )
@@ -2671,7 +2671,7 @@ def main():
             chain_to_helix = compute_chain_partner_map(chain_to_P_atoms)
             seen_helices = sorted(set(chain_to_helix[ch] for ch in chain_to_helix))
             sys.stderr.write(
-                "[align_re_helices_cck] Using automatic helix detection. Helices: "
+                "[re_helix_cck] Using automatic helix detection. Helices: "
                 + ", ".join(helix_id_str(h) for h in seen_helices)
                 + "\n"
             )
@@ -2686,7 +2686,7 @@ def main():
                 sys.exit(1)
             fix_helix = chain_to_helix[args.fix_chain]
             sys.stderr.write(
-                "[align_re_helices_cck] Helix %s containing chain '%s' will be used as root (fixed).\n"
+                "[re_helix_cck] Helix %s containing chain '%s' will be used as root (fixed).\n"
                 % (helix_id_str(fix_helix), args.fix_chain)
             )
 
@@ -2703,7 +2703,7 @@ def main():
                 edges = component_edges(comp, adjacency)
                 has_cycle = len(edges) > max(0, len(comp) - 1)
                 sys.stderr.write(
-                    "[align_re_helices_cck] Baseline handling component: %s; %s\n"
+                    "[re_helix_cck] Baseline handling component: %s; %s\n"
                     % (
                         ", ".join(helix_id_str(h) for h in sorted(comp)),
                         "cyclic" if has_cycle else "acyclic",
@@ -2765,7 +2765,7 @@ def main():
         ccgmod = _load_ccg_module()
         if ccgmod is None:
             sys.stderr.write(
-                "[align_re_helices_cck] Warning: re_helix_ccgV3.py was not found "
+                "[re_helix_cck] Warning: re_helix_ccgV3.py was not found "
                 "or could not be loaded; skipping final geometry polish.\n"
             )
         else:
@@ -2774,10 +2774,10 @@ def main():
                     ccgmod.alignmod.set_helix_axis_overrides(alignmod.get_helix_axis_overrides())
                 if symmetric_cycle_requested and args.geom_polish.lower() != 'y':
                     sys.stderr.write(
-                        "[align_re_helices_cck] Symmetric terminal cycle detected; running geometry-based cyclic polish even though --geom_polish n was requested.\n"
+                        "[re_helix_cck] Symmetric terminal cycle detected; running geometry-based cyclic polish even though --geom_polish n was requested.\n"
                     )
                 sys.stderr.write(
-                    "[align_re_helices_cck] Running final geometry-based cyclic polish from re_helix_ccgV3.py.\n"
+                    "[re_helix_cck] Running final geometry-based cyclic polish from re_helix_ccgV3.py.\n"
                 )
                 ccgmod.refine_cyclic_components_geometry(
                     rec_list,

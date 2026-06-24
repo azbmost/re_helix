@@ -1744,7 +1744,8 @@ def apply_reciprocal_exchanges_in_memory(
     # Extract atom records only (ignore TER for residue grouping).
     atom_recs = [
         r for r in rec_list
-        if isinstance(r, pdb_atom_record) and getattr(r, "recordName", "") in ("ATOM", "HETATM")
+        if getattr(r, "recordName", "") in ("ATOM", "HETATM")
+        and all(hasattr(r, attr) for attr in ("chainID", "resSeq", "name", "x", "y", "z"))
     ]
 
     nodes, label_to_idx = rex.build_residue_nodes(atom_recs)
