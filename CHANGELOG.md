@@ -5,6 +5,7 @@
 - Bumped `re_helix` to V3.15.
 - Updated the GUI so the default `Output base` follows input PDB changes unless the user has entered a custom output base.
 - Added a GUI `CLI pair args` field below the individual Exchange pairs rows. When filled, it replaces the row widgets and lets large exchange specs be pasted as one command-line-style token string.
+- Fixed the bundled Add PDB LINK Record tool so topology rebuilds preserve existing input `LINK` records, remapping their endpoints to the rebuilt chain/residue labels when possible.
 
 ## V3.14 - 2026-06-25
 

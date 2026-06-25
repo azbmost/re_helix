@@ -23,8 +23,8 @@ Behavior
 --------
 - Selected endpoints are used to split chain segments, merge them into new
   output chains, reassign chain IDs, rewrite TER records, and renumber residues.
-- LINK lines are written for the selected edits and inserted before the rebuilt
-  ATOM/HETATM block.
+- Existing LINK lines are preserved, remapped to rebuilt residue numbering when
+  possible, and written before any newly selected LINK edits.
 - Output filename is the input name with "_circ" inserted before the final
   extension, e.g.:
       input.pdb -> input_circ.pdb
@@ -63,7 +63,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 TOOL_NAME = "Add PDB LINK Record"
-VERSION = "1.0"
+VERSION = "1.1"
 
 
 # ----------------------------
@@ -211,6 +211,131 @@ def _norm_atom_for_link(name: str) -> str:
     return n
 
 
+@dataclass(frozen=True)
+class ExistingLinkRecord:
+    """Parsed LINK record from the input PDB."""
+
+    atom1_name: str
+    resName1: str
+    chainID1: str
+    resSeq1: int
+    atom2_name: str
+    resName2: str
+    chainID2: str
+    resSeq2: int
+    sym1: str = "1555"
+    sym2: str = "1555"
+    dist: Optional[float] = None
+    raw_line: str = ""
+
+
+def _link_endpoint_pair_key(
+    chainID1: str,
+    resSeq1: int,
+    atom1_name: str,
+    chainID2: str,
+    resSeq2: int,
+    atom2_name: str,
+) -> frozenset[Tuple[str, int, str]]:
+    return frozenset(
+        (
+            _format_endpoint(chainID1, resSeq1, atom1_name),
+            _format_endpoint(chainID2, resSeq2, atom2_name),
+        )
+    )
+
+
+def parse_existing_link_record_line(line: str) -> Optional[ExistingLinkRecord]:
+    """Parse a LINK line while preserving enough fields to rewrite it later."""
+    if not line.startswith("LINK"):
+        return None
+
+    padded = line.rstrip("\n").ljust(80)
+
+    try:
+        atom1 = padded[12:16].strip()
+        resName1 = padded[17:20].strip()
+        chain1 = padded[21:22]
+        resSeq1 = int(padded[22:26])
+        atom2 = padded[42:46].strip()
+        resName2 = padded[47:50].strip()
+        chain2 = padded[51:52]
+        resSeq2 = int(padded[52:56])
+        sym1 = padded[59:65].strip() or "1555"
+        sym2 = padded[66:72].strip() or "1555"
+        dist = _safe_float(padded[73:78])
+        if atom1 and atom2:
+            return ExistingLinkRecord(
+                atom1_name=atom1,
+                resName1=resName1,
+                chainID1=chain1,
+                resSeq1=resSeq1,
+                atom2_name=atom2,
+                resName2=resName2,
+                chainID2=chain2,
+                resSeq2=resSeq2,
+                sym1=sym1,
+                sym2=sym2,
+                dist=dist,
+                raw_line=line if line.endswith("\n") else line + "\n",
+            )
+    except Exception:
+        pass
+
+    toks = line.split()
+    if len(toks) < 9 or toks[0] != "LINK":
+        return None
+    try:
+        dist = _safe_float(toks[11]) if len(toks) >= 12 else None
+        return ExistingLinkRecord(
+            atom1_name=toks[1],
+            resName1=toks[2],
+            chainID1=toks[3],
+            resSeq1=int(toks[4]),
+            atom2_name=toks[5],
+            resName2=toks[6],
+            chainID2=toks[7],
+            resSeq2=int(toks[8]),
+            sym1=toks[9] if len(toks) >= 10 else "1555",
+            sym2=toks[10] if len(toks) >= 11 else "1555",
+            dist=dist,
+            raw_line=line if line.endswith("\n") else line + "\n",
+        )
+    except Exception:
+        return None
+
+
+def collect_existing_link_records(
+    lines: Sequence[str],
+) -> Tuple[List[ExistingLinkRecord], List[str]]:
+    """Return parsed and unparsable input LINK records."""
+    parsed: List[ExistingLinkRecord] = []
+    unparsed: List[str] = []
+    for line in lines:
+        if not line.startswith("LINK"):
+            continue
+        rec = parse_existing_link_record_line(line)
+        if rec is None:
+            unparsed.append(line if line.endswith("\n") else line + "\n")
+        else:
+            parsed.append(rec)
+    return parsed, unparsed
+
+
+def collect_existing_link_entries(lines: Sequence[str]) -> List[object]:
+    """Return input LINK records in file order as parsed records or raw lines."""
+    entries: List[object] = []
+    for line in lines:
+        if not line.startswith("LINK"):
+            continue
+        rec = parse_existing_link_record_line(line)
+        if rec is None:
+            entries.append(line if line.endswith("\n") else line + "\n")
+        else:
+            entries.append(rec)
+    return entries
+
+
 def parse_existing_links(lines: Sequence[str]) -> Set[frozenset[Tuple[str, int, str]]]:
     """Parse existing LINK records into a set of normalized endpoint pairs.
 
@@ -218,27 +343,18 @@ def parse_existing_links(lines: Sequence[str]) -> Set[frozenset[Tuple[str, int, 
     Atom names are normalized so O3'/O3* are treated as the same.
     """
     links: Set[frozenset[Tuple[str, int, str]]] = set()
-    for line in lines:
-        if not line.startswith("LINK"):
-            continue
-        toks = line.split()
-        # Expected at least:
-        # LINK atom1 resName1 chain1 resSeq1 atom2 resName2 chain2 resSeq2 ...
-        if len(toks) < 9:
-            continue
-        try:
-            atom1 = toks[1]
-            chain1 = toks[3]
-            resSeq1 = int(toks[4])
-            atom2 = toks[5]
-            chain2 = toks[7]
-            resSeq2 = int(toks[8])
-        except Exception:
-            continue
-
-        e1 = (chain1, resSeq1, _norm_atom_for_link(atom1))
-        e2 = (chain2, resSeq2, _norm_atom_for_link(atom2))
-        links.add(frozenset((e1, e2)))
+    parsed, _unparsed = collect_existing_link_records(lines)
+    for rec in parsed:
+        links.add(
+            _link_endpoint_pair_key(
+                rec.chainID1,
+                rec.resSeq1,
+                rec.atom1_name,
+                rec.chainID2,
+                rec.resSeq2,
+                rec.atom2_name,
+            )
+        )
     return links
 
 
@@ -687,6 +803,53 @@ def _format_ter_line(serial: int, resName: str, chainID: str, resSeq: int) -> st
     return f"TER   {serial:>5d}      {resName:>3s} {chainID:1s}{resSeq:>4d}\n"
 
 
+def _remap_existing_link_line(
+    rec: ExistingLinkRecord,
+    residue_to_new: Dict[Tuple[str, int], Tuple[str, int]],
+) -> Tuple[str, frozenset[Tuple[str, int, str]]]:
+    key1 = (rec.chainID1, rec.resSeq1)
+    key2 = (rec.chainID2, rec.resSeq2)
+    if key1 in residue_to_new and key2 in residue_to_new:
+        new_chain1, new_resSeq1 = residue_to_new[key1]
+        new_chain2, new_resSeq2 = residue_to_new[key2]
+        return (
+            format_link_line(
+                atom1_name=rec.atom1_name,
+                resName1=rec.resName1,
+                chainID1=new_chain1,
+                resSeq1=new_resSeq1,
+                atom2_name=rec.atom2_name,
+                resName2=rec.resName2,
+                chainID2=new_chain2,
+                resSeq2=new_resSeq2,
+                dist=rec.dist,
+                sym1=rec.sym1,
+                sym2=rec.sym2,
+            ),
+            _link_endpoint_pair_key(
+                new_chain1,
+                new_resSeq1,
+                rec.atom1_name,
+                new_chain2,
+                new_resSeq2,
+                rec.atom2_name,
+            ),
+        )
+
+    line = rec.raw_line if rec.raw_line.endswith("\n") else rec.raw_line + "\n"
+    return (
+        line,
+        _link_endpoint_pair_key(
+            rec.chainID1,
+            rec.resSeq1,
+            rec.atom1_name,
+            rec.chainID2,
+            rec.resSeq2,
+            rec.atom2_name,
+        ),
+    )
+
+
 def _component_sort_key(component: List[int], segments: Dict[int, dict], chain_order: Dict[str, int]) -> Tuple[int, int, int]:
     best = None
     for seg_id in component:
@@ -802,6 +965,7 @@ def build_relinked_pdb_text(
     if not selected_links:
         raise ValueError("Please select at least one LINK to add.")
 
+    existing_link_entries = collect_existing_link_entries(lines)
     prefix_lines, suffix_lines = _extract_preserved_non_topology_lines(lines)
     segments, residue_to_segment, seg_out, seg_in = _build_segments_from_selected_links(atoms, selected_links)
 
@@ -922,11 +1086,34 @@ def build_relinked_pdb_text(
         ordered_residue_blocks[-1] = (new_chain, ordered_residues)
         ordered_residue_blocks.append(("__LINES__", chain_lines))
 
-    # Build LINK lines using the new numbering map
+    # Build LINK lines using the new numbering map. Existing input LINK lines are
+    # preserved first, with endpoints remapped whenever both endpoint residues
+    # still exist in the rebuilt atom table.
     link_lines: List[str] = []
+    written_link_keys: Set[frozenset[Tuple[str, int, str]]] = set()
+    for existing in existing_link_entries:
+        if isinstance(existing, ExistingLinkRecord):
+            line, key = _remap_existing_link_line(existing, residue_to_new)
+            if key in written_link_keys:
+                continue
+            link_lines.append(line)
+            written_link_keys.add(key)
+        else:
+            link_lines.append(str(existing))
+
     for link in selected_links:
         p_new = residue_to_new[(link.endpoint1[0], link.endpoint1[1])]
         o_new = residue_to_new[(link.endpoint2[0], link.endpoint2[1])]
+        selected_key = _link_endpoint_pair_key(
+            p_new[0],
+            p_new[1],
+            link.p_atom.name,
+            o_new[0],
+            o_new[1],
+            link.o3_atom.name,
+        )
+        if selected_key in written_link_keys:
+            continue
         link_lines.append(
             format_link_line(
                 atom1_name=link.p_atom.name,
@@ -940,6 +1127,7 @@ def build_relinked_pdb_text(
                 dist=distance(link.p_atom, link.o3_atom),
             )
         )
+        written_link_keys.add(selected_key)
 
     # Flatten output: prefix, LINKs, rebuilt atoms/TERs, suffix
     rebuilt_lines: List[str] = []
