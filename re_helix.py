@@ -2,6 +2,20 @@
 """
 re_helix.py
 
+V3.15 update (2026-06-25):
+- In GUI mode, keep the default Output base synchronized with the selected or
+  typed input PDB path unless the user has entered a custom output base.
+- In GUI mode, add a CLI-style Exchange pairs line. When filled, it is used in
+  place of the individual pair rows for large reciprocal-exchange specs.
+- Bump the re_helix app version to V3.15.
+
+V3.14 update (2026-06-25):
+- Add a configurable 3'-3' linker phosphate residue style for bowtie
+  exchanges. The default remains HETATM X33; users can supply a custom
+  residue name or use ATOM DA for Phenix-friendly relaxation without a custom
+  residue definition.
+- Bump the re_helix app version to V3.14.
+
 V3.13 update (2026-06-24):
 - Internal package maintenance for bundled library utilities.
 - Bump the re_helix app version to V3.13.
@@ -274,10 +288,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.13"
+SOFTWARE_VERSION = "V3.15"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V3.13: AZBMOST Package Module #2 - "
+    "re_helix V3.15: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -1706,6 +1720,7 @@ def apply_reciprocal_exchanges_in_memory(
     exchange_specs,
     cir_shift: int,
     return_metadata: bool = False,
+    linker_phosphate_style=None,
 ):
     """Apply reciprocal exchanges to an in-memory PDB record list.
 
@@ -1723,6 +1738,8 @@ def apply_reciprocal_exchanges_in_memory(
         output chain.  link_rec_list contains LINK records for special/inverted
         bonds.
     """
+    linker_phosphate_style = rex.coerce_linker_phosphate_style(linker_phosphate_style)
+
     # Convert legacy V2/V3.5-style exchange_specs into V3.3 dict specs.
     # V3.5 optional rho angles are alignment-only metadata and are ignored by
     # the reciprocal-exchange topology layer.
@@ -1773,7 +1790,14 @@ def apply_reciprocal_exchanges_in_memory(
     final_components: List[Dict[str, object]] = []
     for comp in base_components:
         base_order = comp["order"]  # type: ignore[index]
-        expanded_order = rex.insert_phosphate_nodes(base_order, g, nodes, phos_store, used_phos)
+        expanded_order = rex.insert_phosphate_nodes(
+            base_order,
+            g,
+            nodes,
+            phos_store,
+            used_phos,
+            linker_phosphate_style=linker_phosphate_style,
+        )
         final_components.append({**comp, "order": expanded_order})
 
     # Assign new labels and collect atoms (this also appends TER records).
@@ -1789,7 +1813,8 @@ def apply_reciprocal_exchanges_in_memory(
         f"[reciprocal_exchange] Applied {n_double} double, {n_single} single, {n_bowtie} bowtie exchanges; "
         f"chains: {len(final_components)} ({num_paths} linear, {num_cycles} circular); "
         f"LINK: {len(link_records)} (inv_backbone={link_counts.get('backbone_inverted', 0)}, "
-        f"bowtie5to5={link_counts.get('bowtie_5to5', 0)}, bowtie3to3={link_counts.get('bowtie_3to3', 0)}).\n"
+        f"bowtie5to5={link_counts.get('bowtie_5to5', 0)}, bowtie3to3={link_counts.get('bowtie_3to3', 0)}); "
+        f"3to3_linker={linker_phosphate_style.record_name}:{linker_phosphate_style.resname}.\n"
     )
 
     if return_metadata:
@@ -1804,6 +1829,7 @@ def apply_reciprocal_exchanges_in_memory(
             "n_double": n_double,
             "n_single": n_single,
             "n_bowtie": n_bowtie,
+            "linker_phosphate_style": linker_phosphate_style,
         }
         return output_atoms, link_records, metadata
 
@@ -1828,12 +1854,15 @@ def write_reciprocal_exchange_output(
     command_text: str,
     output_path: str,
     output_stage: str,
+    linker_phosphate_style=None,
 ) -> None:
+    linker_phosphate_style = rex.coerce_linker_phosphate_style(linker_phosphate_style)
     rec_list_rex, link_rec_list, rex_metadata = apply_reciprocal_exchanges_in_memory(
         rec_list,
         exchange_specs,
         cir_shift=cir_shift,
         return_metadata=True,
+        linker_phosphate_style=linker_phosphate_style,
     )
 
     rex_header = rex.build_re_script_header_lines(
@@ -1850,6 +1879,7 @@ def write_reciprocal_exchange_output(
         phos_new_label=rex_metadata.get("phos_new_label"),
         component_orders=rex_metadata.get("final_components"),
         link_counts=rex_metadata.get("link_counts"),
+        linker_phosphate_style=linker_phosphate_style,
     )
 
     dependency_line = _rex_dependency_remark_line()
@@ -1863,6 +1893,7 @@ def write_reciprocal_exchange_output(
             fout,
             header_lines=rex_header,
             reorder_serial=True,
+            linker_phosphate_style=linker_phosphate_style,
         )
 # ---------------------------------------------------------------------------
 # Replication helper (replicate all chains)
@@ -2663,6 +2694,14 @@ def align_helices_for_exchanges(
 # GUI helpers
 # ---------------------------------------------------------------------------
 
+def _default_output_base_from_pdb_path(pdb_path: str) -> str:
+    """Return the GUI's default output base for an input PDB-like path."""
+    path = pdb_path.strip()
+    if path.lower().endswith(".pdb"):
+        return path[:-4]
+    return path
+
+
 _GUI_HELP_TEXT: Dict[str, str] = {
     "pdb_in": """Input PDB file containing the nucleic-acid strands to align.
 
@@ -2722,9 +2761,20 @@ so the output nick is moved away from junction residues when possible.
 
 Units: nt
 Default: 8""",
+    "linker_phosphate_resname": """Residue name used for phosphate-only residues inserted at bowtie 3'-3' linkages.
+
+Options:
+  X33: default custom linker residue, written as HETATM.
+  custom 1-3 character name: written as HETATM with that residue name.
+  DA or dA: written as regular ATOM DA, with only P, OP1, and OP2 kept, to avoid needing a custom residue definition during Phenix relaxation.
+
+The command-line option is --linker_phosphate_resname.""",
     "pairs": """Exchange pairs are entered as residue positions joined across helices.
 Blank or incomplete rows are ignored. Use at least one complete row with
 pos1, pos2, and kind.
+
+For many pairs, use the CLI-style single-line field below the rows. When that
+line is filled, the individual rows above it are ignored.
 
 In normal mode these pairs drive helix alignment and reciprocal exchange. In
 RE-only mode they only drive reciprocal exchange.
@@ -2741,6 +2791,13 @@ Example rows:
   30A   8D        d
   26A   9C   90   d
   13B  24C        s""",
+    "pair_args": """Optional CLI-style exchange-pair argument line.
+
+Use this when many exchange pairs are easier to paste as one command-line-style
+string, such as:
+  30A 8D d 26A 9C 90 d 13B 24C s
+
+If this field is filled, the individual pair rows above it are ignored.""",
     "axis_range": """Optional residue windows used to define a helical axis when the alignment
 positions for that helix fall inside the specified ranges.
 
@@ -2761,6 +2818,7 @@ def _build_equivalent_cli_command(
     pdb_in: str,
     helix_def_text: str,
     pair_rows: List[Dict[str, str]],
+    pair_args_text: str,
     axis_range_rows: List[str],
     output_base: str,
     axis_dist: str,
@@ -2769,6 +2827,7 @@ def _build_equivalent_cli_command(
     replicate: bool,
     re_only: bool,
     cir_shift: str,
+    linker_phosphate_resname: str,
 ) -> List[str]:
     cmd = [sys.executable, script_path, pdb_in]
 
@@ -2776,22 +2835,32 @@ def _build_equivalent_cli_command(
     if helix_def_text:
         cmd.extend(helix_def_text.split())
 
-    n_pairs = 0
-    for row in pair_rows:
-        pos1 = row.get("pos1", "").strip()
-        pos2 = row.get("pos2", "").strip()
-        rho_angle = row.get("rho_angle", "").strip()
-        kind = row.get("kind", "").strip()
-        if not pos1 or not pos2 or not kind:
-            continue
-        if rho_angle:
-            cmd.extend([pos1, pos2, rho_angle, kind])
-        else:
-            cmd.extend([pos1, pos2, kind])
-        n_pairs += 1
+    pair_args_text = pair_args_text.strip()
+    if pair_args_text:
+        try:
+            pair_tokens = shlex.split(pair_args_text)
+        except ValueError as exc:
+            raise ValueError(f"Could not parse CLI-style exchange-pair line: {exc}") from exc
+        if not pair_tokens:
+            raise ValueError("Please provide at least one exchange pair in the CLI-style line.")
+        cmd.extend(pair_tokens)
+    else:
+        n_pairs = 0
+        for row in pair_rows:
+            pos1 = row.get("pos1", "").strip()
+            pos2 = row.get("pos2", "").strip()
+            rho_angle = row.get("rho_angle", "").strip()
+            kind = row.get("kind", "").strip()
+            if not pos1 or not pos2 or not kind:
+                continue
+            if rho_angle:
+                cmd.extend([pos1, pos2, rho_angle, kind])
+            else:
+                cmd.extend([pos1, pos2, kind])
+            n_pairs += 1
 
-    if n_pairs == 0:
-        raise ValueError("Please provide at least one complete exchange pair.")
+        if n_pairs == 0:
+            raise ValueError("Please provide at least one complete exchange pair.")
 
     for spec in axis_range_rows:
         spec = spec.strip()
@@ -2819,6 +2888,10 @@ def _build_equivalent_cli_command(
 
     if cir_shift.strip():
         cmd.extend(["--cir_shift", cir_shift.strip()])
+
+    linker_phosphate_resname = linker_phosphate_resname.strip()
+    if linker_phosphate_resname and linker_phosphate_resname.upper() != "X33":
+        cmd.extend(["--linker_phosphate_resname", linker_phosphate_resname])
 
     return cmd
 
@@ -2859,12 +2932,15 @@ def _launch_gui() -> None:
     pdb_var = tk.StringVar()
     helix_defs_var = tk.StringVar()
     output_var = tk.StringVar()
+    output_auto_state = {"last_default": ""}
     axis_dist_var = tk.StringVar(value="22.0")
     axis_parallel_var = tk.StringVar(value="y")
     fix_chain_var = tk.StringVar()
     replicate_var = tk.BooleanVar(value=False)
     re_only_var = tk.BooleanVar(value=False)
     cir_shift_var = tk.StringVar(value="8")
+    linker_phosphate_resname_var = tk.StringVar(value="X33")
+    pair_args_var = tk.StringVar()
 
     pair_widgets: List[Dict[str, object]] = []
     axis_widgets: List[object] = []
@@ -2887,6 +2963,19 @@ def _launch_gui() -> None:
             bd=1,
             command=lambda: show_help(title, _GUI_HELP_TEXT[key]),
         )
+
+    def refresh_default_output_base(*_args) -> None:
+        new_default = _default_output_base_from_pdb_path(pdb_var.get())
+        if not new_default:
+            output_auto_state["last_default"] = ""
+            return
+        current_output = output_var.get().strip()
+        previous_default = output_auto_state["last_default"]
+        if not current_output or current_output == previous_default:
+            output_var.set(new_default)
+        output_auto_state["last_default"] = new_default
+
+    pdb_var.trace_add("write", refresh_default_output_base)
 
     root.rowconfigure(0, weight=1)
     root.columnconfigure(0, weight=1)
@@ -2985,11 +3074,6 @@ def _launch_gui() -> None:
         )
         if path:
             pdb_var.set(path)
-            if not output_var.get().strip():
-                if path.lower().endswith(".pdb"):
-                    output_var.set(path[:-4])
-                else:
-                    output_var.set(path)
 
     ttk.Button(basics, text="Browse", command=browse_pdb).grid(row=0, column=2, padx=4)
     make_help_button(basics, "Input PDB", "pdb_in").grid(row=0, column=3, padx=(0, 4), sticky="w")
@@ -3047,6 +3131,21 @@ def _launch_gui() -> None:
     ttk.Entry(options, textvariable=cir_shift_var, width=8).grid(row=0, column=14, sticky="w", padx=4)
     make_help_button(options, "cir_shift", "cir_shift").grid(row=0, column=15, sticky="w")
 
+    ttk.Label(options, text="3'-3' P resname").grid(row=1, column=0, sticky="w", pady=(6, 0))
+    ttk.Combobox(
+        options,
+        textvariable=linker_phosphate_resname_var,
+        values=("X33", "DA"),
+        width=8,
+        state="normal",
+    ).grid(row=1, column=1, sticky="w", padx=4, pady=(6, 0))
+    make_help_button(options, "3'-3' P resname", "linker_phosphate_resname").grid(
+        row=1,
+        column=2,
+        sticky="w",
+        pady=(6, 0),
+    )
+
     pairs_box = ttk.LabelFrame(outer, text="Exchange pairs", padding=10, style="Section.TLabelframe")
     pairs_box.pack(fill="x", padx=2, pady=4)
     pairs_header = ttk.Frame(pairs_box)
@@ -3074,6 +3173,17 @@ def _launch_gui() -> None:
     ttk.Label(pair_rows_frame, text="pos2 (nt+chain)").grid(row=0, column=2, sticky="w", padx=4)
     ttk.Label(pair_rows_frame, text="rho angle (deg, optional)").grid(row=0, column=3, sticky="w", padx=4)
     ttk.Label(pair_rows_frame, text="kind").grid(row=0, column=4, sticky="w", padx=4)
+
+    pair_args_frame = ttk.Frame(pairs_box)
+    pair_args_frame.pack(fill="x", pady=(8, 0))
+    ttk.Label(pair_args_frame, text="CLI pair args").pack(side="left")
+    ttk.Entry(pair_args_frame, textvariable=pair_args_var, width=100).pack(
+        side="left",
+        fill="x",
+        expand=True,
+        padx=4,
+    )
+    make_help_button(pair_args_frame, "CLI pair args", "pair_args").pack(side="left")
 
     axis_box = ttk.LabelFrame(outer, text="Axis residue ranges", padding=10, style="Section.TLabelframe")
     axis_box.pack(fill="x", padx=2, pady=4)
@@ -3340,6 +3450,7 @@ def _launch_gui() -> None:
                 pdb_var.get().strip(),
                 helix_defs_var.get(),
                 pair_rows,
+                pair_args_var.get(),
                 axis_rows,
                 output_var.get(),
                 axis_dist_var.get(),
@@ -3348,6 +3459,7 @@ def _launch_gui() -> None:
                 bool(replicate_var.get()),
                 bool(re_only_var.get()),
                 cir_shift_var.get(),
+                linker_phosphate_resname_var.get(),
             )
         except Exception as exc:
             append_log(f"[GUI] {exc}\n")
@@ -3557,8 +3669,36 @@ def main() -> None:
             "exchanges (default: 8)."
         ),
     )
+    parser.add_argument(
+        "--linker_phosphate_resname",
+        "--linker-phosphate-resname",
+        default=None,
+        help=(
+            "Residue name for phosphate-only residues inserted at bowtie 3'-3' "
+            "linkages. Default: X33 as HETATM. Custom 1-3 character names are "
+            "written as HETATM by default. DA/dA writes regular ATOM DA unless "
+            "--linker_phosphate_record is supplied."
+        ),
+    )
+    parser.add_argument(
+        "--linker_phosphate_record",
+        "--linker-phosphate-record",
+        choices=["ATOM", "HETATM", "atom", "hetatm"],
+        default=None,
+        help=(
+            "Advanced: record type for inserted 3'-3' linker phosphates. "
+            "Default is HETATM, except DA/dA defaults to ATOM."
+        ),
+    )
 
     args = parser.parse_args()
+    try:
+        linker_phosphate_style = rex.make_linker_phosphate_style(
+            args.linker_phosphate_resname,
+            args.linker_phosphate_record,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     reset_helix_axis_overrides()
 
@@ -3629,6 +3769,7 @@ def main() -> None:
                 command_text=command_text,
                 output_path=pdb_out_rex_only,
                 output_stage="reciprocal_exchange_only",
+                linker_phosphate_style=linker_phosphate_style,
             )
         except OSError as exc:
             print(f"Error writing RE-only PDB '{pdb_out_rex_only}': {exc}", file=sys.stderr)
@@ -3682,6 +3823,7 @@ def main() -> None:
                 command_text=command_text,
                 output_path=pdb_out_rex_only,
                 output_stage="reciprocal_exchange_only",
+                linker_phosphate_style=linker_phosphate_style,
             )
         except OSError as exc:
             print(f"Error writing RE-only PDB '{pdb_out_rex_only}': {exc}", file=sys.stderr)
@@ -3767,6 +3909,7 @@ def main() -> None:
             command_text=command_text,
             output_path=pdb_out_aligned_rex,
             output_stage="aligned_rex",
+            linker_phosphate_style=linker_phosphate_style,
         )
     except OSError as exc:
         print(f"Error writing aligned+RE PDB '{pdb_out_aligned_rex}': {exc}", file=sys.stderr)

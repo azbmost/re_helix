@@ -1,5 +1,17 @@
 # Changelog
 
+## V3.15 - 2026-06-25
+
+- Bumped `re_helix` to V3.15.
+- Updated the GUI so the default `Output base` follows input PDB changes unless the user has entered a custom output base.
+- Added a GUI `CLI pair args` field below the individual Exchange pairs rows. When filled, it replaces the row widgets and lets large exchange specs be pasted as one command-line-style token string.
+
+## V3.14 - 2026-06-25
+
+- Bumped `re_helix` to V3.14.
+- Added configurable phosphate-only residue output for bowtie 3'-3' linkages: default `HETATM X33`, custom `HETATM <name>`, or regular `ATOM DA` for Phenix-friendly relaxation without a custom residue definition.
+- Added CLI and GUI controls for the 3'-3' linker phosphate residue name.
+
 ## V3.13 - 2026-06-24
 
 - Bumped `re_helix` to V3.13.

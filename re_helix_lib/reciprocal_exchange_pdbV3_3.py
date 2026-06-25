@@ -3,7 +3,7 @@
 
 Reciprocal exchange (double / single) and bowtie exchange for DNA PDBs.
 
-Key behavior (V3.3):
+Key behavior (V3.4):
   1) Build the ORIGINAL 5'->3' backbone graph from residue numbering for each chain.
   2) Parse ALL exchanges and apply them as EDGE REWIRES on that original graph.
      - This removes the order-dependence bug when mixing kinds (double/single/bowtie)
@@ -15,12 +15,14 @@ Key behavior (V3.3):
            from the phosphate group of pos2.
          * a 5'-5' special edge between pos1 (P atom) and pos2 (O5' atom).
      - Works even when pos1 and pos2 end up on the same final strand.
-  4) Standalone X33 linker residues:
+  4) Standalone 3'-3' linker phosphate residues:
      - For each bowtie, we cut the phosphate-group atoms (P + non-bridging O's)
        from pos2 and store them (keyed by the ORIGINAL pos2 label, e.g., 23F).
-     - When reconstructing final strand paths, we insert a standalone HETATM
-       linker residue named X33 between the two residues that form the 3'-3'
-       edge. X33 contains exactly three atoms: P, OP1, and OP2.
+     - When reconstructing final strand paths, we insert a standalone
+       phosphate-only residue between the two residues that form the 3'-3'
+       edge. The default is HETATM X33, but callers can supply another residue
+       name, or use ATOM DA for Phenix-friendly relaxation. The linker contains
+       exactly three atoms: P, OP1, and OP2.
   5) LINK records:
      - We ignore CONECT entirely.
      - We write LINK records for:
@@ -66,11 +68,92 @@ except ImportError:  # pragma: no cover - keeps direct script execution working.
 
 
 SOFTWARE_NAME = "reciprocal_exchange_pdb"
-SOFTWARE_VERSION = "V3.3"
+SOFTWARE_VERSION = "V3.4"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 REMARK_PREFIX = "REMARK 950 RE_SCRIPT"
 X33_HETID = "X33"
-X33_HETNAM = "3'-3' PHOSPHODIESTER LINKER PHOSPHATE"
+LINKER_PHOSPHATE_DA_RESNAME = "DA"
+LINKER_PHOSPHATE_DEFAULT_RECORD = "HETATM"
+LINKER_PHOSPHATE_HETNAM = "3'-3' PHOSPHODIESTER LINKER PHOSPHATE"
+X33_HETNAM = LINKER_PHOSPHATE_HETNAM
+
+
+@dataclass(frozen=True)
+class LinkerPhosphateStyle:
+    """Output style for phosphate-only residues inserted at bowtie 3'-3' links."""
+
+    resname: str = X33_HETID
+    record_name: str = LINKER_PHOSPHATE_DEFAULT_RECORD
+
+
+def _normalize_linker_phosphate_resname(resname: Optional[str]) -> str:
+    if resname is None or not str(resname).strip():
+        return X33_HETID
+    normalized = str(resname).strip().upper()
+    if len(normalized) > 3:
+        raise ValueError(
+            f"3'-3' linker phosphate residue name '{resname}' is too long; "
+            "PDB residue names must be 1-3 characters."
+        )
+    if not re.match(r"^[A-Z0-9]{1,3}$", normalized):
+        raise ValueError(
+            f"3'-3' linker phosphate residue name '{resname}' is invalid; "
+            "use 1-3 letters/digits."
+        )
+    return normalized
+
+
+def _normalize_linker_phosphate_record(record_name: Optional[str]) -> Optional[str]:
+    if record_name is None or not str(record_name).strip():
+        return None
+    normalized = str(record_name).strip().upper()
+    if normalized not in {"ATOM", "HETATM"}:
+        raise ValueError("3'-3' linker phosphate record type must be ATOM or HETATM.")
+    return normalized
+
+
+def make_linker_phosphate_style(
+    resname: Optional[str] = None,
+    record_name: Optional[str] = None,
+) -> LinkerPhosphateStyle:
+    """Return the configured 3'-3' linker phosphate output style.
+
+    Defaults to HETATM X33.  If the residue name is DA/dA and the record type is
+    not explicitly supplied, use ATOM DA so refinement programs can treat the
+    phosphate-only residue as a standard deoxyadenosine residue with missing
+    atoms rather than a custom ligand.
+    """
+    normalized_resname = _normalize_linker_phosphate_resname(resname)
+    normalized_record = _normalize_linker_phosphate_record(record_name)
+    if normalized_record is None:
+        normalized_record = "ATOM" if normalized_resname == LINKER_PHOSPHATE_DA_RESNAME else "HETATM"
+    return LinkerPhosphateStyle(resname=normalized_resname, record_name=normalized_record)
+
+
+def _coerce_linker_phosphate_style(
+    linker_phosphate_style: Optional[object] = None,
+) -> LinkerPhosphateStyle:
+    if linker_phosphate_style is None:
+        return make_linker_phosphate_style()
+    if isinstance(linker_phosphate_style, LinkerPhosphateStyle):
+        return linker_phosphate_style
+    if isinstance(linker_phosphate_style, str):
+        return make_linker_phosphate_style(linker_phosphate_style)
+    raise TypeError("linker_phosphate_style must be a LinkerPhosphateStyle, residue-name string, or None")
+
+
+def coerce_linker_phosphate_style(
+    linker_phosphate_style: Optional[object] = None,
+) -> LinkerPhosphateStyle:
+    """Return a LinkerPhosphateStyle from a style object, residue name, or None."""
+    return _coerce_linker_phosphate_style(linker_phosphate_style)
+
+
+def _is_default_x33_style(linker_phosphate_style: LinkerPhosphateStyle) -> bool:
+    return (
+        linker_phosphate_style.resname == X33_HETID
+        and linker_phosphate_style.record_name == LINKER_PHOSPHATE_DEFAULT_RECORD
+    )
 
 
 # -------------------------- Data structures --------------------------
@@ -338,25 +421,30 @@ def _set_atom_name(atom: edit_pdb_atom.pdb_atom_record, new_name: str) -> None:
     atom.string = atom.string[:12] + f"{new_name:>4s}" + atom.string[16:]
 
 
-def _canonicalize_x33_phosphate_atoms(
+def _canonicalize_linker_phosphate_atoms(
     phos_atoms: List[edit_pdb_atom.pdb_atom_record],
     source_label: Label,
+    linker_phosphate_style: Optional[object] = None,
 ) -> List[edit_pdb_atom.pdb_atom_record]:
-    """Return exactly P, OP1, OP2 atoms for a standalone X33 linker residue.
+    """Return exactly P, OP1, OP2 atoms for a standalone linker phosphate.
 
     The phosphate donor can use either OP1/OP2 or O1P/O2P naming.  We keep
     the coordinates of the donor phosphate atoms, rename the non-bridging
-    oxygens to OP1/OP2, and mark all three records as HETATM X33.  Extra
-    phosphate atoms, if any, are intentionally not carried into X33 because
-    this custom linker residue is defined as a three-atom HET group.
+    oxygens to OP1/OP2, and mark all three records with the configured record
+    type and residue name.  Extra phosphate atoms, if any, are intentionally
+    not carried into the linker because the inserted residue is defined as a
+    three-atom phosphate-only group.
     """
+    style = _coerce_linker_phosphate_style(linker_phosphate_style)
     by_name: Dict[str, edit_pdb_atom.pdb_atom_record] = {}
     for atom in phos_atoms:
         by_name.setdefault(atom.name.strip().upper(), atom)
 
     p_atom = by_name.get("P")
     if p_atom is None:
-        raise ValueError(f"X33 linker from {source_label[1]}{source_label[0]} is missing atom P")
+        raise ValueError(
+            f"3'-3' linker phosphate from {source_label[1]}{source_label[0]} is missing atom P"
+        )
 
     preferred_op1 = ["OP1", "O1P", "OP3", "O3P", "OP2", "O2P"]
     preferred_op2 = ["OP2", "O2P", "OP3", "O3P", "OP1", "O1P"]
@@ -390,16 +478,29 @@ def _canonicalize_x33_phosphate_atoms(
 
     if op1_atom is None or op2_atom is None:
         raise ValueError(
-            f"X33 linker from {source_label[1]}{source_label[0]} needs two non-bridging O atoms"
+            f"3'-3' linker phosphate from {source_label[1]}{source_label[0]} "
+            "needs two non-bridging O atoms"
         )
 
     canonical = [(p_atom, "P"), (op1_atom, "OP1"), (op2_atom, "OP2")]
     for atom, atom_name in canonical:
-        atom.update_recordName("HETATM")
-        atom.update_resName(X33_HETID)
+        atom.update_recordName(style.record_name)
+        atom.update_resName(style.resname)
         _set_atom_name(atom, atom_name)
 
     return [p_atom, op1_atom, op2_atom]
+
+
+def _canonicalize_x33_phosphate_atoms(
+    phos_atoms: List[edit_pdb_atom.pdb_atom_record],
+    source_label: Label,
+) -> List[edit_pdb_atom.pdb_atom_record]:
+    """Compatibility wrapper for callers that expect the historical X33 style."""
+    return _canonicalize_linker_phosphate_atoms(
+        phos_atoms,
+        source_label,
+        make_linker_phosphate_style(X33_HETID, LINKER_PHOSPHATE_DEFAULT_RECORD),
+    )
 
 
 # -------------------------- Graph construction --------------------------
@@ -735,11 +836,13 @@ def insert_phosphate_nodes(
     nodes: List[ResidueNode],
     phos_store: Dict[Label, List[edit_pdb_atom.pdb_atom_record]],
     used_phos: Set[Label],
+    linker_phosphate_style: Optional[object] = None,
 ) -> List[int]:
     """Expand 3to3 edges by inserting phosphate-only residue nodes."""
     if not base_order:
         return base_order
 
+    style = _coerce_linker_phosphate_style(linker_phosphate_style)
     out: List[int] = []
     for i in range(len(base_order) - 1):
         a = base_order[i]
@@ -764,14 +867,14 @@ def insert_phosphate_nodes(
                     f"Phosphate donor {phos_key[1]}{phos_key[0]} has empty atom list (was it cut?)"
                 )
 
-            # Create a new standalone X33 HETATM linker residue.
-            x33_atoms = _canonicalize_x33_phosphate_atoms(phos_atoms, phos_key)
+            # Create a new standalone phosphate-only linker residue.
+            linker_atoms = _canonicalize_linker_phosphate_atoms(phos_atoms, phos_key, style)
             new_idx = len(nodes)
             nodes.append(
                 ResidueNode(
                     orig_chain_id=phos_key[0],
                     orig_res_seq=phos_key[1],
-                    atoms=x33_atoms,
+                    atoms=linker_atoms,
                     is_phos_bridge=True,
                     phos_source=phos_key,
                     no_phosphate=False,
@@ -1056,11 +1159,24 @@ def _node_output_label(nodes: List[ResidueNode], idx: int) -> str:
     return _orig_label_text(node.orig_label(), nodes, idx)
 
 
-def _x33_label_from_mapping(phos_key: Label, phos_new_label: Dict[Label, Tuple[str, int]]) -> str:
+def _linker_phosphate_label_from_mapping(
+    phos_key: Label,
+    phos_new_label: Dict[Label, Tuple[str, int]],
+    linker_phosphate_style: Optional[object] = None,
+) -> str:
+    style = _coerce_linker_phosphate_style(linker_phosphate_style)
     if phos_key not in phos_new_label:
-        return _residue_label(phos_key[0], phos_key[1], X33_HETID)
+        return _residue_label(phos_key[0], phos_key[1], style.resname)
     ch, rs = phos_new_label[phos_key]
-    return _residue_label(ch, rs, X33_HETID)
+    return _residue_label(ch, rs, style.resname)
+
+
+def _x33_label_from_mapping(phos_key: Label, phos_new_label: Dict[Label, Tuple[str, int]]) -> str:
+    return _linker_phosphate_label_from_mapping(
+        phos_key,
+        phos_new_label,
+        make_linker_phosphate_style(X33_HETID, LINKER_PHOSPHATE_DEFAULT_RECORD),
+    )
 
 
 def _collect_residue_labels_by_chain(
@@ -1108,13 +1224,20 @@ def build_chain_residue_remark_lines(
     return lines
 
 
-def build_x33_het_records(atom_rec_list: List[edit_pdb_atom.pdb_atom_record]) -> List[str]:
-    """Return HET/HETNAM records for all standalone X33 linker residues."""
+def build_linker_phosphate_het_records(
+    atom_rec_list: List[edit_pdb_atom.pdb_atom_record],
+    linker_phosphate_style: Optional[object] = None,
+) -> List[str]:
+    """Return HET/HETNAM records for standalone HETATM linker phosphates."""
+    style = _coerce_linker_phosphate_style(linker_phosphate_style)
+    if style.record_name != "HETATM":
+        return []
+
     counts: Dict[Tuple[str, int], int] = {}
     for rec in atom_rec_list:
         if getattr(rec, "recordName", "") != "HETATM":
             continue
-        if getattr(rec, "resName", "").strip() != X33_HETID:
+        if getattr(rec, "resName", "").strip() != style.resname:
             continue
         counts[(rec.chainID, rec.resSeq)] = counts.get((rec.chainID, rec.resSeq), 0) + 1
 
@@ -1124,9 +1247,17 @@ def build_x33_het_records(atom_rec_list: List[edit_pdb_atom.pdb_atom_record]) ->
     lines: List[str] = []
     for (chain_id, res_seq), atom_count in sorted(counts.items(), key=lambda x: (x[0][0], x[0][1])):
         # PDB-style HET line; kept intentionally simple and parseable.
-        lines.append(f"HET    {X33_HETID:>3s}  {chain_id:1s}{res_seq:4d}     {atom_count:3d}\n")
-    lines.append(f"HETNAM     {X33_HETID:>3s} {X33_HETNAM}\n")
+        lines.append(f"HET    {style.resname:>3s}  {chain_id:1s}{res_seq:4d}     {atom_count:3d}\n")
+    lines.append(f"HETNAM     {style.resname:>3s} {LINKER_PHOSPHATE_HETNAM}\n")
     return lines
+
+
+def build_x33_het_records(atom_rec_list: List[edit_pdb_atom.pdb_atom_record]) -> List[str]:
+    """Return HET/HETNAM records for all standalone X33 linker residues."""
+    return build_linker_phosphate_het_records(
+        atom_rec_list,
+        make_linker_phosphate_style(X33_HETID, LINKER_PHOSPHATE_DEFAULT_RECORD),
+    )
 
 
 def build_junction_remark_lines(
@@ -1135,16 +1266,20 @@ def build_junction_remark_lines(
     orig_prev: List[Optional[int]],
     nodes: List[ResidueNode],
     phos_new_label: Optional[Dict[Label, Tuple[str, int]]] = None,
+    linker_phosphate_style: Optional[object] = None,
 ) -> List[str]:
     """Build parse-friendly REMARK lines describing junction residues.
 
     Residue lists use final output labels when available.  For each operation:
       - double: four residues (prev1,pos1,prev2,pos2)
       - single: two linked residues (prev1,pos2), excluding the two nick ends
-      - bowtie: one 3to3 line with five residues including X33, and one 5to5
-        line with the four nucleotide residues around the original cut sites.
+      - bowtie: one 3to3 line with five residues including the linker phosphate,
+        and one 5to5 line with the four nucleotide residues around the original
+        cut sites.
     """
     phos_new_label = phos_new_label or {}
+    style = _coerce_linker_phosphate_style(linker_phosphate_style)
+    linker_role = "x33" if _is_default_x33_style(style) else "linker_phosphate"
     lines: List[str] = []
     for op_index, sp in enumerate(specs, start=1):
         pos1 = sp["pos1"]  # type: ignore[index]
@@ -1181,18 +1316,18 @@ def build_junction_remark_lines(
                 f"excluded_nick_ends={_node_output_label(nodes, idx1)},{_node_output_label(nodes, u2)}"
             )
         elif kind == "bowtie":
-            x33_label = _x33_label_from_mapping(pos2, phos_new_label)
+            linker_label = _linker_phosphate_label_from_mapping(pos2, phos_new_label, style)
             residues_3to3 = [
                 _node_output_label(nodes, u1),
                 _node_output_label(nodes, idx1),
                 _node_output_label(nodes, u2),
                 _node_output_label(nodes, idx2),
-                x33_label,
+                linker_label,
             ]
             lines.append(
                 f"{REMARK_PREFIX} JUNCTION op={op_index} kind=bowtie link=3to3 "
-                f"roles=prev1,pos1,prev2,pos2,x33 residues={','.join(residues_3to3)} "
-                f"core={_node_output_label(nodes, u1)},{x33_label},{_node_output_label(nodes, u2)} "
+                f"roles=prev1,pos1,prev2,pos2,{linker_role} residues={','.join(residues_3to3)} "
+                f"core={_node_output_label(nodes, u1)},{linker_label},{_node_output_label(nodes, u2)} "
                 f"{original_fields}"
             )
             residues_5to5 = [_node_output_label(nodes, x) for x in (u1, idx1, u2, idx2)]
@@ -1211,8 +1346,10 @@ def build_special_remark_lines(
     phos_new_label: Optional[Dict[Label, Tuple[str, int]]] = None,
     link_counts: Optional[Dict[str, int]] = None,
     specs: Optional[List[Dict[str, object]]] = None,
+    linker_phosphate_style: Optional[object] = None,
 ) -> List[str]:
     """Build parse-friendly REMARK lines for notable topology events."""
+    style = _coerce_linker_phosphate_style(linker_phosphate_style)
     lines: List[str] = []
 
     if link_counts is not None:
@@ -1243,10 +1380,18 @@ def build_special_remark_lines(
 
     if phos_new_label:
         for src, (ch, rs) in sorted(phos_new_label.items(), key=lambda kv: (kv[1][0], kv[1][1])):
-            lines.append(
-                f"{REMARK_PREFIX} SPECIAL event=standalone_x33 source={_residue_label(src[0], src[1])} "
-                f"residue={_residue_label(ch, rs, X33_HETID)} atoms=P,OP1,OP2"
-            )
+            if _is_default_x33_style(style):
+                lines.append(
+                    f"{REMARK_PREFIX} SPECIAL event=standalone_x33 source={_residue_label(src[0], src[1])} "
+                    f"residue={_residue_label(ch, rs, X33_HETID)} atoms=P,OP1,OP2"
+                )
+            else:
+                lines.append(
+                    f"{REMARK_PREFIX} SPECIAL event=standalone_linker_phosphate "
+                    f"source={_residue_label(src[0], src[1])} "
+                    f"residue={_residue_label(ch, rs, style.resname)} "
+                    f"record={style.record_name} atoms=P,OP1,OP2"
+                )
 
     if specs:
         for op_index, sp in enumerate(specs, start=1):
@@ -1254,10 +1399,18 @@ def build_special_remark_lines(
                 pos1 = sp.get("pos1")
                 pos2 = sp.get("pos2")
                 if isinstance(pos1, tuple) and isinstance(pos2, tuple):
+                    if _is_default_x33_style(style):
+                        source_field = f"x33_source={_residue_label(pos2[0], pos2[1])}"
+                    else:
+                        source_field = (
+                            f"linker_phosphate_source={_residue_label(pos2[0], pos2[1])} "
+                            f"linker_phosphate_resname={style.resname} "
+                            f"linker_phosphate_record={style.record_name}"
+                        )
                     lines.append(
                         f"{REMARK_PREFIX} SPECIAL event=bowtie_junction op={op_index} "
                         f"pos1={_residue_label(pos1[0], pos1[1])} pos2={_residue_label(pos2[0], pos2[1])} "
-                        f"x33_source={_residue_label(pos2[0], pos2[1])}"
+                        f"{source_field}"
                     )
 
     return lines
@@ -1278,8 +1431,10 @@ def build_re_script_header_lines(
     component_orders: Optional[List[Dict[str, object]]] = None,
     link_counts: Optional[Dict[str, int]] = None,
     extra_special_events: Optional[List[str]] = None,
+    linker_phosphate_style: Optional[object] = None,
 ) -> List[str]:
     """Build standardized RE_SCRIPT REMARK 950 header lines."""
+    style = _coerce_linker_phosphate_style(linker_phosphate_style)
     lines: List[str] = []
     lines.append(
         f"{REMARK_PREFIX} SOFTWARE name={_clean_remark_value(software_name)} "
@@ -1291,9 +1446,27 @@ def build_re_script_header_lines(
     lines.extend(build_chain_residue_remark_lines(atom_rec_list))
 
     if specs is not None and label_to_idx is not None and orig_prev is not None and nodes is not None:
-        lines.extend(build_junction_remark_lines(specs, label_to_idx, orig_prev, nodes, phos_new_label))
+        lines.extend(
+            build_junction_remark_lines(
+                specs,
+                label_to_idx,
+                orig_prev,
+                nodes,
+                phos_new_label,
+                linker_phosphate_style=style,
+            )
+        )
 
-    lines.extend(build_special_remark_lines(component_orders, nodes, phos_new_label, link_counts, specs))
+    lines.extend(
+        build_special_remark_lines(
+            component_orders,
+            nodes,
+            phos_new_label,
+            link_counts,
+            specs,
+            linker_phosphate_style=style,
+        )
+    )
 
     if extra_special_events:
         for event in extra_special_events:
@@ -1308,11 +1481,13 @@ def write_pdb_with_header(
     outfile,
     header_lines: Optional[List[str]] = None,
     reorder_serial: bool = False,
+    linker_phosphate_style: Optional[object] = None,
 ) -> None:
     """Write REMARK/HET/HETNAM records, then LINK and ATOM/HETATM/TER records."""
+    style = _coerce_linker_phosphate_style(linker_phosphate_style)
     for line in header_lines or []:
         outfile.write(line if line.endswith("\n") else line + "\n")
-    for line in build_x33_het_records(atom_rec_list):
+    for line in build_linker_phosphate_het_records(atom_rec_list, style):
         outfile.write(line)
     edit_pdb_link.rec2file_link(atom_rec_list, link_rec_list, outfile, reorder_serial=reorder_serial)
 
@@ -1337,8 +1512,34 @@ def main() -> None:
         default=8,
         help="Shift (in residues) used to choose a numbering start for cyclic components",
     )
+    ap.add_argument(
+        "--linker_phosphate_resname",
+        "--linker-phosphate-resname",
+        default=None,
+        help=(
+            "Residue name for phosphate-only residues inserted at bowtie 3'-3' linkages "
+            "(default: X33). Use DA/dA for regular ATOM DA output."
+        ),
+    )
+    ap.add_argument(
+        "--linker_phosphate_record",
+        "--linker-phosphate-record",
+        choices=["ATOM", "HETATM", "atom", "hetatm"],
+        default=None,
+        help=(
+            "Record type for inserted 3'-3' linker phosphates. Default is HETATM, "
+            "except DA/dA defaults to ATOM."
+        ),
+    )
 
     args = ap.parse_args()
+    try:
+        linker_phosphate_style = make_linker_phosphate_style(
+            args.linker_phosphate_resname,
+            args.linker_phosphate_record,
+        )
+    except ValueError as exc:
+        ap.error(str(exc))
 
     # Parse exchange specs.
     specs = parse_exchange_specs(args.exchanges)
@@ -1370,6 +1571,11 @@ def main() -> None:
     print(f"  double: {n_double}")
     print(f"  single: {n_single}")
     print(f"  bowtie: {n_bowtie}")
+    if n_bowtie:
+        print(
+            "  3'-3' linker phosphate style: "
+            f"{linker_phosphate_style.record_name} {linker_phosphate_style.resname}"
+        )
 
     # Build ordered components.
     base_components = build_ordered_components(g, nodes, junction_nodes, args.cir_shift)
@@ -1379,7 +1585,14 @@ def main() -> None:
     final_components: List[Dict[str, object]] = []
     for ci, comp in enumerate(base_components):
         base_order: List[int] = comp["order"]  # type: ignore[index]
-        expanded_order = insert_phosphate_nodes(base_order, g, nodes, phos_store, used_phos)
+        expanded_order = insert_phosphate_nodes(
+            base_order,
+            g,
+            nodes,
+            phos_store,
+            used_phos,
+            linker_phosphate_style=linker_phosphate_style,
+        )
         final_components.append({
             **comp,
             "order": expanded_order,
@@ -1425,6 +1638,7 @@ def main() -> None:
         phos_new_label=phos_new_label,
         component_orders=final_components,
         link_counts=link_counts,
+        linker_phosphate_style=linker_phosphate_style,
     )
 
     print("\nOutput summary:")
@@ -1451,7 +1665,14 @@ def main() -> None:
         outname = base + "_rex.pdb"
 
     with open(outname, 'w') as fout:
-        write_pdb_with_header(output_atoms, link_records, fout, header_lines=header_lines, reorder_serial=True)
+        write_pdb_with_header(
+            output_atoms,
+            link_records,
+            fout,
+            header_lines=header_lines,
+            reorder_serial=True,
+            linker_phosphate_style=linker_phosphate_style,
+        )
     print(f"\nWrote output to: {outname}")
 
 

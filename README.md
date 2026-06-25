@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from reciprocal-exchange-style P-atom pairs and then applies reciprocal exchanges to the aligned structure. It can also run reciprocal exchange only, without alignment.
 
-Current version: V3.13
+Current version: V3.15
 
 ## Contents
 
@@ -32,6 +32,8 @@ python3 re_helix.py
 ```
 
 In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, `Insert Virtual Resi` opens the residue-renumbering helper, and `Generate Lattice` opens the P1 lattice/CRYST1 helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
+
+When the input PDB changes, the GUI updates the default `Output base` automatically unless that field has been changed to a custom value. For large exchange specifications, the `CLI pair args` field below the pair rows can be filled with the same concatenated pair tokens used on the command line; when it is filled, the individual pair rows are ignored.
 
 The main `re_helix` run log also mirrors stdout/stderr from bundled tools launched through `Other tools`, so equivalent CLI commands, selected LINK summaries, completion messages, and errors remain visible in the main window even when the helper window has no log box.
 
@@ -215,7 +217,7 @@ The idea sits in the design tradition introduced by Nadrian C. Seeman, who found
 
 - `double`: exchange both local backbone continuities between two specified residues.
 - `single`: exchange one strand-continuity relationship while leaving the complementary local relationship unchanged.
-- `bowtie`: create paired 3'-3' and 5'-5' junction behavior, including LINK records and X33 linker-phosphate records where needed.
+- `bowtie`: create paired 3'-3' and 5'-5' junction behavior, including LINK records and phosphate-only linker residues where needed. By default these linker phosphates are written as `HETATM X33`; they can instead use a custom residue name or regular `ATOM DA` records.
 
 Background reading:
 
@@ -262,6 +264,8 @@ python3 re_helix.py input.pdb '(AB)' '(CD)' 26A 9C 90 d --axis_parallel n -o ang
 - `--fix A`: keep the helix containing chain `A` fixed during alignment.
 - `--replicate`: replicate the full input chain set before alignment or RE-only processing.
 - `--cir_shift 8`: choose the residue shift used when writing circular reciprocal-exchange strands.
+- `--linker_phosphate_resname X33|NAME|DA`: choose the residue name for phosphate-only 3'-3' bowtie linker residues. `X33` is the default `HETATM` custom residue; any other 1-3 character name is written as `HETATM` by default; `DA`/`dA` writes regular `ATOM DA` while keeping only `P`, `OP1`, and `OP2`.
+- `--linker_phosphate_record ATOM|HETATM`: advanced override for the inserted linker phosphate record type.
 
 ## Clone And Update
 
