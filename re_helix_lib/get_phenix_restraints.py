@@ -158,7 +158,7 @@ VERSION = "V1.0"
 DEFAULT_LINKER_RESNAME = "X33"
 X33_RESNAME = DEFAULT_LINKER_RESNAME
 X33_P_OP_DISTANCE = 1.480
-DEFAULT_LINK_DISTANCE_CUTOFF = 3.0
+DEFAULT_LINK_DISTANCE_CUTOFF = 6.5
 REMARK_PREFIX = "REMARK 950 RE_SCRIPT"
 STANDARD_NUCLEIC_ACID_RESNAMES = {"A", "C", "G", "U", "DA", "DC", "DG", "DT"}
 
@@ -1204,7 +1204,7 @@ phenix.geometry_minimization \\
 
 Use exactly one movement-selection file. Do not combine min_P_C5.params or min.params with *_junctions.params unless you deliberately want order-dependent selection behavior. If you disable *_junctions.params, use min_P_C5.params or a carefully prepared min.params instead.
 
-The linker atomtypes CIF is needed when the standalone 3'-3' linker residue is nonstandard, such as X33. The safe interpretation params file should be listed last and avoids permissive automatic X33-P links. The default link_distance_cutoff here is 3.0 A; increase it only deliberately.
+The linker atomtypes CIF is needed when the standalone 3'-3' linker residue is nonstandard, such as X33. The safe interpretation params file should be listed last and avoids permissive automatic X33-P links. The default link_distance_cutoff here is 6.5 A.
 """
 
 
@@ -1289,8 +1289,8 @@ def build_safe_interpretation_params_text(
     cutoff_text = ""
     if link_distance_cutoff is not None:
         cutoff_text = (
-            "    # Default Phenix value is 3.0 A. Avoid 7.0 A unless you deliberately\n"
-            "    # need permissive automatic-link searching.\n"
+            "    # The Phenix default is 3.0 A; this re_helix helper defaults to 6.5 A.\n"
+            "    # Avoid 7.0 A unless you deliberately need even more permissive automatic-link searching.\n"
             f"    link_distance_cutoff = {link_distance_cutoff:.3f}\n\n"
         )
     return f"""# {linker_resname}_safe_interpretation.params
@@ -1553,8 +1553,8 @@ def run_gui(initial_path=None) -> int:
 
     root = tk.Tk()
     root.title(f"{TOOL_NAME} {VERSION}")
-    root.geometry("980x820")
-    root.minsize(900, 740)
+    root.geometry("980x760")
+    root.minsize(900, 680)
 
     input_var = tk.StringVar(value=initial_path or "")
     output_base_var = tk.StringVar()
@@ -1636,8 +1636,23 @@ def run_gui(initial_path=None) -> int:
         row=6, column=1, sticky="w", padx=8, pady=2
     )
 
+    advanced_visible = tk.BooleanVar(value=False)
+
+    def toggle_advanced() -> None:
+        if advanced_visible.get():
+            advanced.grid_remove()
+            advanced_visible.set(False)
+            advanced_button.configure(text="Show Advanced restraint values")
+        else:
+            advanced.grid()
+            advanced_visible.set(True)
+            advanced_button.configure(text="Hide Advanced restraint values")
+
+    advanced_button = tk.Button(root, text="Show Advanced restraint values", command=toggle_advanced)
+    advanced_button.grid(row=7, column=1, sticky="w", padx=8, pady=(8, 4))
+
     advanced = tk.LabelFrame(root, text="Advanced restraint values", padx=8, pady=6)
-    advanced.grid(row=7, column=0, columnspan=3, sticky="we", padx=8, pady=(8, 4))
+    advanced.grid(row=8, column=0, columnspan=3, sticky="we", padx=8, pady=(2, 4))
     advanced.columnconfigure(1, weight=1)
     tk.Label(advanced, text="Bond sigma:").grid(row=0, column=0, sticky="e", padx=6, pady=3)
     tk.Entry(advanced, textvariable=sigma_var, width=10).grid(row=0, column=1, sticky="w", padx=6, pady=3)
@@ -1650,16 +1665,17 @@ def run_gui(initial_path=None) -> int:
         text="Include phosphate angles Phenix normally supplies",
         variable=include_builtin_angles_var,
     ).grid(row=3, column=1, sticky="w", padx=6, pady=3)
+    advanced.grid_remove()
 
     note_widget = scrolledtext.ScrolledText(root, wrap="word", height=12)
-    note_widget.grid(row=8, column=0, columnspan=3, sticky="nsew", padx=8, pady=(8, 4))
+    note_widget.grid(row=9, column=0, columnspan=3, sticky="nsew", padx=8, pady=(8, 4))
     note_widget.insert("1.0", GUIDANCE_TEXT)
     note_widget.configure(state="disabled")
 
     log_widget = scrolledtext.ScrolledText(root, wrap="word", height=8)
-    log_widget.grid(row=9, column=0, columnspan=3, sticky="nsew", padx=8, pady=(4, 8))
-    root.rowconfigure(8, weight=1)
+    log_widget.grid(row=10, column=0, columnspan=3, sticky="nsew", padx=8, pady=(4, 8))
     root.rowconfigure(9, weight=1)
+    root.rowconfigure(10, weight=1)
 
     def append_log(text: str) -> None:
         log_widget.insert("end", text)
@@ -1709,14 +1725,18 @@ def run_gui(initial_path=None) -> int:
             summary = format_generation_summary(result)
             print(summary, flush=True)
             append_log(summary + "\n\n")
-            messagebox.showinfo("Done", summary)
+            messagebox.showinfo(
+                "Done",
+                "Generated Phenix restraint files.\n\n"
+                "See the run log for output paths and the suggested phenix.geometry_minimization command.",
+            )
         except Exception as exc:
             print(f"Error: {exc}", flush=True)
             append_log(f"Error: {exc}\n\n")
             messagebox.showerror("Error", str(exc))
 
     button_row = tk.Frame(root)
-    button_row.grid(row=10, column=0, columnspan=3, sticky="we", padx=8, pady=(0, 12))
+    button_row.grid(row=11, column=0, columnspan=3, sticky="we", padx=8, pady=(0, 12))
     button_row.columnconfigure(0, weight=1)
     tk.Button(button_row, text="Generate Phenix restraints", command=run_processing, height=2).grid(
         row=0, column=0, sticky="we", padx=(0, 6)

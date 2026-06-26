@@ -240,7 +240,7 @@ phenix.geometry_minimization \
 Useful Get Phenix Restraints options:
 
 - `--linker-resname X33`: choose the standalone 3'-to-3' linker phosphate residue name. The default is `X33`; custom nonstandard names get matching CIF/safe params files.
-- `--link-distance-cutoff 3.0`: choose the generated `pdb_interpretation.link_distance_cutoff` value. The default is the safer Phenix default of `3.0`.
+- `--link-distance-cutoff 6.5`: choose the generated `pdb_interpretation.link_distance_cutoff` value. The default is `6.5`.
 - `--no-junctions-params`: skip `*_junctions.params`. If you do this, use exactly one movement-selection file such as `min_P_C5.params` or a carefully prepared `min.params`.
 - `--no-linker-support-files`: skip writing `<resname>_phenix_atomtypes.cif` and `<resname>_safe_interpretation.params`.
 - `--include-phenix-builtin-angles`: diagnostic mode that can reproduce older duplicate-prone angle output.
