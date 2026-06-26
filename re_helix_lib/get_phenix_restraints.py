@@ -157,8 +157,11 @@ VERSION = "V1.0"
 
 DEFAULT_LINKER_RESNAME = "X33"
 X33_RESNAME = DEFAULT_LINKER_RESNAME
-X33_P_OP_DISTANCE = 1.480
+X33_P_OP_DISTANCE = 1.495
 DEFAULT_LINK_DISTANCE_CUTOFF = 6.5
+DEFAULT_NONBRIDGING_ANGLE = 119.0
+DEFAULT_MIXED_ANGLE = 108.0
+DEFAULT_BRIDGING_ANGLE = 103.0
 REMARK_PREFIX = "REMARK 950 RE_SCRIPT"
 STANDARD_NUCLEIC_ACID_RESNAMES = {"A", "C", "G", "U", "DA", "DC", "DG", "DT"}
 
@@ -860,7 +863,7 @@ def build_x33_internal_restraint_lines(
     sigma: float,
     angle_sigma: float,
     p_op_distance: float = X33_P_OP_DISTANCE,
-    op_p_op_angle: float = 119.0,
+    op_p_op_angle: float = DEFAULT_NONBRIDGING_ANGLE,
     linker_resname: str = DEFAULT_LINKER_RESNAME,
 ) -> Tuple[List[str], List[str], Set[Tuple[Tuple[str, int, str], Tuple[Tuple[str, int, str], Tuple[str, int, str]]]]]:
     """Build internal P-OP1/P-OP2 bond and OP1-P-OP2 angle restraints.
@@ -1093,9 +1096,9 @@ def build_params_text(
     links: List[LinkRecord],
     sigma: float = 0.02,
     angle_sigma: float = 3.0,
-    nonbridging_angle: float = 119.0,
-    mixed_angle: float = 109.5,
-    bridging_angle: float = 102.0,
+    nonbridging_angle: float = DEFAULT_NONBRIDGING_ANGLE,
+    mixed_angle: float = DEFAULT_MIXED_ANGLE,
+    bridging_angle: float = DEFAULT_BRIDGING_ANGLE,
     skip_phenix_builtin_angles: bool = True,
     x33_p_op_distance: float = X33_P_OP_DISTANCE,
     linker_resname: str = DEFAULT_LINKER_RESNAME,
@@ -1535,11 +1538,11 @@ def build_cli_command(program: str, args) -> str:
         parts.extend(["--sigma", str(args.sigma)])
     if args.angle_sigma != 3.0:
         parts.extend(["--angle-sigma", str(args.angle_sigma)])
-    if args.angle_nonbridging != 119.0:
+    if args.angle_nonbridging != DEFAULT_NONBRIDGING_ANGLE:
         parts.extend(["--angle-nonbridging", str(args.angle_nonbridging)])
-    if args.angle_mixed != 109.5:
+    if args.angle_mixed != DEFAULT_MIXED_ANGLE:
         parts.extend(["--angle-mixed", str(args.angle_mixed)])
-    if args.angle_bridging != 102.0:
+    if args.angle_bridging != DEFAULT_BRIDGING_ANGLE:
         parts.extend(["--angle-bridging", str(args.angle_bridging)])
     if args.x33_p_op_distance != X33_P_OP_DISTANCE:
         parts.extend(["--linker-p-op-distance", str(args.x33_p_op_distance)])
@@ -1710,9 +1713,9 @@ def run_gui(initial_path=None) -> int:
                 generate_linker_support_files=generate_support_var.get(),
                 sigma=float(sigma_var.get()),
                 angle_sigma=float(angle_sigma_var.get()),
-                angle_nonbridging=119.0,
-                angle_mixed=109.5,
-                angle_bridging=102.0,
+                angle_nonbridging=DEFAULT_NONBRIDGING_ANGLE,
+                angle_mixed=DEFAULT_MIXED_ANGLE,
+                angle_bridging=DEFAULT_BRIDGING_ANGLE,
                 include_phenix_builtin_angles=include_builtin_angles_var.get(),
                 x33_p_op_distance=float(p_op_distance_var.get()),
             )
@@ -1797,20 +1800,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--angle-nonbridging",
         type=float,
-        default=119.0,
-        help="Ideal angle for OP1/O1P-P-OP2/O2P in degrees (default: 119.0).",
+        default=DEFAULT_NONBRIDGING_ANGLE,
+        help=f"Ideal angle for OP1/O1P-P-OP2/O2P in degrees (default: {DEFAULT_NONBRIDGING_ANGLE:.1f}).",
     )
     parser.add_argument(
         "--angle-mixed",
         type=float,
-        default=109.5,
-        help="Ideal angle for non-bridging O-P-bridging O in degrees (default: 109.5).",
+        default=DEFAULT_MIXED_ANGLE,
+        help=f"Ideal angle for non-bridging O-P-bridging O in degrees (default: {DEFAULT_MIXED_ANGLE:.1f}).",
     )
     parser.add_argument(
         "--angle-bridging",
         type=float,
-        default=102.0,
-        help="Ideal angle for bridging O-P-bridging O in degrees (default: 102.0).",
+        default=DEFAULT_BRIDGING_ANGLE,
+        help=f"Ideal angle for bridging O-P-bridging O in degrees (default: {DEFAULT_BRIDGING_ANGLE:.1f}).",
     )
     parser.add_argument(
         "--include-phenix-builtin-angles",

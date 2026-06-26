@@ -7,6 +7,7 @@
 - Added a `Get Phenix Restraints` button to the `re_helix` GUI `Other tools` area. The button opens the bundled GUI in a separate process and pre-fills the current input PDB when available.
 - Added GUI/CLI controls for `link_distance_cutoff`, standalone 3'-to-3' linker residue name, optional `*_junctions.params` generation, and linker CIF/safe-interpretation support file generation.
 - Changed the Get Phenix Restraints default `link_distance_cutoff` to `6.5` and collapsed its advanced restraint controls behind a toggle button.
+- Updated Get Phenix Restraints phosphate defaults to better match Phenix/CCP4 DNA/RNA link restraints: linker P-OP distance `1.495`, mixed O-P-O angle `108.0`, and bridging O-P-O angle `103.0`.
 - Updated the README with the Phenix minimization workflow and the warning to use exactly one movement-selection params file.
 
 ## V3.15 - 2026-06-25
