@@ -48,7 +48,7 @@ except Exception:  # Tkinter is optional for CLI mode.
     filedialog = None
     messagebox = None
 
-VERSION = "1.0"
+VERSION = "1.1"
 
 
 class PDBRecord(object):
@@ -835,30 +835,55 @@ class SymmetryGUI(object):
 
         mode_frame = tk.LabelFrame(self.root, text="Symmetry definition", font=("TkDefaultFont", 10, "bold"))
         mode_frame.grid(row=row, column=0, columnspan=3, sticky="we", padx=6, pady=6)
-        tk.Radiobutton(mode_frame, text="Explicit chain groups", variable=self.mode_var, value="groups").grid(
+        tk.Radiobutton(
+            mode_frame,
+            text="Explicit chain groups",
+            variable=self.mode_var,
+            value="groups",
+            command=self.update_control_states,
+        ).grid(
             row=0, column=0, sticky="w", **pad
         )
-        tk.Entry(mode_frame, textvariable=self.groups_var, width=48).grid(row=0, column=1, columnspan=3, sticky="we", **pad)
-        tk.Label(mode_frame, text="Example: ABCDMNOP EFGHQRST IJKLUVWX").grid(
+        self.groups_entry = tk.Entry(mode_frame, textvariable=self.groups_var, width=48)
+        self.groups_entry.grid(row=0, column=1, columnspan=3, sticky="we", **pad)
+        self.groups_example_label = tk.Label(mode_frame, text="Example: ABCDMNOP EFGHQRST IJKLUVWX")
+        self.groups_example_label.grid(
             row=1, column=1, columnspan=3, sticky="w", **pad
         )
 
-        tk.Radiobutton(mode_frame, text="Fold + continuous chain range", variable=self.mode_var, value="fold").grid(
+        tk.Radiobutton(
+            mode_frame,
+            text="Fold + continuous chain range",
+            variable=self.mode_var,
+            value="fold",
+            command=self.update_control_states,
+        ).grid(
             row=2, column=0, sticky="w", **pad
         )
-        tk.Label(mode_frame, text="Fold").grid(row=2, column=1, sticky="e", **pad)
-        tk.Entry(mode_frame, textvariable=self.fold_var, width=8).grid(row=2, column=2, sticky="w", **pad)
-        tk.Label(mode_frame, text="Chains").grid(row=2, column=3, sticky="e", **pad)
-        tk.Entry(mode_frame, textvariable=self.chains_var, width=12).grid(row=2, column=4, sticky="w", **pad)
+        self.fold_label = tk.Label(mode_frame, text="Fold")
+        self.fold_label.grid(row=2, column=1, sticky="e", **pad)
+        self.fold_entry = tk.Entry(mode_frame, textvariable=self.fold_var, width=8)
+        self.fold_entry.grid(row=2, column=2, sticky="w", **pad)
+        self.chains_label = tk.Label(mode_frame, text="Chains")
+        self.chains_label.grid(row=2, column=3, sticky="e", **pad)
+        self.chains_entry = tk.Entry(mode_frame, textvariable=self.chains_var, width=12)
+        self.chains_entry.grid(row=2, column=4, sticky="w", **pad)
         row += 1
 
         options = tk.LabelFrame(self.root, text="Options", font=("TkDefaultFont", 10, "bold"))
         options.grid(row=row, column=0, columnspan=3, sticky="we", padx=6, pady=6)
-        tk.Label(options, text="Fit atoms").grid(row=0, column=0, sticky="e", **pad)
-        tk.OptionMenu(options, self.fit_atoms_var, "all", "p", "phosphorus", "ca", "calpha", "backbone").grid(
+        self.fit_atoms_label = tk.Label(options, text="Fit atoms")
+        self.fit_atoms_label.grid(row=0, column=0, sticky="e", **pad)
+        self.fit_atoms_menu = tk.OptionMenu(options, self.fit_atoms_var, "all", "p", "phosphorus", "ca", "calpha", "backbone")
+        self.fit_atoms_menu.grid(
             row=0, column=1, sticky="w", **pad
         )
-        tk.Checkbutton(options, text="Skip alignment", variable=self.no_align_var).grid(row=0, column=2, sticky="w", **pad)
+        tk.Checkbutton(
+            options,
+            text="Skip alignment",
+            variable=self.no_align_var,
+            command=self.update_control_states,
+        ).grid(row=0, column=2, sticky="w", **pad)
         tk.Checkbutton(options, text="Keep intermediate files", variable=self.keep_var).grid(
             row=1, column=0, columnspan=2, sticky="w", **pad
         )
@@ -878,6 +903,26 @@ class SymmetryGUI(object):
             row=row, column=0, columnspan=3, sticky="we", padx=6, pady=6
         )
         self.root.columnconfigure(1, weight=1)
+        self.mode_var.trace_add("write", lambda *_args: self.update_control_states())
+        self.no_align_var.trace_add("write", lambda *_args: self.update_control_states())
+        self.update_control_states()
+
+    def _set_widget_enabled(self, widget, enabled):
+        try:
+            widget.configure(state=("normal" if enabled else "disabled"))
+        except tk.TclError:
+            pass
+
+    def update_control_states(self):
+        use_groups = self.mode_var.get() == "groups"
+        for widget in (self.groups_entry, self.groups_example_label):
+            self._set_widget_enabled(widget, use_groups)
+        for widget in (self.fold_label, self.fold_entry, self.chains_label, self.chains_entry):
+            self._set_widget_enabled(widget, not use_groups)
+
+        align_enabled = not self.no_align_var.get()
+        for widget in (self.fit_atoms_label, self.fit_atoms_menu):
+            self._set_widget_enabled(widget, align_enabled)
 
     def browse_input(self):
         path = filedialog.askopenfilename(
@@ -912,9 +957,10 @@ class SymmetryGUI(object):
         output_base = self.output_var.get().strip()
         if output_base:
             parts.extend(["-o", output_base])
-        parts.extend(["--fit-atoms", self.fit_atoms_var.get()])
         if self.no_align_var.get():
             parts.append("--no-align")
+        else:
+            parts.extend(["--fit-atoms", self.fit_atoms_var.get()])
         if self.keep_var.get():
             parts.append("--keep-intermediate")
         if self.ignore_resname_var.get():
