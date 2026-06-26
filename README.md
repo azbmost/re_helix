@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from reciprocal-exchange-style P-atom pairs and then applies reciprocal exchanges to the aligned structure. It can also run reciprocal exchange only, without alignment.
 
-Current version: V3.15
+Current version: V3.16
 
 ## Contents
 
@@ -15,6 +15,7 @@ Current version: V3.15
 - `re_helix_lib/add_pdb_link_record.py`: bundled Add PDB LINK Record tool for staging P/O3' LINK records and rebuilding chain topology.
 - `re_helix_lib/insert_virtual_resi.py`: bundled Insert Virtual Resi tool for inserting residue-numbering gaps and updating LINK endpoints.
 - `re_helix_lib/generate_lattice.py`: bundled Generate Lattice tool for writing a P1 CRYST1 lattice record from three lattice vectors.
+- `re_helix_lib/get_phenix_restraints.py`: bundled Get Phenix Restraints tool for converting LINK records into Phenix geometry restraints, optional junction movement-selection params, and linker support files.
 - `assets/icon.png`: optional GUI/task-menu icon. The script uses it when present and falls back to the default Tk icon when it is missing.
 
 ## Requirements
@@ -31,7 +32,7 @@ Launch the GUI:
 python3 re_helix.py
 ```
 
-In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, `Insert Virtual Resi` opens the residue-renumbering helper, and `Generate Lattice` opens the P1 lattice/CRYST1 helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
+In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, `Insert Virtual Resi` opens the residue-renumbering helper, `Generate Lattice` opens the P1 lattice/CRYST1 helper, and `Get Phenix Restraints` opens the Phenix restraint-generation helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
 
 When the input PDB changes, the GUI updates the default `Output base` automatically unless that field has been changed to a custom value. For large exchange specifications, the `CLI pair args` field below the pair rows can be filled with the same concatenated pair tokens used on the command line; when it is filled, the individual pair rows are ignored.
 
@@ -206,6 +207,45 @@ Useful Generate Lattice options:
 - `--no-cryst1-update`: preserve existing `CRYST1` records.
 - `--drop-conect`: remove `CONECT` records from the output.
 - `-v` or `--version`: show the bundled tool version.
+
+## Get Phenix Restraints Tool
+
+The bundled Get Phenix Restraints tool is based on `link_to_geometry_restraintsV4.py`. It converts PDB `LINK` records into a `*_links.params` file containing Phenix `geometry_restraints.edits` bond restraints and phosphate-centered angle restraints. For standalone 3'-to-3' linker phosphate residues, it also writes internal P-OP1/P-OP2 bond and OP1-P-OP2 angle restraints.
+
+Open its GUI directly:
+
+```bash
+python3 re_helix_lib/get_phenix_restraints.py --gui
+```
+
+Run it from the command line:
+
+```bash
+python3 re_helix_lib/get_phenix_restraints.py model_rex.pdb --output-base model_rex
+```
+
+By default, this writes `model_rex_links.params`, `model_rex_junctions.params` when `REMARK 950 RE_SCRIPT JUNCTION` lines are present, and nonstandard-linker support files such as `X33_phenix_atomtypes.cif` and `X33_safe_interpretation.params`.
+
+Recommended Phenix command:
+
+```bash
+phenix.geometry_minimization \
+  model_rex.pdb \
+  model_rex_links.params \
+  model_rex_junctions.params \
+  X33_phenix_atomtypes.cif \
+  X33_safe_interpretation.params
+```
+
+Useful Get Phenix Restraints options:
+
+- `--linker-resname X33`: choose the standalone 3'-to-3' linker phosphate residue name. The default is `X33`; custom nonstandard names get matching CIF/safe params files.
+- `--link-distance-cutoff 3.0`: choose the generated `pdb_interpretation.link_distance_cutoff` value. The default is the safer Phenix default of `3.0`.
+- `--no-junctions-params`: skip `*_junctions.params`. If you do this, use exactly one movement-selection file such as `min_P_C5.params` or a carefully prepared `min.params`.
+- `--no-linker-support-files`: skip writing `<resname>_phenix_atomtypes.cif` and `<resname>_safe_interpretation.params`.
+- `--include-phenix-builtin-angles`: diagnostic mode that can reproduce older duplicate-prone angle output.
+
+Use exactly one movement-selection file for `phenix.geometry_minimization`. Usually this should be `*_junctions.params`; do not combine it with `min_P_C5.params` or `min.params` unless you deliberately want to test which top-level `selection = ...` Phenix uses.
 
 ## What Reciprocal Exchange Means
 

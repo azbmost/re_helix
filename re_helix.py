@@ -2,6 +2,12 @@
 """
 re_helix.py
 
+V3.16 update (2026-06-26):
+- Add Get Phenix Restraints to the GUI Other tools area. The bundled
+  re_helix_lib/get_phenix_restraints.py tool generates Phenix LINK geometry
+  params, optional junction movement-selection params, and linker support files.
+- Bump the re_helix app version to V3.16.
+
 V3.15 update (2026-06-25):
 - In GUI mode, keep the default Output base synchronized with the selected or
   typed input PDB path unless the user has entered a custom output base.
@@ -288,10 +294,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.15"
+SOFTWARE_VERSION = "V3.16"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V3.15: AZBMOST Package Module #2 - "
+    "re_helix V3.16: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -3219,6 +3225,8 @@ def _launch_gui() -> None:
     insert_virtual_resi_button.pack(side="left", padx=(6, 0))
     generate_lattice_button = ttk.Button(other_tools_box, text="Generate Lattice")
     generate_lattice_button.pack(side="left", padx=(6, 0))
+    get_phenix_restraints_button = ttk.Button(other_tools_box, text="Get Phenix Restraints")
+    get_phenix_restraints_button.pack(side="left", padx=(6, 0))
 
     buttons = ttk.Frame(outer)
     buttons.pack(fill="x", padx=2, pady=4)
@@ -3303,6 +3311,11 @@ def _launch_gui() -> None:
         current_pdb = pdb_var.get().strip()
         extra_args = [current_pdb] if current_pdb else []
         launch_bundled_gui_tool("Generate Lattice", "generate_lattice.py", extra_args)
+
+    def launch_get_phenix_restraints_tool() -> None:
+        current_pdb = pdb_var.get().strip()
+        extra_args = [current_pdb] if current_pdb else []
+        launch_bundled_gui_tool("Get Phenix Restraints", "get_phenix_restraints.py", extra_args)
 
     row_targets = {"pair": 3, "axis": 0}
     render_state = {"pair_pending": False, "axis_pending": False}
@@ -3503,6 +3516,7 @@ def _launch_gui() -> None:
     add_pdb_link_button.configure(command=launch_add_pdb_link_record_tool)
     insert_virtual_resi_button.configure(command=launch_insert_virtual_resi_tool)
     generate_lattice_button.configure(command=launch_generate_lattice_tool)
+    get_phenix_restraints_button.configure(command=launch_get_phenix_restraints_tool)
     render_pair_rows()
     render_axis_rows()
     schedule_scrollbar_refresh()
