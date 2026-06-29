@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-re_helix_ccgV3.py
+re_helix_ccgV3_1.py
 
 Pure geometry-based cyclic-constraint alignment for reciprocal-exchange helices.
 
@@ -27,7 +27,7 @@ Outputs
 
 Example
 -------
-python re_helix_ccgV3.py TT_helixAB_33.pdb \
+python re_helix_ccgV3_1.py TT_helixAB_33.pdb \
     26A 9C d 26C 9E d 26E 9A d \
     --axis_parallel n --axis_dist 23
 """
@@ -44,7 +44,7 @@ import numpy as np
 from scipy.optimize import least_squares
 
 SOFTWARE_NAME = "re_helix_ccg"
-SOFTWARE_VERSION = "V3"
+SOFTWARE_VERSION = "V3.1"
 
 # Make the helper folder and repository root importable when loading re_helix.py.
 HERE = Path(__file__).resolve().parent
@@ -86,6 +86,17 @@ alignmod = _load_module(
 HelixID = alignmod.HelixID
 parse_exchange_specs = alignmod.parse_exchange_specs
 parse_helix_definition_tokens = alignmod.parse_helix_definition_tokens
+parse_axis_range_specs = alignmod.parse_axis_range_specs
+parse_axis_move_specs = alignmod.parse_axis_move_specs
+pair_axis_move_definitions = alignmod.pair_axis_move_definitions
+resolve_axis_range_definitions = alignmod.resolve_axis_range_definitions
+resolve_axis_move_definitions = alignmod.resolve_axis_move_definitions
+translate_axis_range_definitions_for_replication = alignmod.translate_axis_range_definitions_for_replication
+build_axis_coupled_helix_defs = alignmod.build_axis_coupled_helix_defs
+register_axis_coupling_overrides = alignmod.register_axis_coupling_overrides
+apply_axis_coupling_to_chain_map = alignmod.apply_axis_coupling_to_chain_map
+set_helix_axis_range_definitions = alignmod.set_helix_axis_range_definitions
+set_helix_axis_move_definitions = alignmod.set_helix_axis_move_definitions
 build_nucleic_acid_maps = alignmod.build_nucleic_acid_maps
 compute_chain_partner_map = alignmod.compute_chain_partner_map
 build_chain_to_helix_from_defs = alignmod.build_chain_to_helix_from_defs
@@ -95,6 +106,7 @@ align_helices_for_exchanges = alignmod.align_helices_for_exchanges
 apply_reciprocal_exchanges_in_memory = alignmod.apply_reciprocal_exchanges_in_memory
 replicate_all_chains = alignmod.replicate_all_chains
 helix_id_str = alignmod.helix_id_str
+atom_moves_with_helix = alignmod.atom_moves_with_helix
 v_add = alignmod.v_add
 v_sub = alignmod.v_sub
 v_scale = alignmod.v_scale
@@ -162,12 +174,12 @@ def rotvec_to_matrix(rv: np.ndarray) -> np.ndarray:
 
     The rotation vector direction is the axis and its norm is the angle.
     """
-    theta = float(np.linalg.norm(rv))
-    if theta < 1.0e-12:
+    angle = float(np.linalg.norm(rv))
+    if angle < 1.0e-12:
         return np.eye(3, dtype=float)
-    k = rv / theta
+    k = rv / angle
     K = skew_matrix(k)
-    return np.eye(3, dtype=float) + math.sin(theta) * K + (1.0 - math.cos(theta)) * np.dot(K, K)
+    return np.eye(3, dtype=float) + math.sin(angle) * K + (1.0 - math.cos(angle)) * np.dot(K, K)
 
 
 
@@ -256,7 +268,7 @@ def build_component_solver_data(
         for atom in rec_list:
             if atom.recordName not in ("ATOM", "HETATM"):
                 continue
-            if atom.chainID in h:
+            if atom_moves_with_helix(atom, h):
                 atoms.append(atom)
         atoms_by_helix[h] = atoms
         base_coords_by_helix[h] = np.array([[a.x, a.y, a.z] for a in atoms], dtype=float)
@@ -473,6 +485,12 @@ def refine_cyclic_components_geometry(
         chain_to_helix = build_chain_to_helix_from_defs(explicit_helices, chain_to_P_atoms)
     else:
         chain_to_helix = compute_chain_partner_map(chain_to_P_atoms)
+    chain_to_helix = apply_axis_coupling_to_chain_map(
+        chain_to_helix,
+        alignmod.get_helix_axis_range_definitions(),
+        alignmod.get_helix_axis_move_definitions(),
+        chain_to_P_atoms,
+    )
 
     fix_helix = None  # type: Optional[HelixID]
     if fix_chain is not None and fix_chain in chain_to_helix:
@@ -686,7 +704,8 @@ def main() -> None:
             "Examples:\n"
             "  (AB) (CD) 30A 8D d 13B 24C s\n"
             "  (ABMN) 30A 8D d 13B 24C s\n"
-            "  30A 8D d 13B 24C s"
+            "  30A 8D d 13B 24C s\n"
+            "  26A 9C 90 d     # fixed beta angle for one single-site helix pair"
         ),
     )
     parser.add_argument(
@@ -713,7 +732,8 @@ def main() -> None:
         help=(
             "If 'y' (default), helices are treated with the original tree alignment. "
             "If 'n', cyclic components are additionally refined with a direct "
-            "geometric least-squares closure solve."
+            "geometric least-squares closure solve. Preferred angle names are "
+            "d/tau/phi/beta; legacy rho-angle examples are accepted as beta."
         ),
     )
     parser.add_argument(
@@ -733,6 +753,24 @@ def main() -> None:
             "Replicate the entire set of chains (same semantics as in re_helix.py). "
             "If the input PDB appears to contain exactly one helix component, "
             "replication is also enabled automatically."
+        ),
+    )
+    parser.add_argument(
+        "--axis_range",
+        action="append",
+        default=[],
+        help=(
+            "Chain/range definition for helical-axis estimation. Repeat as needed. "
+            "Examples: --axis_range A,B or --axis_range B26-B60,A1-A35."
+        ),
+    )
+    parser.add_argument(
+        "--axis_move",
+        action="append",
+        default=[],
+        help=(
+            "Additional chains or residue windows to move with the corresponding "
+            "--axis_range row, e.g. C,D or C1-C50,D."
         ),
     )
     parser.add_argument(
@@ -793,6 +831,13 @@ def main() -> None:
     args = parser.parse_args()
 
     alignmod.reset_helix_axis_overrides()
+    try:
+        axis_range_defs_input = parse_axis_range_specs(args.axis_range)
+        axis_move_defs_input = parse_axis_move_specs(args.axis_move)
+        pair_axis_move_definitions(axis_range_defs_input, axis_move_defs_input)
+    except ValueError as exc:
+        print("Error parsing --axis_range / --axis_move definitions: %s" % exc, file=sys.stderr)
+        sys.exit(1)
 
     # Determine base name for outputs
     if args.pdb_out_base is None:
@@ -842,10 +887,53 @@ def main() -> None:
     if not chain_to_P_atoms0:
         print("No P atoms found in input PDB; alignment cannot proceed.", file=sys.stderr)
         sys.exit(1)
+    original_atom_chains0 = sorted(
+        atom.chainID for atom in rec_list if atom.recordName in ("ATOM", "HETATM")
+    )
+    original_atom_chains0 = sorted(set(original_atom_chains0))
+
+    original_chain_lookup0 = {ch.upper(): ch for ch in original_atom_chains0}
+    template_axis_defs_input = []
+    template_move_defs_input = []
+    for axis_def, move_def in pair_axis_move_definitions(axis_range_defs_input, axis_move_defs_input):
+        row_chains = set(axis_def.keys()) | set(move_def.keys())
+        if row_chains and all(ch.upper() in original_chain_lookup0 for ch in row_chains):
+            template_axis_defs_input.append(axis_def)
+            template_move_defs_input.append(move_def)
+
+    axis_coupled_helices0 = []
+    if template_axis_defs_input:
+        try:
+            template_axis_defs_resolved = resolve_axis_range_definitions(
+                template_axis_defs_input,
+                chain_to_P_atoms0.keys(),
+                chain_to_P_atoms0,
+            )
+            template_move_defs_resolved = resolve_axis_move_definitions(
+                template_move_defs_input,
+                original_atom_chains0,
+            )
+            axis_coupled_helices0 = build_axis_coupled_helix_defs(
+                template_axis_defs_resolved,
+                template_move_defs_resolved,
+                helix_defs if helix_defs else None,
+            )
+            register_axis_coupling_overrides(
+                template_axis_defs_resolved,
+                template_move_defs_resolved,
+                helix_defs if helix_defs else None,
+            )
+        except ValueError as exc:
+            print("Error resolving base-template --axis_range / --axis_move definitions: %s" % exc, file=sys.stderr)
+            sys.exit(1)
 
     # Determine how many helices the input PDB appears to contain
     if helix_defs:
         helices0 = sorted(set(tuple(sorted(h)) for h in helix_defs))
+    elif axis_coupled_helices0 and set(chain_to_P_atoms0.keys()).issubset(
+        set().union(*(set(h) for h in axis_coupled_helices0))
+    ):
+        helices0 = sorted(set(axis_coupled_helices0))
     else:
         chain_to_helix0 = compute_chain_partner_map(chain_to_P_atoms0)
         helices0 = sorted(set(chain_to_helix0[ch] for ch in chain_to_helix0))
@@ -859,14 +947,50 @@ def main() -> None:
                 rec_list,
                 helices0,
                 exchange_specs,
-                helix_defs if helix_defs else None,
+                helix_defs if helix_defs else (axis_coupled_helices0 if axis_coupled_helices0 else None),
             )
         except Exception as exc:
             print("Error during helix replication: %s" % exc, file=sys.stderr)
             sys.exit(1)
         helix_defs_for_align = helix_defs_repl
     else:
-        helix_defs_for_align = helix_defs if helix_defs else None
+        helix_defs_for_align = helix_defs if helix_defs else (axis_coupled_helices0 if axis_coupled_helices0 else None)
+
+    _, _, chain_to_P_atoms_curr = build_nucleic_acid_maps(rec_list)
+    atom_chains_curr = sorted(
+        {atom.chainID for atom in rec_list if atom.recordName in ("ATOM", "HETATM")}
+    )
+    if replicate_active:
+        axis_range_defs_for_resolve = translate_axis_range_definitions_for_replication(
+            axis_range_defs_input,
+            chain_to_P_atoms0.keys(),
+            chain_to_P_atoms_curr.keys(),
+        )
+        axis_move_defs_for_resolve = translate_axis_range_definitions_for_replication(
+            axis_move_defs_input,
+            original_atom_chains0,
+            atom_chains_curr,
+        )
+    else:
+        axis_range_defs_for_resolve = axis_range_defs_input
+        axis_move_defs_for_resolve = axis_move_defs_input
+
+    try:
+        axis_range_defs_resolved = resolve_axis_range_definitions(
+            axis_range_defs_for_resolve,
+            chain_to_P_atoms_curr.keys(),
+            chain_to_P_atoms_curr,
+        )
+        axis_move_defs_resolved = resolve_axis_move_definitions(
+            axis_move_defs_for_resolve,
+            atom_chains_curr,
+        )
+        pair_axis_move_definitions(axis_range_defs_resolved, axis_move_defs_resolved)
+    except ValueError as exc:
+        print("Error resolving --axis_range / --axis_move definitions: %s" % exc, file=sys.stderr)
+        sys.exit(1)
+    set_helix_axis_range_definitions(axis_range_defs_resolved)
+    set_helix_axis_move_definitions(axis_move_defs_resolved)
 
     axis_parallel_flag = args.axis_parallel.lower() == 'y'
 

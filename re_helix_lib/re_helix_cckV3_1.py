@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-re_helix_cckV3.py
+re_helix_cckV3_1.py
 
 Closure-residual-based cyclic-constraint alignment for reciprocal-exchange
 helices, inspired by HolT Hunter. V3 keeps the post-alignment
@@ -8,7 +8,7 @@ twist_rod / twist_helix diagnostic report in which twist_helix is measured
 directly from reciprocal-exchange-site phosphate rotations around the helix
 axis.
 
-Compared with re_helix_ccgV3.py, this version:
+Compared with re_helix_ccgV3_1.py, this version:
 
   * keeps the existing replication, helix detection, tree / pairwise alignment,
     and reciprocal-exchange machinery from the current re_helix.py helper
@@ -25,14 +25,14 @@ Pipeline for cyclic components when --axis_parallel n
 -----------------------------------------------------
 1) Build a BFS spanning tree over the helix graph.
 2) Perform a base tree alignment in which each tree edge is aligned by
-   optimising only (d, theta, phi) with rho fixed at 0.
-3) For each tree edge, store the local phi axis and rho axis.
-4) Solve a continuous closure problem over per-tree-edge (phi_offset, rho)
+   optimising only (d, tau, phi) with beta fixed at 0.
+3) For each tree edge, store the local phi axis and beta axis.
+4) Solve a continuous closure problem over per-tree-edge (phi_offset, beta)
    variables:
       - primary target: explicit closure residual on cycle edges,
       - secondary ranking: geometry score on the whole component.
 5) By default, run a final geometry-based cyclic polish (from
-   re_helix_ccgV3.py) starting from the chosen closure basin. This
+   re_helix_ccgV3_1.py) starting from the chosen closure basin. This
    keeps the HolT-Hunter-like closure search, but finishes with the stronger
    global geometric residual that has been working better in practice.
 
@@ -78,7 +78,7 @@ import numpy as np
 from scipy.optimize import least_squares, root
 
 SOFTWARE_NAME = "re_helix_cck"
-SOFTWARE_VERSION = "V3"
+SOFTWARE_VERSION = "V3.1"
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +120,17 @@ alignmod = _load_module(
 HelixID = alignmod.HelixID
 parse_exchange_specs = alignmod.parse_exchange_specs
 parse_helix_definition_tokens = alignmod.parse_helix_definition_tokens
+parse_axis_range_specs = alignmod.parse_axis_range_specs
+parse_axis_move_specs = alignmod.parse_axis_move_specs
+pair_axis_move_definitions = alignmod.pair_axis_move_definitions
+resolve_axis_range_definitions = alignmod.resolve_axis_range_definitions
+resolve_axis_move_definitions = alignmod.resolve_axis_move_definitions
+translate_axis_range_definitions_for_replication = alignmod.translate_axis_range_definitions_for_replication
+build_axis_coupled_helix_defs = alignmod.build_axis_coupled_helix_defs
+register_axis_coupling_overrides = alignmod.register_axis_coupling_overrides
+apply_axis_coupling_to_chain_map = alignmod.apply_axis_coupling_to_chain_map
+set_helix_axis_range_definitions = alignmod.set_helix_axis_range_definitions
+set_helix_axis_move_definitions = alignmod.set_helix_axis_move_definitions
 build_nucleic_acid_maps = alignmod.build_nucleic_acid_maps
 compute_chain_partner_map = alignmod.compute_chain_partner_map
 build_chain_to_helix_from_defs = alignmod.build_chain_to_helix_from_defs
@@ -141,6 +152,7 @@ build_pair_objective = alignmod.build_pair_objective
 coordinate_descent = alignmod.coordinate_descent
 apply_transform_to_helix = alignmod.apply_transform_to_helix
 select_pairs_for_alignment = alignmod.select_pairs_for_alignment
+atom_moves_with_helix = alignmod.atom_moves_with_helix
 
 
 def _load_ccg_module():
@@ -153,7 +165,7 @@ def _load_ccg_module():
     try:
         return _load_module(
             "re_helix_ccg_mod",
-            ["re_helix_ccgV3.py"],
+            ["re_helix_ccgV3_1.py"],
         )
     except Exception:
         return None
@@ -352,10 +364,10 @@ def line_closure_vector(p1, d1, p2, d2, eps=1.0e-9):
 
 
 def unpack_exchange_spec_compat(spec):
-    """Return (pos1, pos2, kind, rho_deg_or_None) for V2/V3-style specs.
+    """Return (pos1, pos2, kind, beta_deg_or_None) for V2/V3-style specs.
 
     Older helper versions use (pos1, pos2, kind). Newer versions can
-    carry an alignment-only rho angle as (pos1, pos2, kind, rho_deg). This helper
+    carry an alignment-only beta angle as (pos1, pos2, kind, beta_deg). This helper
     keeps the cck layer compatible with either form.
     """
     if hasattr(alignmod, "unpack_exchange_spec"):
@@ -480,7 +492,7 @@ def _directed_edge_local_pattern(exchange_specs, chain_to_helix, h_from, h_to):
     pattern = []
 
     for spec in exchange_specs:
-        (c1, r1), (c2, r2), kind, _rho_deg = unpack_exchange_spec_compat(spec)
+        (c1, r1), (c2, r2), kind, _beta_deg = unpack_exchange_spec_compat(spec)
         hh1 = chain_to_helix.get(c1)
         hh2 = chain_to_helix.get(c2)
         if hh1 == h_from and hh2 == h_to:
@@ -548,7 +560,7 @@ def _collect_group_atom_arrays(rec_list, helix_id):
     for atom in rec_list:
         if atom.recordName not in ("ATOM", "HETATM"):
             continue
-        if atom.chainID not in chain_index:
+        if atom.chainID not in chain_index or not atom_moves_with_helix(atom, helix_key):
             continue
 
         key = (
@@ -581,6 +593,12 @@ def has_detected_symmetric_cycle(
         chain_to_helix = build_chain_to_helix_from_defs(explicit_helices, chain_to_P_atoms)
     else:
         chain_to_helix = compute_chain_partner_map(chain_to_P_atoms)
+    chain_to_helix = apply_axis_coupling_to_chain_map(
+        chain_to_helix,
+        alignmod.get_helix_axis_range_definitions(),
+        alignmod.get_helix_axis_move_definitions(),
+        chain_to_P_atoms,
+    )
 
     fix_helix = None
     if fix_chain is not None and fix_chain in chain_to_helix:
@@ -628,6 +646,12 @@ def enforce_detected_cyclic_symmetry(
         chain_to_helix = build_chain_to_helix_from_defs(explicit_helices, chain_to_P_atoms)
     else:
         chain_to_helix = compute_chain_partner_map(chain_to_P_atoms)
+    chain_to_helix = apply_axis_coupling_to_chain_map(
+        chain_to_helix,
+        alignmod.get_helix_axis_range_definitions(),
+        alignmod.get_helix_axis_move_definitions(),
+        chain_to_P_atoms,
+    )
 
     fix_helix = None
     if fix_chain is not None and fix_chain in chain_to_helix:
@@ -854,17 +878,17 @@ def pairwise_align_component_sequential(
         )
 
         if axis_parallel:
-            d_opt, theta_opt, phi_opt = best_params
-            rho_opt = 0.0
+            d_opt, tau_opt, phi_opt = best_params
+            beta_opt = 0.0
         else:
-            d_opt, theta_opt, phi_opt, rho_opt = best_params
+            d_opt, tau_opt, phi_opt, beta_opt = best_params
 
         sys.stderr.write(
-            "[re_helix_cck]   Pairwise optimised: d = %.3f Å, theta = %.2f°, phi = %.2f°" %
-            (d_opt, theta_opt * 180.0 / math.pi, phi_opt * 180.0 / math.pi)
+            "[re_helix_cck]   Pairwise optimised: d = %.3f Å, tau = %.2f°, phi = %.2f°" %
+            (d_opt, tau_opt * 180.0 / math.pi, phi_opt * 180.0 / math.pi)
         )
         if not axis_parallel:
-            sys.stderr.write(", rho = %.2f°" % (rho_opt * 180.0 / math.pi))
+            sys.stderr.write(", beta = %.2f°" % (beta_opt * 180.0 / math.pi))
         sys.stderr.write("; sum(dist^2) = %.3f.\n" % best_val)
 
         apply_transform_to_helix(
@@ -874,9 +898,9 @@ def pairwise_align_component_sequential(
             center_fixed,
             center_moving,
             d_opt,
-            theta_opt,
+            tau_opt,
             phi_opt,
-            rho_opt,
+            beta_opt,
             axis_parallel,
             anchor1,
         )
@@ -885,8 +909,8 @@ def pairwise_align_component_sequential(
 
 
 
-def compute_rho_axis(axis_dir, axis1_point, axis2_point, anchor1, d, theta, phi):
-    """Compute the rho rotation axis used by build_pair_objective/apply_transform_to_helix."""
+def compute_beta_axis(axis_dir, axis1_point, axis2_point, anchor1, d, tau, phi):
+    """Compute the beta rotation axis used by build_pair_objective/apply_transform_to_helix."""
     u = v_norm(axis_dir)
     C2_phi = rotate_around_line(axis2_point, axis1_point, u, phi)
     C2_phi_d = v_add(C2_phi, v_scale(u, d))
@@ -902,11 +926,11 @@ def compute_rho_axis(axis_dir, axis1_point, axis2_point, anchor1, d, theta, phi)
             base_vec = (1.0, 0.0, 0.0)
         else:
             base_vec = (0.0, 1.0, 0.0)
-        rho_axis_dir = v_norm(v_cross(u, base_vec))
+        beta_axis_dir = v_norm(v_cross(u, base_vec))
     else:
-        rho_axis_dir = v_scale(r_perp, 1.0 / r_len)
+        beta_axis_dir = v_scale(r_perp, 1.0 / r_len)
 
-    return anchor1, rho_axis_dir
+    return anchor1, beta_axis_dir
 
 
 
@@ -919,7 +943,7 @@ def pairwise_align_component_base_for_closure(
     order,
     parent,
 ):
-    """Base tree alignment for cyclic components: optimise only d/theta/phi with rho=0.
+    """Base tree alignment for cyclic components: optimise only d/tau/phi with beta=0.
 
     Returns per-edge information for the later closure solve.
     """
@@ -990,8 +1014,8 @@ def pairwise_align_component_base_for_closure(
             continue
 
         def objective3(params3):
-            d, theta, phi = params3
-            return objective4([d, theta, phi, 0.0])
+            d, tau, phi = params3
+            return objective4([d, tau, phi, 0.0])
 
         x0 = [d0, 0.0, 0.0]
         steps0 = [3.4, math.pi / 2.0, math.pi / 2.0]
@@ -1003,27 +1027,27 @@ def pairwise_align_component_base_for_closure(
             steps0,
             angle_indices=angle_indices,
         )
-        d_opt, theta_opt, phi_opt = best3
+        d_opt, tau_opt, phi_opt = best3
 
         sys.stderr.write(
-            "[re_helix_cck]   Base closure edge %s->%s: d = %.3f Å, theta = %.2f°, phi = %.2f°; sum(dist^2) = %.3f.\n"
+            "[re_helix_cck]   Base closure edge %s->%s: d = %.3f Å, tau = %.2f°, phi = %.2f°; sum(dist^2) = %.3f.\n"
             % (
                 helix_id_str(parent_h),
                 helix_id_str(child),
                 d_opt,
-                theta_opt * 180.0 / math.pi,
+                tau_opt * 180.0 / math.pi,
                 phi_opt * 180.0 / math.pi,
                 best_val,
             )
         )
 
-        rho_axis_point, rho_axis_dir = compute_rho_axis(
+        beta_axis_point, beta_axis_dir = compute_beta_axis(
             axis_dir,
             center_fixed,
             center_moving,
             anchor1,
             d_opt,
-            theta_opt,
+            tau_opt,
             phi_opt,
         )
 
@@ -1034,7 +1058,7 @@ def pairwise_align_component_base_for_closure(
             center_fixed,
             center_moving,
             d_opt,
-            theta_opt,
+            tau_opt,
             phi_opt,
             0.0,
             False,
@@ -1051,10 +1075,10 @@ def pairwise_align_component_base_for_closure(
             "axis2_point": np.array(center_moving, dtype=float),
             "anchor1": np.array(anchor1, dtype=float),
             "d": float(d_opt),
-            "theta": float(theta_opt),
+            "tau": float(tau_opt),
             "phi": float(phi_opt),
-            "rho_axis_point": np.array(rho_axis_point, dtype=float),
-            "rho_axis_dir": np.array(v_norm(rho_axis_dir), dtype=float),
+            "beta_axis_point": np.array(beta_axis_point, dtype=float),
+            "beta_axis_dir": np.array(v_norm(beta_axis_dir), dtype=float),
         }
 
     return edge_info
@@ -1092,12 +1116,12 @@ def build_component_solver_data(
         for atom in rec_list:
             if atom.recordName not in ("ATOM", "HETATM"):
                 continue
-            if atom.chainID in h:
+            if atom_moves_with_helix(atom, h):
                 base_atoms.append(atom)
         for atom in target_rec_list:
             if atom.recordName not in ("ATOM", "HETATM"):
                 continue
-            if atom.chainID in h:
+            if atom_moves_with_helix(atom, h):
                 target_atoms.append(atom)
         atoms_by_helix[h] = target_atoms
         base_coords_by_helix[h] = np.array([[a.x, a.y, a.z] for a in base_atoms], dtype=float)
@@ -1155,17 +1179,17 @@ def compute_helix_transforms(
     tree_edges,
     edge_info,
     phi_offsets,
-    rho_params,
+    beta_params,
 ):
-    """Compute final per-helix transforms from base geometry for given phi/rho vars.
+    """Compute final per-helix transforms from base geometry for given phi/beta vars.
 
     Each tree edge contributes an incremental phi rotation around the parent axis
-    and an incremental rho rotation around the rho axis. These are local to the
+    and an incremental beta rotation around the beta axis. These are local to the
     current parent/subtree frame and are composed recursively down the tree.
     """
     M = len(tree_edges)
-    if len(phi_offsets) != M or len(rho_params) != M:
-        raise ValueError("phi_offsets and rho_params must match tree_edges length.")
+    if len(phi_offsets) != M or len(beta_params) != M:
+        raise ValueError("phi_offsets and beta_params must match tree_edges length.")
 
     edge_to_index = dict((edge, i) for i, edge in enumerate(tree_edges))
 
@@ -1180,7 +1204,7 @@ def compute_helix_transforms(
         edge = (parent_h, child)
         idx = edge_to_index[edge]
         phi = float(phi_offsets[idx])
-        rho = float(rho_params[idx])
+        beta = float(beta_params[idx])
         info = edge_info[edge]
 
         R_parent, t_parent = transforms[parent_h]
@@ -1191,11 +1215,11 @@ def compute_helix_transforms(
         R_phi, t_phi = rotation_about_line(phi_axis_point, phi_axis_dir, phi)
         R_tmp, t_tmp = compose_transform(R_phi, t_phi, R_parent, t_parent)
 
-        # Rho-axis line, transformed by the state after phi.
-        rho_axis_point = apply_transform_point(R_tmp, t_tmp, info["rho_axis_point"])  # type: ignore[arg-type]
-        rho_axis_dir = apply_transform_dir(R_tmp, info["rho_axis_dir"])  # type: ignore[arg-type]
-        R_rho, t_rho = rotation_about_line(rho_axis_point, rho_axis_dir, rho)
-        R_child, t_child = compose_transform(R_rho, t_rho, R_tmp, t_tmp)
+        # Beta-axis line, transformed by the state after phi.
+        beta_axis_point = apply_transform_point(R_tmp, t_tmp, info["beta_axis_point"])  # type: ignore[arg-type]
+        beta_axis_dir = apply_transform_dir(R_tmp, info["beta_axis_dir"])  # type: ignore[arg-type]
+        R_beta, t_beta = rotation_about_line(beta_axis_point, beta_axis_dir, beta)
+        R_child, t_child = compose_transform(R_beta, t_beta, R_tmp, t_tmp)
 
         transforms[child] = (R_child, t_child)
 
@@ -1741,6 +1765,12 @@ def compute_twist_rod_helix_rows(
         chain_to_helix = build_chain_to_helix_from_defs(explicit_helices, chain_to_P_atoms)
     else:
         chain_to_helix = compute_chain_partner_map(chain_to_P_atoms)
+    chain_to_helix = apply_axis_coupling_to_chain_map(
+        chain_to_helix,
+        alignmod.get_helix_axis_range_definitions(),
+        alignmod.get_helix_axis_move_definitions(),
+        chain_to_P_atoms,
+    )
 
     helix_pair_data, adjacency = build_helix_pair_graph(exchange_specs, chain_to_helix)
     if not helix_pair_data:
@@ -1777,7 +1807,7 @@ def compute_twist_rod_helix_rows(
     sites_by_helix = {}  # type: Dict[HelixID, List[Dict[str, object]]]
 
     for spec_idx, spec in enumerate(exchange_specs, start=1):
-        (c1, r1), (c2, r2), kind, _rho_deg = unpack_exchange_spec_compat(spec)
+        (c1, r1), (c2, r2), kind, _beta_deg = unpack_exchange_spec_compat(spec)
         h1 = chain_to_helix.get(c1)
         h2 = chain_to_helix.get(c2)
         if h1 is None or h2 is None:
@@ -2004,7 +2034,7 @@ def write_twist_report_tsv(path, rows, notes, pairing):
         "rod_vector_source_2",
     ]
     with open(path, "w") as fout:
-        fout.write("# re_helix_cckV3 twist diagnostics\n")
+        fout.write("# re_helix_cckV3_1 twist diagnostics\n")
         fout.write("# pairing=%s\n" % pairing)
         fout.write("# twist_rod_mod_deg = rod-required phase between axis-to-axis co-perpendicular connector vectors around the helix axis, modulo 360.\n")
         fout.write("# twist_helix_mod_deg = direct phase between the two reciprocal-exchange-site P-atom radial vectors around the helix axis, modulo 360.\n")
@@ -2025,7 +2055,7 @@ def write_twist_report_tsv(path, rows, notes, pairing):
 
 
 def make_closure_seed_bank(num_tree_edges, max_root_attempts):
-    """Deterministic multi-start seeds for (phi_offsets, rho) variables.
+    """Deterministic multi-start seeds for (phi_offsets, beta) variables.
 
     This is intentionally not an exhaustive angle screen. It is a small,
     deterministic bank of root starts, in the spirit of HolT Hunter's multiple
@@ -2037,7 +2067,7 @@ def make_closure_seed_bank(num_tree_edges, max_root_attempts):
 
     seeds = []  # type: List[np.ndarray]
 
-    # sign patterns for rho across edges (limited but deterministic)
+    # sign patterns for beta across edges (limited but deterministic)
     patterns = []  # type: List[List[float]]
     max_patterns = min(1 << M, 8)
     for k in range(max_patterns):
@@ -2047,7 +2077,7 @@ def make_closure_seed_bank(num_tree_edges, max_root_attempts):
             pattern.append(sign)
         patterns.append(pattern)
 
-    rho_bank = [
+    beta_bank = [
         0.0,
         math.pi / 2.0,
         -math.pi / 2.0,
@@ -2071,22 +2101,22 @@ def make_closure_seed_bank(num_tree_edges, max_root_attempts):
     # zero seed first
     seeds.append(np.zeros(2 * M, dtype=float))
 
-    # rho-biased seeds
-    for amp in rho_bank[1:]:
+    # beta-biased seeds
+    for amp in beta_bank[1:]:
         for pat in patterns:
             phi = [0.0] * M
-            rho = [pat[i] * amp for i in range(M)]
-            seeds.append(np.array(phi + rho, dtype=float))
+            beta = [pat[i] * amp for i in range(M)]
+            seeds.append(np.array(phi + beta, dtype=float))
             if len(seeds) >= max_root_attempts:
                 return seeds[:max_root_attempts]
 
-    # mixed phi/rho seeds
+    # mixed phi/beta seeds
     for amp_phi in phi_bank[1:]:
-        for amp_rho in (math.pi / 2.0, -math.pi / 2.0):
+        for amp_beta in (math.pi / 2.0, -math.pi / 2.0):
             for pat in patterns:
                 phi = [pat[i] * amp_phi for i in range(M)]
-                rho = [pat[(i + 1) % len(pat)] * amp_rho for i in range(M)]
-                seeds.append(np.array(phi + rho, dtype=float))
+                beta = [pat[(i + 1) % len(pat)] * amp_beta for i in range(M)]
+                seeds.append(np.array(phi + beta, dtype=float))
                 if len(seeds) >= max_root_attempts:
                     return seeds[:max_root_attempts]
 
@@ -2124,6 +2154,12 @@ def refine_cyclic_components_closure(
         chain_to_helix = build_chain_to_helix_from_defs(explicit_helices, chain_to_P_atoms)
     else:
         chain_to_helix = compute_chain_partner_map(chain_to_P_atoms)
+    chain_to_helix = apply_axis_coupling_to_chain_map(
+        chain_to_helix,
+        alignmod.get_helix_axis_range_definitions(),
+        alignmod.get_helix_axis_move_definitions(),
+        chain_to_P_atoms,
+    )
 
     fix_helix = None  # type: Optional[HelixID]
     if fix_chain is not None and fix_chain in chain_to_helix:
@@ -2157,7 +2193,7 @@ def refine_cyclic_components_closure(
             + "\n"
         )
 
-        # Base DTP alignment with rho=0
+        # Base DTP alignment with beta=0
         edge_info = pairwise_align_component_base_for_closure(
             rec_list,
             comp,
@@ -2198,8 +2234,8 @@ def refine_cyclic_components_closure(
 
         def transforms_from_params(params):
             phi_vec = params[:M]
-            rho_vec = params[M:]
-            return compute_helix_transforms(order, parent, tree_edges, edge_info, phi_vec, rho_vec)
+            beta_vec = params[M:]
+            return compute_helix_transforms(order, parent, tree_edges, edge_info, phi_vec, beta_vec)
 
         def closure_residual(params):
             tr = transforms_from_params(params)
@@ -2352,7 +2388,8 @@ def main():
             "Examples:\n"
             "  (AB) (CD) 30A 8D d 13B 24C s\n"
             "  (ABMN) 30A 8D d 13B 24C s\n"
-            "  30A 8D d 13B 24C s"
+            "  30A 8D d 13B 24C s\n"
+            "  26A 9C 90 d     # fixed beta angle for one single-site helix pair"
         ),
     )
     parser.add_argument(
@@ -2379,7 +2416,8 @@ def main():
         help=(
             "If 'y' (default), helices are treated with the original tree alignment. "
             "If 'n', cyclic components are additionally refined with an explicit "
-            "closure solve inspired by HolT Hunter."
+            "closure solve inspired by HolT Hunter. Preferred angle names are "
+            "d/tau/phi/beta; legacy rho-angle examples are accepted as beta."
         ),
     )
     parser.add_argument(
@@ -2399,6 +2437,24 @@ def main():
             "Replicate the entire set of chains (same semantics as in re_helix.py). "
             "If the input PDB appears to contain exactly one helix component, "
             "replication is also enabled automatically."
+        ),
+    )
+    parser.add_argument(
+        "--axis_range",
+        action="append",
+        default=[],
+        help=(
+            "Chain/range definition for helical-axis estimation. Repeat as needed. "
+            "Examples: --axis_range A,B or --axis_range B26-B60,A1-A35."
+        ),
+    )
+    parser.add_argument(
+        "--axis_move",
+        action="append",
+        default=[],
+        help=(
+            "Additional chains or residue windows to move with the corresponding "
+            "--axis_range row, e.g. C,D or C1-C50,D."
         ),
     )
     parser.add_argument(
@@ -2478,7 +2534,7 @@ def main():
         default="y",
         help=(
             "If 'y' (default), run a final geometry-based cyclic polish using "
-            "re_helix_ccgV3.py after the closure solve. This fixes the "
+            "re_helix_ccgV3_1.py after the closure solve. This fixes the "
             "live-structure application bug from the earlier cck script and "
             "usually brings the result close to the better ccg geometry."
         ),
@@ -2541,6 +2597,13 @@ def main():
     args = parser.parse_args()
 
     alignmod.reset_helix_axis_overrides()
+    try:
+        axis_range_defs_input = parse_axis_range_specs(args.axis_range)
+        axis_move_defs_input = parse_axis_move_specs(args.axis_move)
+        pair_axis_move_definitions(axis_range_defs_input, axis_move_defs_input)
+    except ValueError as exc:
+        print("Error parsing --axis_range / --axis_move definitions: %s" % exc, file=sys.stderr)
+        sys.exit(1)
 
     # Determine base name for outputs
     if args.pdb_out_base is None:
@@ -2597,10 +2660,52 @@ def main():
     if not chain_to_P_atoms0:
         print("No P atoms found in input PDB; alignment cannot proceed.", file=sys.stderr)
         sys.exit(1)
+    original_atom_chains0 = sorted(
+        {atom.chainID for atom in rec_list if atom.recordName in ("ATOM", "HETATM")}
+    )
+
+    original_chain_lookup0 = {ch.upper(): ch for ch in original_atom_chains0}
+    template_axis_defs_input = []
+    template_move_defs_input = []
+    for axis_def, move_def in pair_axis_move_definitions(axis_range_defs_input, axis_move_defs_input):
+        row_chains = set(axis_def.keys()) | set(move_def.keys())
+        if row_chains and all(ch.upper() in original_chain_lookup0 for ch in row_chains):
+            template_axis_defs_input.append(axis_def)
+            template_move_defs_input.append(move_def)
+
+    axis_coupled_helices0 = []
+    if template_axis_defs_input:
+        try:
+            template_axis_defs_resolved = resolve_axis_range_definitions(
+                template_axis_defs_input,
+                chain_to_P_atoms0.keys(),
+                chain_to_P_atoms0,
+            )
+            template_move_defs_resolved = resolve_axis_move_definitions(
+                template_move_defs_input,
+                original_atom_chains0,
+            )
+            axis_coupled_helices0 = build_axis_coupled_helix_defs(
+                template_axis_defs_resolved,
+                template_move_defs_resolved,
+                helix_defs if helix_defs else None,
+            )
+            register_axis_coupling_overrides(
+                template_axis_defs_resolved,
+                template_move_defs_resolved,
+                helix_defs if helix_defs else None,
+            )
+        except ValueError as exc:
+            print("Error resolving base-template --axis_range / --axis_move definitions: %s" % exc, file=sys.stderr)
+            sys.exit(1)
 
     # Determine how many helices the input PDB appears to contain
     if helix_defs:
         helices0 = sorted(set(tuple(sorted(h)) for h in helix_defs))
+    elif axis_coupled_helices0 and set(chain_to_P_atoms0.keys()).issubset(
+        set().union(*(set(h) for h in axis_coupled_helices0))
+    ):
+        helices0 = sorted(set(axis_coupled_helices0))
     else:
         chain_to_helix0 = compute_chain_partner_map(chain_to_P_atoms0)
         helices0 = sorted(set(chain_to_helix0[ch] for ch in chain_to_helix0))
@@ -2614,16 +2719,54 @@ def main():
                 rec_list,
                 helices0,
                 exchange_specs,
-                helix_defs if helix_defs else None,
+                helix_defs if helix_defs else (axis_coupled_helices0 if axis_coupled_helices0 else None),
             )
         except Exception as exc:
             print("Error during helix replication: %s" % exc, file=sys.stderr)
             sys.exit(1)
         helix_defs_for_align = helix_defs_repl
     else:
-        helix_defs_for_align = helix_defs if helix_defs else None
+        helix_defs_for_align = helix_defs if helix_defs else (axis_coupled_helices0 if axis_coupled_helices0 else None)
+
+    _, _, chain_to_P_atoms_curr = build_nucleic_acid_maps(rec_list)
+    atom_chains_curr = sorted(
+        {atom.chainID for atom in rec_list if atom.recordName in ("ATOM", "HETATM")}
+    )
+    if replicate_active:
+        axis_range_defs_for_resolve = translate_axis_range_definitions_for_replication(
+            axis_range_defs_input,
+            chain_to_P_atoms0.keys(),
+            chain_to_P_atoms_curr.keys(),
+        )
+        axis_move_defs_for_resolve = translate_axis_range_definitions_for_replication(
+            axis_move_defs_input,
+            original_atom_chains0,
+            atom_chains_curr,
+        )
+    else:
+        axis_range_defs_for_resolve = axis_range_defs_input
+        axis_move_defs_for_resolve = axis_move_defs_input
+
+    try:
+        axis_range_defs_resolved = resolve_axis_range_definitions(
+            axis_range_defs_for_resolve,
+            chain_to_P_atoms_curr.keys(),
+            chain_to_P_atoms_curr,
+        )
+        axis_move_defs_resolved = resolve_axis_move_definitions(
+            axis_move_defs_for_resolve,
+            atom_chains_curr,
+        )
+        pair_axis_move_definitions(axis_range_defs_resolved, axis_move_defs_resolved)
+    except ValueError as exc:
+        print("Error resolving --axis_range / --axis_move definitions: %s" % exc, file=sys.stderr)
+        sys.exit(1)
+    set_helix_axis_range_definitions(axis_range_defs_resolved)
+    set_helix_axis_move_definitions(axis_move_defs_resolved)
 
     axis_parallel_flag = args.axis_parallel.lower() == 'y'
+    if not axis_parallel_flag:
+        sys.stderr.write("[re_helix_cck] %s\n" % alignmod.ANGLE_DEFINITIONS_MESSAGE)
 
     # Detect whether the user-supplied terminal pattern itself indicates a
     # replicated symmetric cycle (for example C2-F21, F2-I21, I2-C21). If so,
@@ -2675,6 +2818,12 @@ def main():
                 + ", ".join(helix_id_str(h) for h in seen_helices)
                 + "\n"
             )
+        chain_to_helix = apply_axis_coupling_to_chain_map(
+            chain_to_helix,
+            alignmod.get_helix_axis_range_definitions(),
+            alignmod.get_helix_axis_move_definitions(),
+            chain_to_P_atoms,
+        )
 
         fix_helix = None  # type: Optional[HelixID]
         if args.fix_chain is not None:
@@ -2765,19 +2914,27 @@ def main():
         ccgmod = _load_ccg_module()
         if ccgmod is None:
             sys.stderr.write(
-                "[re_helix_cck] Warning: re_helix_ccgV3.py was not found "
+                "[re_helix_cck] Warning: re_helix_ccgV3_1.py was not found "
                 "or could not be loaded; skipping final geometry polish.\n"
             )
         else:
             try:
                 if hasattr(ccgmod, "alignmod") and hasattr(ccgmod.alignmod, "set_helix_axis_overrides"):
                     ccgmod.alignmod.set_helix_axis_overrides(alignmod.get_helix_axis_overrides())
+                if hasattr(ccgmod, "alignmod") and hasattr(ccgmod.alignmod, "set_helix_axis_range_definitions"):
+                    ccgmod.alignmod.set_helix_axis_range_definitions(alignmod.get_helix_axis_range_definitions())
+                if hasattr(ccgmod, "alignmod") and hasattr(ccgmod.alignmod, "set_helix_axis_move_definitions"):
+                    ccgmod.alignmod.set_helix_axis_move_definitions(alignmod.get_helix_axis_move_definitions())
+                if hasattr(ccgmod, "alignmod") and hasattr(ccgmod.alignmod, "set_helix_axis_range_overrides"):
+                    ccgmod.alignmod.set_helix_axis_range_overrides(alignmod.get_helix_axis_range_overrides())
+                if hasattr(ccgmod, "alignmod") and hasattr(ccgmod.alignmod, "set_helix_move_selections"):
+                    ccgmod.alignmod.set_helix_move_selections(alignmod.get_helix_move_selections())
                 if symmetric_cycle_requested and args.geom_polish.lower() != 'y':
                     sys.stderr.write(
                         "[re_helix_cck] Symmetric terminal cycle detected; running geometry-based cyclic polish even though --geom_polish n was requested.\n"
                     )
                 sys.stderr.write(
-                    "[re_helix_cck] Running final geometry-based cyclic polish from re_helix_ccgV3.py.\n"
+                    "[re_helix_cck] Running final geometry-based cyclic polish from re_helix_ccgV3_1.py.\n"
                 )
                 ccgmod.refine_cyclic_components_geometry(
                     rec_list,

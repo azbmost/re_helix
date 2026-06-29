@@ -840,6 +840,56 @@ def read_x33_residues(
     return residues
 
 
+def linker_p_o3_endpoint_for_link(
+    link: LinkRecord,
+    linker_resname: str,
+) -> Optional[Tuple[Tuple[str, int], Tuple[str, int, str]]]:
+    """Return (linker residue key, O3' ligand key) for an explicit linker P--O3' LINK."""
+    linker_resname_upper = linker_resname.strip().upper()
+    a1, a2 = link_endpoint_refs(link)
+
+    if (
+        a1.res_name.strip().upper() == linker_resname_upper
+        and is_phosphorus_name(a1.atom_name)
+        and is_o3_name(a2.atom_name)
+    ):
+        return (a1.chain_id, a1.res_seq), a2.key()
+
+    if (
+        a2.res_name.strip().upper() == linker_resname_upper
+        and is_phosphorus_name(a2.atom_name)
+        and is_o3_name(a1.atom_name)
+    ):
+        return (a2.chain_id, a2.res_seq), a1.key()
+
+    return None
+
+
+def detect_3to3_linker_residues(
+    links: List[LinkRecord],
+    linker_residues: Dict[Tuple[str, int], Dict[str, AtomRef]],
+    linker_resname: str = DEFAULT_LINKER_RESNAME,
+) -> Set[Tuple[str, int]]:
+    """Return linker residues whose P atom is LINKed to two distinct O3' atoms."""
+    linker_resname = normalize_linker_resname(linker_resname)
+    o3_ligands_by_linker: Dict[Tuple[str, int], Set[Tuple[str, int, str]]] = {}
+
+    for link in links:
+        endpoint = linker_p_o3_endpoint_for_link(link, linker_resname)
+        if endpoint is None:
+            continue
+        linker_key, o3_key = endpoint
+        if linker_key not in linker_residues:
+            continue
+        o3_ligands_by_linker.setdefault(linker_key, set()).add(o3_key)
+
+    return {
+        linker_key
+        for linker_key, ligand_keys in o3_ligands_by_linker.items()
+        if len(ligand_keys) >= 2
+    }
+
+
 def angle_key_for_atoms(center_p: AtomRef, ligand_1: AtomRef, ligand_2: AtomRef):
     """Return the same canonical angle key used by build_phosphate_angle_lines()."""
     sorted_ligand_keys = tuple(sorted((ligand_1.key(), ligand_2.key())))
@@ -865,6 +915,7 @@ def build_x33_internal_restraint_lines(
     p_op_distance: float = X33_P_OP_DISTANCE,
     op_p_op_angle: float = DEFAULT_NONBRIDGING_ANGLE,
     linker_resname: str = DEFAULT_LINKER_RESNAME,
+    allowed_residues: Optional[Set[Tuple[str, int]]] = None,
 ) -> Tuple[List[str], List[str], Set[Tuple[Tuple[str, int, str], Tuple[Tuple[str, int, str], Tuple[str, int, str]]]]]:
     """Build internal P-OP1/P-OP2 bond and OP1-P-OP2 angle restraints.
 
@@ -874,6 +925,12 @@ def build_x33_internal_restraint_lines(
     """
     linker_resname = normalize_linker_resname(linker_resname)
     x33_residues = read_x33_residues(pdb_path, linker_resname=linker_resname)
+    if allowed_residues is not None:
+        x33_residues = {
+            key: atoms
+            for key, atoms in x33_residues.items()
+            if key in allowed_residues
+        }
     lines: List[str] = []
     reports: List[str] = []
     written_angle_keys: Set[Tuple[Tuple[str, int, str], Tuple[Tuple[str, int, str], Tuple[str, int, str]]]] = set()
@@ -1102,6 +1159,7 @@ def build_params_text(
     skip_phenix_builtin_angles: bool = True,
     x33_p_op_distance: float = X33_P_OP_DISTANCE,
     linker_resname: str = DEFAULT_LINKER_RESNAME,
+    linker_3to3_residues: Optional[Set[Tuple[str, int]]] = None,
     return_reports: bool = False,
 ):
     """
@@ -1109,7 +1167,16 @@ def build_params_text(
     """
     linker_resname = normalize_linker_resname(linker_resname)
     lines: List[str] = []
-    has_x33_residues = bool(read_x33_residues(pdb_path, linker_resname=linker_resname))
+    linker_residues = read_x33_residues(pdb_path, linker_resname=linker_resname)
+    if linker_3to3_residues is None:
+        linker_3to3_residues = detect_3to3_linker_residues(
+            links,
+            linker_residues,
+            linker_resname=linker_resname,
+        )
+    else:
+        linker_3to3_residues = set(linker_3to3_residues)
+    has_3to3_linker_residues = bool(linker_3to3_residues)
 
     lines.append("# geometry_restraints generated from LINK records")
     lines.append(f"# source PDB: {pdb_path.name}")
@@ -1122,9 +1189,9 @@ def build_params_text(
     lines.append("# The numeric distance in the LINK record (if any) is ignored;")
     lines.append("# ideal distances are guessed from atom types (P-O, C-O, C-N, etc.).")
     lines.append("# Phosphate non-bridging oxygen names follow the input PDB: OP1/OP2 or O1P/O2P.")
-    if has_x33_residues:
+    if has_3to3_linker_residues:
         lines.append(
-            f"# Standalone {linker_resname} linker residues receive explicit internal P-OP1/P-OP2 bond and OP1-P-OP2 angle restraints."
+            f"# Standalone {linker_resname} 3'-3' linker residues receive explicit internal P-OP1/P-OP2 bond and OP1-P-OP2 angle restraints."
         )
     lines.append("")
     lines.append("geometry_restraints {")
@@ -1165,6 +1232,7 @@ def build_params_text(
         p_op_distance=x33_p_op_distance,
         op_p_op_angle=nonbridging_angle,
         linker_resname=linker_resname,
+        allowed_residues=linker_3to3_residues,
     )
     lines.extend(x33_lines)
 
@@ -1201,13 +1269,11 @@ Recommended command:
 phenix.geometry_minimization \\
   model_rex.pdb \\
   model_rex_links.params \\
-  model_rex_junctions.params \\
-  X33_phenix_atomtypes.cif \\
-  X33_safe_interpretation.params
+  model_rex_junctions.params
 
 Use exactly one movement-selection file. Do not combine min_P_C5.params or min.params with *_junctions.params unless you deliberately want order-dependent selection behavior. If you disable *_junctions.params, use min_P_C5.params or a carefully prepared min.params instead.
 
-The linker atomtypes CIF is needed when the standalone 3'-3' linker residue is nonstandard, such as X33. The safe interpretation params file should be listed last and avoids permissive automatic X33-P links. The default link_distance_cutoff here is 6.5 A.
+The linker atomtypes CIF is needed only when a standalone nonstandard 3'-3' linker residue, such as X33, is detected from two explicit P--O3' LINK records. When generated, list the safe interpretation params file last; it avoids permissive automatic X33-P links. The default link_distance_cutoff here is 6.5 A.
 """
 
 
@@ -1407,18 +1473,24 @@ def generate_phenix_restraint_outputs(args) -> Dict[str, object]:
 
     links = read_link_records(pdb_path)
     linker_residues = read_x33_residues(pdb_path, linker_resname=linker_resname)
+    linker_3to3_residues = detect_3to3_linker_residues(
+        links,
+        linker_residues,
+        linker_resname=linker_resname,
+    )
     junction_residues = read_junction_residues_from_remarks(pdb_path)
 
     reports: List[str] = [
         f"Found {len(links)} LINK record(s).",
         f"Found {len(linker_residues)} standalone {linker_resname} linker residue(s).",
+        f"Found {len(linker_3to3_residues)} standalone {linker_resname} residue(s) with 3'-3' LINK geometry.",
         f"Found {len(junction_residues)} RE_SCRIPT JUNCTION residue label(s).",
     ]
     links_written: Optional[Path] = None
     junctions_written: Optional[Path] = None
     support_files: List[Path] = []
 
-    if links or linker_residues:
+    if links or linker_3to3_residues:
         params_text, angle_reports = build_params_text(
             pdb_path,
             links,
@@ -1430,6 +1502,7 @@ def generate_phenix_restraint_outputs(args) -> Dict[str, object]:
             skip_phenix_builtin_angles=not args.include_phenix_builtin_angles,
             x33_p_op_distance=args.x33_p_op_distance,
             linker_resname=linker_resname,
+            linker_3to3_residues=linker_3to3_residues,
             return_reports=True,
         )
         write_text_file(params_out, params_text)
@@ -1437,7 +1510,10 @@ def generate_phenix_restraint_outputs(args) -> Dict[str, object]:
         reports.extend(angle_reports)
         reports.append(f"Wrote geometry_restraints parameters to: {params_out}")
     else:
-        reports.append(f"No LINK records or {linker_resname} residues found; no _links.params file was written.")
+        reports.append(
+            f"No LINK records or 3'-3' {linker_resname} linker phosphate linkages found; "
+            "no _links.params file was written."
+        )
 
     if junction_residues and generate_junctions:
         junction_text, junction_reports = build_junction_selection_params_text(
@@ -1458,7 +1534,7 @@ def generate_phenix_restraint_outputs(args) -> Dict[str, object]:
     else:
         reports.append("No RE_SCRIPT JUNCTION REMARKs found; no _junctions.params file was written.")
 
-    if generate_support:
+    if generate_support and linker_3to3_residues:
         written_support, support_reports = write_linker_support_files(
             support_out_dir,
             linker_resname=linker_resname,
@@ -1466,6 +1542,11 @@ def generate_phenix_restraint_outputs(args) -> Dict[str, object]:
         )
         support_files.extend(written_support)
         reports.extend(support_reports)
+    elif generate_support:
+        reports.append(
+            "Skipped linker support CIF/safe-interpretation file generation because "
+            f"no 3'-3' {linker_resname} linker phosphate linkage was detected."
+        )
     else:
         reports.append("Skipped linker support CIF/safe-interpretation file generation.")
 
@@ -1490,6 +1571,7 @@ def generate_phenix_restraint_outputs(args) -> Dict[str, object]:
     return {
         "pdb_path": pdb_path,
         "linker_resname": linker_resname,
+        "linker_3to3_residues": linker_3to3_residues,
         "links_out": links_written,
         "junctions_out": junctions_written,
         "support_files": support_files,

@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from reciprocal-exchange-style P-atom pairs and then applies reciprocal exchanges to the aligned structure. It can also run reciprocal exchange only, without alignment.
 
-Current version: V3.16
+Current version: V3.17
 
 ## Contents
 
@@ -210,7 +210,7 @@ Useful Generate Lattice options:
 
 ## Get Phenix Restraints Tool
 
-The bundled Get Phenix Restraints tool is based on `link_to_geometry_restraintsV4.py`. It converts PDB `LINK` records into a `*_links.params` file containing Phenix `geometry_restraints.edits` bond restraints and phosphate-centered angle restraints. For standalone 3'-to-3' linker phosphate residues, it also writes internal P-OP1/P-OP2 bond and OP1-P-OP2 angle restraints.
+The bundled Get Phenix Restraints tool is based on `link_to_geometry_restraintsV4.py`. It converts PDB `LINK` records into a `*_links.params` file containing Phenix `geometry_restraints.edits` bond restraints and phosphate-centered angle restraints. For standalone 3'-to-3' linker phosphate residues detected from two explicit P--O3' LINK records, it also writes internal P-OP1/P-OP2 bond and OP1-P-OP2 angle restraints.
 
 Open its GUI directly:
 
@@ -224,7 +224,7 @@ Run it from the command line:
 python3 re_helix_lib/get_phenix_restraints.py model_rex.pdb --output-base model_rex
 ```
 
-By default, this writes `model_rex_links.params`, `model_rex_junctions.params` when `REMARK 950 RE_SCRIPT JUNCTION` lines are present, and nonstandard-linker support files such as `X33_phenix_atomtypes.cif` and `X33_safe_interpretation.params`.
+By default, this writes `model_rex_links.params` when LINK records are present, `model_rex_junctions.params` when `REMARK 950 RE_SCRIPT JUNCTION` lines are present, and nonstandard-linker support files such as `X33_phenix_atomtypes.cif` and `X33_safe_interpretation.params` only when a true standalone 3'-to-3' linker phosphate is detected.
 
 Recommended Phenix command:
 
@@ -232,10 +232,10 @@ Recommended Phenix command:
 phenix.geometry_minimization \
   model_rex.pdb \
   model_rex_links.params \
-  model_rex_junctions.params \
-  X33_phenix_atomtypes.cif \
-  X33_safe_interpretation.params
+  model_rex_junctions.params
 ```
+
+If X33 support files are generated, the suggested command printed by the tool appends `X33_phenix_atomtypes.cif` and then `X33_safe_interpretation.params`.
 
 Useful Get Phenix Restraints options:
 
@@ -280,11 +280,13 @@ Accepted kinds:
 - `s` or `single`
 - `b` or `bowtie`
 
-For alignment mode, a single-site inter-helix pair can also include a fixed rho angle when `--axis_parallel n` is used:
+For alignment mode, a single-site inter-helix pair can also include a fixed beta angle when `--axis_parallel n` is used:
 
 ```text
-<pos1> <pos2> <rho_deg> <kind>
+<pos1> <pos2> <beta_deg> <kind>
 ```
+
+Legacy examples may call this optional field `rho_deg`; it is accepted as an alias for `beta_deg`.
 
 Example:
 
@@ -299,8 +301,9 @@ python3 re_helix.py input.pdb '(AB)' '(CD)' 26A 9C 90 d --axis_parallel n -o ang
 - `-v, --version`: show the app version and exit.
 - `--re_only` or `--re-only`: apply reciprocal exchange only and write `<base>_rex.pdb`.
 - `--axis_dist 22.0`: target helix-axis distance in angstroms during alignment.
-- `--axis_parallel y|n`: keep axes parallel (`y`) or allow a rho tilt (`n`).
-- `--axis_range B26-B60,A1-A35`: define residue windows for helical-axis estimation. Repeat as needed.
+- `--axis_parallel y|n`: keep axes parallel (`y`) or allow a beta interhelical tilt (`n`). Angle terminology is `tau` = axial twist/spin of the moving helix, `phi` = orbital azimuth around the fixed helix, `beta` = interhelical tilt/bend, and `d` = axial slide.
+- `--axis_range B26-B60,A1-A35` or `--axis_range A,B`: define residue windows or whole chains for helical-axis estimation. Bare chain letters include the whole chain's P atoms in the axis fit. Repeat as needed.
+- `--axis_move C,D` or `--axis_move C1-C50,D`: move additional whole chains or residue windows with the corresponding `--axis_range` row. For example, `--axis_range A,B --axis_move C` fits the axis from A/B and moves C with that axis, avoiding triplex stdin prompts.
 - `--fix A`: keep the helix containing chain `A` fixed during alignment.
 - `--replicate`: replicate the full input chain set before alignment or RE-only processing.
 - `--cir_shift 8`: choose the residue shift used when writing circular reciprocal-exchange strands.

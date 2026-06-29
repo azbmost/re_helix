@@ -22,7 +22,7 @@ HELP_BUTTON_ACTIVE_BG = "#b8e3ff"
 METHODS = {
     "ccg": {
         "label": "CCG",
-        "script": "re_helix_ccgV3.py",
+        "script": "re_helix_ccgV3_1.py",
         "help": (
             "CCG uses a weighted global geometric least-squares residual as the "
             "primary cyclic objective. It starts from the regular re_helix tree "
@@ -32,10 +32,10 @@ METHODS = {
     },
     "cck": {
         "label": "CCK",
-        "script": "re_helix_cckV3.py",
+        "script": "re_helix_cckV3_1.py",
         "help": (
             "CCK uses an explicit closure residual on cycle edges as the primary "
-            "objective. It builds a BFS tree, solves per-tree-edge phi_offset/rho "
+            "objective. It builds a BFS tree, solves per-tree-edge phi_offset/beta "
             "variables with scipy.root when square and least_squares otherwise, "
             "then ranks by closure first and geometry second. It can also run the "
             "CCG polish and write the twist diagnostic TSV."
@@ -53,7 +53,7 @@ def _shlex_join(cmd: list[str]) -> str:
 class CyclicAlignmentLauncher:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("re_helix cyclic alignment V3")
+        self.root.title("re_helix cyclic alignment V3.1")
         self.root.geometry("1040x650")
         self.root.minsize(880, 520)
 
@@ -68,6 +68,8 @@ class CyclicAlignmentLauncher:
         self.fix_var = tk.StringVar()
         self.replicate_var = tk.BooleanVar(value=False)
         self.cir_shift_var = tk.StringVar(value="8")
+        self.axis_range_var = tk.StringVar()
+        self.axis_move_var = tk.StringVar()
         self.w_pp_var = tk.StringVar(value="1.0")
         self.w_line_var = tk.StringVar(value="1.0")
         self.w_axis_var = tk.StringVar(value="10000")
@@ -163,9 +165,27 @@ class CyclicAlignmentLauncher:
         self._inline_entry(form, 3, 3, "w_pp", self.w_pp_var, help_text="Weight for phosphate-pair distance residuals or scores.", width=8)
         self._inline_entry(form, 3, 6, "w_line", self.w_line_var, help_text="Weight for line-topology residuals or scores.", width=8)
         self._inline_entry(form, 3, 9, "w_axis", self.w_axis_var, help_text="Weight for target axis-distance mismatch.", width=9)
-        self._entry_row(
+        self._inline_entry(
             form,
             4,
+            0,
+            "axis defining",
+            self.axis_range_var,
+            help_text="Optional axis definition such as A,B or B26-B60,A1-A35.",
+            width=22,
+        )
+        self._inline_entry(
+            form,
+            4,
+            4,
+            "move with axis",
+            self.axis_move_var,
+            help_text="Optional payload moved with the axis definition, such as C,D or C1-C50,D.",
+            width=22,
+        )
+        self._entry_row(
+            form,
+            5,
             "extra args",
             self.extra_args_var,
             help_text="Optional raw command-line arguments appended after the launcher-generated options.",
@@ -382,6 +402,14 @@ class CyclicAlignmentLauncher:
         if self.replicate_var.get():
             cmd.append("--replicate")
         self._add_option(cmd, "--cir_shift", self.cir_shift_var.get())
+        axis_range = self.axis_range_var.get().strip()
+        axis_move = self.axis_move_var.get().strip()
+        if axis_move and not axis_range:
+            raise ValueError("move with axis requires an axis defining value.")
+        if axis_range:
+            cmd.extend(["--axis_range", axis_range])
+            if axis_move:
+                cmd.extend(["--axis_move", axis_move])
         self._add_option(cmd, "--w_pp", self.w_pp_var.get())
         self._add_option(cmd, "--w_line", self.w_line_var.get())
         self._add_option(cmd, "--w_axis", self.w_axis_var.get())

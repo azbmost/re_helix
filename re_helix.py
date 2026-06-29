@@ -2,6 +2,17 @@
 """
 re_helix.py
 
+V3.17 update (2026-06-28):
+- Allow --axis_range terms to be whole-chain letters such as A,B in addition
+  to residue windows such as A1-A35,B60-B26.
+- Add paired --axis_move definitions so additional whole chains or residue
+  windows can move with a user-defined axis, avoiding triplex stdin prompts
+  and supporting broader axis-coupled payloads.
+- Rename alignment-angle terminology: theta is now tau, and rho is now beta.
+  Legacy theta/rho wording is still accepted where it affects existing input
+  syntax or imported helper compatibility.
+- Bump the re_helix app version to V3.17.
+
 V3.16 update (2026-06-26):
 - Add Get Phenix Restraints to the GUI Other tools area. The bundled
   re_helix_lib/get_phenix_restraints.py tool generates Phenix LINK geometry
@@ -70,12 +81,13 @@ V3.6 update (2026-06-16):
 - Add -v / --version to print the app version from the command line.
 
 V3.5 update (2026-06-14):
-- Add optional fixed rho-angle syntax for single-site inter-helix reciprocal
-  exchanges: <pos1> <pos2> <rho_deg> <kind>, e.g. 26A 9C 90 d.
+- Add optional fixed beta-angle syntax for single-site inter-helix reciprocal
+  exchanges: <pos1> <pos2> <beta_deg> <kind>, e.g. 26A 9C 90 d.
+  This was originally documented as the legacy rho-angle syntax.
   When exactly one reciprocal-exchange site connects a helix pair and
-  --axis_parallel n is used, rho is held at the requested angle while
-  d/theta/phi are optimised.  If the same helix pair has more than one
-  exchange site, or if --axis_parallel y is used, the fixed-rho definition
+  --axis_parallel n is used, beta is held at the requested angle while
+  d/tau/phi are optimised.  If the same helix pair has more than one
+  exchange site, or if --axis_parallel y is used, the fixed-beta definition
   is ignored with a warning.
 - This update helps with generating junctions with controlled interhelical
   angles.
@@ -152,13 +164,13 @@ Highlights
     * PDB file with nucleic-acid strands.
     * Reciprocal-exchange-style specification (same as reciprocal_exchange_pdbV3_3.py),
       optionally preceded by explicit helix definitions.  Each operation can
-      also include an optional rho angle before the kind, e.g. 26A 9C 90 d.
+      also include an optional beta angle before the kind, e.g. 26A 9C 90 d.
       The angle is used only for a single-site helix pair when
       --axis_parallel n is selected; it is otherwise ignored with a warning.
 
           (AB) (CD) 30A 8D d 13B 24C s ...
           (ABMN) 30A 8D d ...
-          26A 9C 90 d      # optional fixed rho angle for a single-site pair
+          26A 9C 90 d      # optional fixed beta angle for a single-site pair
 
       (AB) means chains A and B form one helix group; (ABMN) means chains A, B,
       M, and N form a single rigid helix group. If any such tokens are present,
@@ -217,25 +229,25 @@ Highlights
 
       If --axis_parallel y (default):
         - Helices remain parallel.
-        - Optimise parameters [d, theta, phi]:
+        - Optimise parameters [d, tau, phi]:
              d     : slide helix 2 along u
-             theta : rotate helix 2 around its own axis
+             tau   : rotate helix 2 around its own axis
              phi   : rotate helix 2 around helix 1's axis
 
       If --axis_parallel n:
         - Additionally allow helices to tilt (become non-parallel).
-        - Optimise parameters [d, theta, phi, rho], where:
-             rho   : rotate helix 2 around a line L_rho that:
+        - Optimise parameters [d, tau, phi, beta], where:
+             beta  : rotate helix 2 around a line L_beta that:
                        - is perpendicular to the (initial) common axis direction,
                        - is constructed from the selected P pair(s) on helix 1
                          (see below),
                        - intersects helix 2's axis at the nearest point.
         - For a helix pair with exactly one reciprocal-exchange site, the
-          optional syntax <pos1> <pos2> <rho_deg> <kind> fixes rho to that
-          user-defined angle while d/theta/phi are optimised.  This helps
+          optional syntax <pos1> <pos2> <beta_deg> <kind> fixes beta to that
+          user-defined angle while d/tau/phi are optimised.  This helps
           generate junctions with controlled interhelical angles.
 
-        Construction of L_rho:
+        Construction of L_beta:
           * Let u be the common axis direction.
           * For the selected P pair(s), take the helix-1 P coordinates.
             With two selected pairs these are the two extremes along u; with
@@ -247,7 +259,7 @@ Highlights
           * The point on helix 2’s axis nearest to anchor1 is:
                 C2_base = C2_phi_d + ((anchor1 - C2_phi_d)·u) u
           * r_perp = C2_base - anchor1 is perpendicular to u.
-          * L_rho is the line through anchor1 with direction r_perp.
+          * L_beta is the line through anchor1 with direction r_perp.
 
 - Helix graph:
     * Build a graph where nodes are helix groups and edges indicate at least
@@ -294,10 +306,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.16"
+SOFTWARE_VERSION = "V3.17"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V3.16: AZBMOST Package Module #2 - "
+    "re_helix V3.17: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -396,50 +408,84 @@ def normalize_kind(kind_token: str) -> str:
 
 ExchangeSpec = Tuple[Tuple[str, int], Tuple[str, int], str, Optional[float]]
 
+ANGLE_DEFINITIONS_MESSAGE = (
+    "Angle definitions: tau = axial twist/spin of moving helix; "
+    "phi = orbital azimuth around fixed helix; "
+    "beta = interhelical tilt/bend; d = axial slide."
+)
+_LEGACY_RHO_ALIAS_NOTE_PRINTED = False
 
-def parse_rho_angle_token(token: str) -> float:
-    """Parse an optional fixed rho angle token, in degrees."""
+
+def write_angle_definitions_once(prefix: str = "[re_helix]") -> None:
+    sys.stderr.write(f"{prefix} {ANGLE_DEFINITIONS_MESSAGE}\n")
+
+
+def note_legacy_rho_alias_once(prefix: str = "[re_helix]") -> None:
+    global _LEGACY_RHO_ALIAS_NOTE_PRINTED
+    if _LEGACY_RHO_ALIAS_NOTE_PRINTED:
+        return
+    _LEGACY_RHO_ALIAS_NOTE_PRINTED = True
+    sys.stderr.write(
+        f"{prefix} Note: the optional numeric angle field formerly documented as rho "
+        "is now beta; interpreting it as beta.\n"
+    )
+
+
+def parse_beta_angle_token(token: str) -> float:
+    """Parse an optional fixed beta angle token, in degrees."""
     try:
         value = float(token.strip())
     except ValueError as exc:
         raise ValueError(
-            f"Invalid optional rho angle '{token}': expected a numeric degree value "
+            f"Invalid optional beta angle '{token}': expected a numeric degree value "
             f"before the exchange kind, e.g. '26A 9C 90 d'."
         ) from exc
     if not math.isfinite(value):
         raise ValueError(
-            f"Invalid optional rho angle '{token}': expected a finite numeric degree value."
+            f"Invalid optional beta angle '{token}': expected a finite numeric degree value."
         )
     return value
 
 
+def parse_rho_angle_token(token: str) -> float:
+    """Legacy alias for parse_beta_angle_token()."""
+    note_legacy_rho_alias_once()
+    return parse_beta_angle_token(token)
+
+
 def unpack_exchange_spec(spec) -> ExchangeSpec:
-    """Return (pos1, pos2, kind, rho_deg_or_None) for V3.4/V3.5-style specs."""
+    """Return (pos1, pos2, kind, beta_deg_or_None) for V3.4/V3.5-style specs."""
     if len(spec) == 3:
         pos1, pos2, kind = spec
         return pos1, pos2, kind, None
     if len(spec) == 4:
-        pos1, pos2, kind, rho_deg = spec
-        return pos1, pos2, kind, rho_deg
+        pos1, pos2, kind, beta_deg = spec
+        return pos1, pos2, kind, beta_deg
     raise ValueError(f"Invalid exchange spec record with {len(spec)} fields: {spec!r}")
 
 
-def exchange_spec_without_rho(spec) -> Tuple[Tuple[str, int], Tuple[str, int], str]:
-    """Return the reciprocal-exchange part of a spec, dropping alignment-only rho metadata."""
-    pos1, pos2, kind, _rho_deg = unpack_exchange_spec(spec)
+def exchange_spec_without_beta(spec) -> Tuple[Tuple[str, int], Tuple[str, int], str]:
+    """Return the reciprocal-exchange part of a spec, dropping alignment-only beta metadata."""
+    pos1, pos2, kind, _beta_deg = unpack_exchange_spec(spec)
     return pos1, pos2, kind
+
+
+def exchange_spec_without_rho(spec) -> Tuple[Tuple[str, int], Tuple[str, int], str]:
+    """Legacy alias for exchange_spec_without_beta()."""
+    note_legacy_rho_alias_once()
+    return exchange_spec_without_beta(spec)
 
 
 def parse_exchange_specs(
     tokens: List[str],
 ) -> List[ExchangeSpec]:
-    """Parse exchange specs into ((chain1,res1),(chain2,res2),kind,rho_deg).
+    """Parse exchange specs into ((chain1,res1),(chain2,res2),kind,beta_deg).
 
     Accepted per-operation formats:
         <pos1> <pos2> <kind>
-        <pos1> <pos2> <rho_deg> <kind>
+        <pos1> <pos2> <beta_deg> <kind>
 
-    The optional rho angle is alignment-only metadata.  It is used only for
+    The optional beta angle is alignment-only metadata.  It is used only for
     single-site helix pairs under --axis_parallel n, and is ignored by the
     reciprocal-exchange topology layer.
     """
@@ -452,7 +498,7 @@ def parse_exchange_specs(
         if i + 2 >= len(tokens):
             raise ValueError(
                 "Incomplete exchange specification; expected either "
-                "<pos1> <pos2> <kind> or <pos1> <pos2> <rho_deg> <kind>."
+                "<pos1> <pos2> <kind> or <pos1> <pos2> <beta_deg> <kind>."
             )
 
         p1 = parse_position_token(tokens[i])
@@ -461,28 +507,36 @@ def parse_exchange_specs(
 
         try:
             kind = normalize_kind(third)
-            rho_deg: Optional[float] = None
+            beta_deg: Optional[float] = None
             i += 3
         except ValueError:
             if i + 3 >= len(tokens):
                 raise ValueError(
-                    "Incomplete exchange specification after optional rho angle; "
-                    "expected <pos1> <pos2> <rho_deg> <kind>."
+                    "Incomplete exchange specification after optional beta angle; "
+                    "expected <pos1> <pos2> <beta_deg> <kind>."
                 )
-            rho_deg = parse_rho_angle_token(third)
+            beta_deg = parse_beta_angle_token(third)
+            note_legacy_rho_alias_once()
             kind = normalize_kind(tokens[i + 3])
             i += 4
 
-        ops.append((p1, p2, kind, rho_deg))
+        ops.append((p1, p2, kind, beta_deg))
 
     return ops
 
 
 HelixID = Tuple[str, ...]  # can be 2 or more chains, e.g. ('A', 'B', 'M', 'N')
+AxisBounds = Optional[Tuple[int, int]]
+AxisSelection = Dict[str, AxisBounds]
+ResolvedAxisRange = Dict[str, Tuple[int, int]]
+MoveSelection = Dict[str, AxisBounds]
 
 
 _HELIX_AXIS_OVERRIDES: Dict[HelixID, HelixID] = {}
-_HELIX_AXIS_RANGE_DEFINITIONS: List[Dict[str, Tuple[int, int]]] = []
+_HELIX_AXIS_RANGE_DEFINITIONS: List[ResolvedAxisRange] = []
+_HELIX_AXIS_MOVE_DEFINITIONS: List[MoveSelection] = []
+_HELIX_AXIS_RANGE_OVERRIDES: Dict[HelixID, ResolvedAxisRange] = {}
+_HELIX_MOVE_SELECTIONS: Dict[HelixID, MoveSelection] = {}
 
 
 def _canonical_helix_id(chains: Iterable[str]) -> HelixID:
@@ -496,6 +550,9 @@ def _format_chain_group(chains: Iterable[str]) -> str:
 def reset_helix_axis_overrides() -> None:
     _HELIX_AXIS_OVERRIDES.clear()
     _HELIX_AXIS_RANGE_DEFINITIONS.clear()
+    _HELIX_AXIS_MOVE_DEFINITIONS.clear()
+    _HELIX_AXIS_RANGE_OVERRIDES.clear()
+    _HELIX_MOVE_SELECTIONS.clear()
 
 
 def get_helix_axis_overrides() -> Dict[HelixID, HelixID]:
@@ -515,9 +572,9 @@ def set_helix_axis_overrides(overrides: Optional[Dict[HelixID, HelixID]]) -> Non
 
 
 def _copy_axis_range_definitions(
-    defs: Optional[List[Dict[str, Tuple[int, int]]]],
-) -> List[Dict[str, Tuple[int, int]]]:
-    copied: List[Dict[str, Tuple[int, int]]] = []
+    defs: Optional[List[ResolvedAxisRange]],
+) -> List[ResolvedAxisRange]:
+    copied: List[ResolvedAxisRange] = []
     if not defs:
         return copied
     for spec in defs:
@@ -530,12 +587,21 @@ def _copy_axis_range_definitions(
     return copied
 
 
-def get_helix_axis_range_definitions() -> List[Dict[str, Tuple[int, int]]]:
+def _copy_move_selection(selection: Optional[MoveSelection]) -> MoveSelection:
+    copied: MoveSelection = {}
+    if not selection:
+        return copied
+    for ch, bounds in selection.items():
+        copied[str(ch)] = None if bounds is None else (int(bounds[0]), int(bounds[1]))
+    return copied
+
+
+def get_helix_axis_range_definitions() -> List[ResolvedAxisRange]:
     return _copy_axis_range_definitions(_HELIX_AXIS_RANGE_DEFINITIONS)
 
 
 def set_helix_axis_range_definitions(
-    defs: Optional[List[Dict[str, Tuple[int, int]]]],
+    defs: Optional[List[ResolvedAxisRange]],
 ) -> None:
     _HELIX_AXIS_RANGE_DEFINITIONS.clear()
     if not defs:
@@ -555,9 +621,106 @@ def set_helix_axis_range_definitions(
             _HELIX_AXIS_RANGE_DEFINITIONS.append(dict(sorted(normalized.items())))
 
 
+def get_helix_axis_move_definitions() -> List[MoveSelection]:
+    return [_copy_move_selection(selection) for selection in _HELIX_AXIS_MOVE_DEFINITIONS]
+
+
+def set_helix_axis_move_definitions(defs: Optional[List[MoveSelection]]) -> None:
+    _HELIX_AXIS_MOVE_DEFINITIONS.clear()
+    if not defs:
+        return
+
+    for spec in defs:
+        normalized: MoveSelection = {}
+        for ch, bounds in spec.items():
+            if len(str(ch)) != 1:
+                raise ValueError(f"Axis-move chain ID '{ch}' must be a single character.")
+            if bounds is None:
+                normalized[str(ch)] = None
+            else:
+                lo = int(bounds[0])
+                hi = int(bounds[1])
+                if lo > hi:
+                    lo, hi = hi, lo
+                normalized[str(ch)] = (lo, hi)
+        _HELIX_AXIS_MOVE_DEFINITIONS.append(dict(sorted(normalized.items())))
+
+
+def get_helix_axis_range_overrides() -> Dict[HelixID, ResolvedAxisRange]:
+    return {h: dict(spec) for h, spec in _HELIX_AXIS_RANGE_OVERRIDES.items()}
+
+
+def set_helix_axis_range_overrides(
+    overrides: Optional[Dict[HelixID, ResolvedAxisRange]],
+) -> None:
+    _HELIX_AXIS_RANGE_OVERRIDES.clear()
+    if not overrides:
+        return
+
+    for helix_id, spec in overrides.items():
+        key = _canonical_helix_id(helix_id)
+        normalized: ResolvedAxisRange = {}
+        for ch, bounds in spec.items():
+            if str(ch) not in key:
+                continue
+            lo = int(bounds[0])
+            hi = int(bounds[1])
+            if lo > hi:
+                lo, hi = hi, lo
+            normalized[str(ch)] = (lo, hi)
+        if key and normalized:
+            _HELIX_AXIS_RANGE_OVERRIDES[key] = dict(sorted(normalized.items()))
+
+
+def get_helix_move_selections() -> Dict[HelixID, MoveSelection]:
+    return {h: _copy_move_selection(selection) for h, selection in _HELIX_MOVE_SELECTIONS.items()}
+
+
+def set_helix_move_selections(
+    selections: Optional[Dict[HelixID, MoveSelection]],
+) -> None:
+    _HELIX_MOVE_SELECTIONS.clear()
+    if not selections:
+        return
+
+    for helix_id, selection in selections.items():
+        key = _canonical_helix_id(helix_id)
+        normalized: MoveSelection = {}
+        for ch, bounds in selection.items():
+            if str(ch) not in key:
+                continue
+            if bounds is None:
+                normalized[str(ch)] = None
+            else:
+                lo = int(bounds[0])
+                hi = int(bounds[1])
+                if lo > hi:
+                    lo, hi = hi, lo
+                normalized[str(ch)] = (lo, hi)
+        if key and normalized:
+            _HELIX_MOVE_SELECTIONS[key] = dict(sorted(normalized.items()))
+
+
 def get_axis_chains_for_helix(helix_id: HelixID) -> HelixID:
     key = _canonical_helix_id(helix_id)
     return _HELIX_AXIS_OVERRIDES.get(key, key)
+
+
+def atom_moves_with_helix(atom: pdb_atom_record, helix_id: HelixID) -> bool:
+    """Return whether atom should receive transforms assigned to helix_id."""
+    key = _canonical_helix_id(helix_id)
+    if atom.chainID not in key:
+        return False
+    selection = _HELIX_MOVE_SELECTIONS.get(key)
+    if not selection:
+        return True
+    if atom.chainID not in selection:
+        return False
+    bounds = selection[atom.chainID]
+    if bounds is None:
+        return True
+    lo, hi = bounds
+    return lo <= atom.resSeq <= hi
 
 
 def _resolve_chain_id_for_helix(chain_token: str, helix_id: HelixID) -> str:
@@ -576,13 +739,15 @@ def _resolve_chain_id_for_helix(chain_token: str, helix_id: HelixID) -> str:
     return lookup[key]
 
 
-def _parse_axis_range_term(term: str) -> Tuple[str, int, int]:
+def _parse_axis_range_term(term: str) -> Tuple[str, AxisBounds]:
     token = term.strip().replace(".", "")
     if not token:
         raise ValueError("Empty axis-range term.")
+    if "-" not in token and len(token) == 1 and token.isalpha():
+        return token, None
     if "-" not in token:
         raise ValueError(
-            f"Invalid axis-range term '{term}': expected a residue range like 'B26-B60'."
+            f"Invalid axis-range term '{term}': expected a chain ID like 'B' or a residue range like 'B26-B60'."
         )
 
     left, right = token.split("-", 1)
@@ -606,42 +771,67 @@ def _parse_axis_range_term(term: str) -> Tuple[str, int, int]:
 
     lo = min(res1, res2)
     hi = max(res1, res2)
-    return chain1, lo, hi
+    return chain1, (lo, hi)
 
 
-def parse_axis_range_spec(spec: str) -> Dict[str, Tuple[int, int]]:
+def parse_axis_range_spec(spec: str) -> AxisSelection:
     parts = [part.strip() for part in spec.split(",") if part.strip()]
     if not parts:
         raise ValueError("Axis-range specification cannot be empty.")
 
-    result: Dict[str, Tuple[int, int]] = {}
+    result: AxisSelection = {}
     for part in parts:
-        chain, lo, hi = _parse_axis_range_term(part)
+        chain, bounds = _parse_axis_range_term(part)
         if chain in result:
             raise ValueError(
                 f"Axis-range specification '{spec}' defines chain '{chain}' more than once."
             )
-        result[chain] = (lo, hi)
+        result[chain] = bounds
 
     return dict(sorted(result.items()))
 
 
-def parse_axis_range_specs(specs: Iterable[str]) -> List[Dict[str, Tuple[int, int]]]:
-    parsed: List[Dict[str, Tuple[int, int]]] = []
+def parse_axis_range_specs(specs: Iterable[str]) -> List[AxisSelection]:
+    parsed: List[AxisSelection] = []
     for spec in specs:
         parsed.append(parse_axis_range_spec(spec))
     return parsed
 
 
+def parse_axis_move_specs(specs: Iterable[str]) -> List[MoveSelection]:
+    parsed: List[MoveSelection] = []
+    for spec in specs:
+        parsed.append(parse_axis_range_spec(spec))
+    return parsed
+
+
+def pair_axis_move_definitions(
+    axis_defs: List[AxisSelection],
+    move_defs: List[MoveSelection],
+) -> List[Tuple[AxisSelection, MoveSelection]]:
+    if len(move_defs) > len(axis_defs):
+        raise ValueError(
+            "More --axis_move definitions were provided than --axis_range definitions. "
+            "Each --axis_move row is paired with the --axis_range row at the same index."
+        )
+
+    paired: List[Tuple[AxisSelection, MoveSelection]] = []
+    for idx, axis_def in enumerate(axis_defs):
+        move_def = move_defs[idx] if idx < len(move_defs) else {}
+        paired.append((axis_def, move_def))
+    return paired
+
+
 def resolve_axis_range_definitions(
-    defs: List[Dict[str, Tuple[int, int]]],
+    defs: List[AxisSelection],
     available_chains: Iterable[str],
-) -> List[Dict[str, Tuple[int, int]]]:
+    chain_to_P_atoms: Optional[Dict[str, List[pdb_atom_record]]] = None,
+) -> List[ResolvedAxisRange]:
     lookup = {str(ch).upper(): str(ch) for ch in available_chains}
-    resolved: List[Dict[str, Tuple[int, int]]] = []
+    resolved: List[ResolvedAxisRange] = []
 
     for spec in defs:
-        resolved_spec: Dict[str, Tuple[int, int]] = {}
+        resolved_spec: ResolvedAxisRange = {}
         for ch, bounds in spec.items():
             key = str(ch).upper()
             if key not in lookup:
@@ -655,21 +845,66 @@ def resolve_axis_range_definitions(
                     f"Axis-range definition {_format_axis_range_spec(spec)} resolves chain '{ch}' "
                     f"to '{actual_chain}' more than once."
                 )
-            lo = int(bounds[0])
-            hi = int(bounds[1])
-            if lo > hi:
-                lo, hi = hi, lo
+            if bounds is None:
+                p_atoms = list(chain_to_P_atoms.get(actual_chain, [])) if chain_to_P_atoms else []
+                if not p_atoms:
+                    raise ValueError(
+                        f"Axis-range definition {_format_axis_range_spec(spec)} uses whole chain '{ch}', "
+                        "but no P atoms are available on that chain to define an axis."
+                    )
+                lo = min(atom.resSeq for atom in p_atoms)
+                hi = max(atom.resSeq for atom in p_atoms)
+            else:
+                lo = int(bounds[0])
+                hi = int(bounds[1])
+                if lo > hi:
+                    lo, hi = hi, lo
             resolved_spec[actual_chain] = (lo, hi)
         resolved.append(dict(sorted(resolved_spec.items())))
 
     return resolved
 
 
+def resolve_axis_move_definitions(
+    defs: List[MoveSelection],
+    available_chains: Iterable[str],
+) -> List[MoveSelection]:
+    lookup = {str(ch).upper(): str(ch) for ch in available_chains}
+    resolved: List[MoveSelection] = []
+
+    for spec in defs:
+        resolved_spec: MoveSelection = {}
+        for ch, bounds in spec.items():
+            key = str(ch).upper()
+            if key not in lookup:
+                raise ValueError(
+                    f"Axis-move definition {_format_axis_range_spec(spec)} refers to chain '{ch}', "
+                    "but that chain is not present in the input PDB."
+                )
+            actual_chain = lookup[key]
+            if actual_chain in resolved_spec:
+                raise ValueError(
+                    f"Axis-move definition {_format_axis_range_spec(spec)} resolves chain '{ch}' "
+                    f"to '{actual_chain}' more than once."
+                )
+            if bounds is None:
+                resolved_spec[actual_chain] = None
+            else:
+                lo = int(bounds[0])
+                hi = int(bounds[1])
+                if lo > hi:
+                    lo, hi = hi, lo
+                resolved_spec[actual_chain] = (lo, hi)
+        resolved.append(dict(sorted(resolved_spec.items())))
+
+    return resolved
+
+
 def translate_axis_range_definitions_for_replication(
-    defs: List[Dict[str, Tuple[int, int]]],
+    defs: List[AxisSelection],
     original_chains: Iterable[str],
     final_chains: Iterable[str],
-) -> List[Dict[str, Tuple[int, int]]]:
+) -> List[AxisSelection]:
     """Translate --axis_range chain IDs into the final post-replication chain space.
 
     Replication renames the original base-copy chains to consecutive letters
@@ -700,9 +935,9 @@ def translate_axis_range_definitions_for_replication(
     }
     final_lookup = {str(ch).upper(): str(ch) for ch in final_chains}
 
-    translated: List[Dict[str, Tuple[int, int]]] = []
+    translated: List[AxisSelection] = []
     for spec in defs:
-        translated_spec: Dict[str, Tuple[int, int]] = {}
+        translated_spec: AxisSelection = {}
         for ch, bounds in spec.items():
             key = str(ch).upper()
             if key in final_lookup:
@@ -718,30 +953,37 @@ def translate_axis_range_definitions_for_replication(
                     f"to '{actual_chain}' more than once during replication handling."
                 )
 
-            lo = int(bounds[0])
-            hi = int(bounds[1])
-            if lo > hi:
-                lo, hi = hi, lo
-            translated_spec[actual_chain] = (lo, hi)
+            if bounds is None:
+                translated_spec[actual_chain] = None
+            else:
+                lo = int(bounds[0])
+                hi = int(bounds[1])
+                if lo > hi:
+                    lo, hi = hi, lo
+                translated_spec[actual_chain] = (lo, hi)
         translated.append(dict(sorted(translated_spec.items())))
 
     return translated
 
 
-def _format_axis_range_spec(spec: Dict[str, Tuple[int, int]]) -> str:
+def _format_axis_range_spec(spec: Dict[str, AxisBounds]) -> str:
     parts = []
     for ch in sorted(spec):
-        lo, hi = spec[ch]
-        parts.append(f"{ch}{lo}-{ch}{hi}")
+        bounds = spec[ch]
+        if bounds is None:
+            parts.append(f"{ch}")
+        else:
+            lo, hi = bounds
+            parts.append(f"{ch}{lo}-{ch}{hi}")
     return ",".join(parts)
 
 
-def _axis_range_total_span(spec: Dict[str, Tuple[int, int]]) -> int:
+def _axis_range_total_span(spec: ResolvedAxisRange) -> int:
     return sum((hi - lo) for lo, hi in spec.values())
 
 
 def validate_axis_range_definitions(
-    defs: List[Dict[str, Tuple[int, int]]],
+    defs: List[ResolvedAxisRange],
     chain_to_P_atoms: Dict[str, List[pdb_atom_record]],
     chain_to_helix: Dict[str, HelixID],
 ) -> None:
@@ -780,7 +1022,7 @@ def validate_axis_range_definitions(
 def find_axis_range_definition_for_positions(
     helix_id: HelixID,
     positions: List[Tuple[str, int]],
-) -> Optional[Dict[str, Tuple[int, int]]]:
+) -> Optional[ResolvedAxisRange]:
     if not positions or not _HELIX_AXIS_RANGE_DEFINITIONS:
         return None
 
@@ -789,7 +1031,7 @@ def find_axis_range_definition_for_positions(
     if not positions_in_helix:
         return None
 
-    candidates: List[Dict[str, Tuple[int, int]]] = []
+    candidates: List[ResolvedAxisRange] = []
     for spec in _HELIX_AXIS_RANGE_DEFINITIONS:
         spec_chains = set(spec.keys())
         if not spec_chains.issubset(helix_set):
@@ -832,6 +1074,173 @@ def find_axis_range_definition_for_positions(
             )
 
     return dict(best)
+
+
+def _selection_chains(selection: Dict[str, AxisBounds]) -> Set[str]:
+    return {str(ch) for ch in selection.keys()}
+
+
+def _merge_move_selection_value(existing: AxisBounds, new: AxisBounds) -> AxisBounds:
+    if existing is None or new is None:
+        return None
+    lo = min(int(existing[0]), int(new[0]))
+    hi = max(int(existing[1]), int(new[1]))
+    return (lo, hi)
+
+
+def _find_explicit_helix_for_axis(
+    axis_chains: Set[str],
+    explicit_helix_defs: Optional[List[HelixID]],
+) -> Optional[HelixID]:
+    if not axis_chains or not explicit_helix_defs:
+        return None
+    for raw_h in explicit_helix_defs:
+        helix_id = tuple(sorted(raw_h))
+        if axis_chains.issubset(set(helix_id)):
+            return helix_id
+    return None
+
+
+def build_axis_coupled_helix_defs(
+    axis_defs: List[AxisSelection],
+    move_defs: List[MoveSelection],
+    explicit_helix_defs: Optional[List[HelixID]] = None,
+) -> List[HelixID]:
+    """Return helix groups implied by axis/move rows.
+
+    These definitions are used before replication to avoid legacy triplex
+    stdin prompts and to give replication a template for axis-coupled payloads.
+    """
+    groups: List[HelixID] = []
+    seen: Set[HelixID] = set()
+    for axis_def, move_def in pair_axis_move_definitions(axis_defs, move_defs):
+        axis_chains = _selection_chains(axis_def)
+        if not axis_chains:
+            continue
+        group_chains = set(axis_chains)
+        explicit_group = _find_explicit_helix_for_axis(axis_chains, explicit_helix_defs)
+        if explicit_group is not None:
+            group_chains.update(explicit_group)
+        group_chains.update(_selection_chains(move_def))
+        if len(group_chains) < 1:
+            continue
+        group = tuple(sorted(group_chains))
+        if group not in seen:
+            groups.append(group)
+            seen.add(group)
+    return groups
+
+
+def register_axis_coupling_overrides(
+    axis_defs: List[ResolvedAxisRange],
+    move_defs: List[MoveSelection],
+    explicit_helix_defs: Optional[List[HelixID]] = None,
+) -> None:
+    """Register axis and movement overrides implied by axis/move rows."""
+    axis_overrides = get_helix_axis_overrides()
+    axis_range_overrides = get_helix_axis_range_overrides()
+    move_selections = get_helix_move_selections()
+
+    for axis_def, move_def in pair_axis_move_definitions(axis_defs, move_defs):
+        axis_chains = _selection_chains(axis_def)
+        if not axis_chains:
+            continue
+        group_chains = set(axis_chains)
+        full_move_chains = set(axis_chains)
+        move_chains = _selection_chains(move_def)
+        explicit_group = _find_explicit_helix_for_axis(axis_chains, explicit_helix_defs)
+        if explicit_group is not None:
+            group_chains.update(explicit_group)
+            full_move_chains.update(ch for ch in explicit_group if ch not in move_chains)
+        group_chains.update(move_chains)
+        group = tuple(sorted(group_chains))
+        if not group:
+            continue
+
+        axis_overrides[group] = tuple(sorted(axis_chains))
+        axis_range_overrides[group] = dict(sorted(axis_def.items()))
+
+        selection: MoveSelection = {ch: None for ch in full_move_chains}
+        for ch, bounds in move_def.items():
+            if ch in selection:
+                selection[ch] = _merge_move_selection_value(selection[ch], bounds)
+            else:
+                selection[ch] = bounds
+        for ch in group:
+            if ch not in selection:
+                selection[ch] = None
+        move_selections[group] = dict(sorted(selection.items()))
+
+    set_helix_axis_overrides(axis_overrides)
+    set_helix_axis_range_overrides(axis_range_overrides)
+    set_helix_move_selections(move_selections)
+
+
+def apply_axis_coupling_to_chain_map(
+    chain_to_helix: Dict[str, HelixID],
+    axis_defs: List[ResolvedAxisRange],
+    move_defs: List[MoveSelection],
+    chain_to_P_atoms: Dict[str, List[pdb_atom_record]],
+) -> Dict[str, HelixID]:
+    """Merge axis/move rows into a chain->helix map and register overrides."""
+    if not axis_defs:
+        return chain_to_helix
+
+    updated = dict(chain_to_helix)
+    axis_overrides = get_helix_axis_overrides()
+    axis_range_overrides = get_helix_axis_range_overrides()
+    move_selections = get_helix_move_selections()
+
+    for axis_def, move_def in pair_axis_move_definitions(axis_defs, move_defs):
+        axis_chains = _selection_chains(axis_def)
+        if not axis_chains:
+            continue
+
+        group_chains: Set[str] = set(axis_chains)
+        full_move_chains: Set[str] = set(axis_chains)
+        move_chains = _selection_chains(move_def)
+        for ch in axis_chains:
+            if ch in updated:
+                group_chains.update(updated[ch])
+                full_move_chains.update(member for member in updated[ch] if member not in move_chains)
+        group_chains.update(move_chains)
+        group = tuple(sorted(group_chains))
+        if not group:
+            continue
+
+        for ch, current_group in list(updated.items()):
+            current_set = set(current_group)
+            if not current_set.intersection(group_chains):
+                continue
+            if ch in group_chains:
+                updated[ch] = group
+            else:
+                residual = tuple(sorted(current_set - group_chains))
+                if residual:
+                    updated[ch] = residual
+
+        for ch in group:
+            if ch in chain_to_P_atoms:
+                updated[ch] = group
+
+        axis_overrides[group] = tuple(sorted(axis_chains))
+        axis_range_overrides[group] = dict(sorted(axis_def.items()))
+
+        selection: MoveSelection = {ch: None for ch in full_move_chains}
+        for ch, bounds in move_def.items():
+            if ch in selection:
+                selection[ch] = _merge_move_selection_value(selection[ch], bounds)
+            else:
+                selection[ch] = bounds
+        for ch in group:
+            if ch not in selection:
+                selection[ch] = None
+        move_selections[group] = dict(sorted(selection.items()))
+
+    set_helix_axis_overrides(axis_overrides)
+    set_helix_axis_range_overrides(axis_range_overrides)
+    set_helix_move_selections(move_selections)
+    return updated
 
 
 def _register_triplex_axis_override(
@@ -919,6 +1328,80 @@ def _replicate_axis_overrides(
             axis_overrides_repl[new_helix] = new_axis
 
     return axis_overrides_repl
+
+
+def _replicate_axis_range_overrides(
+    axis_range_overrides_old: Dict[HelixID, ResolvedAxisRange],
+    mapping_upper_to_new: Dict[str, str],
+    base_index: Dict[str, int],
+    num_copies: int,
+    letters: str,
+) -> Dict[HelixID, ResolvedAxisRange]:
+    if not axis_range_overrides_old:
+        return {}
+
+    remapped_base: Dict[HelixID, ResolvedAxisRange] = {}
+    for helix_id, spec in axis_range_overrides_old.items():
+        try:
+            base_helix = tuple(sorted(mapping_upper_to_new[ch.upper()] for ch in helix_id))
+            base_spec = {
+                mapping_upper_to_new[ch.upper()]: (int(bounds[0]), int(bounds[1]))
+                for ch, bounds in spec.items()
+            }
+        except KeyError:
+            continue
+        remapped_base[base_helix] = dict(sorted(base_spec.items()))
+
+    overrides_repl: Dict[HelixID, ResolvedAxisRange] = {}
+    n_base = len(base_index)
+    for copy_idx in range(num_copies):
+        offset = copy_idx * n_base
+        for base_helix, base_spec in remapped_base.items():
+            new_helix = tuple(sorted(letters[offset + base_index[ch]] for ch in base_helix))
+            new_spec = {
+                letters[offset + base_index[ch]]: bounds
+                for ch, bounds in base_spec.items()
+            }
+            overrides_repl[new_helix] = dict(sorted(new_spec.items()))
+
+    return overrides_repl
+
+
+def _replicate_move_selections(
+    move_selections_old: Dict[HelixID, MoveSelection],
+    mapping_upper_to_new: Dict[str, str],
+    base_index: Dict[str, int],
+    num_copies: int,
+    letters: str,
+) -> Dict[HelixID, MoveSelection]:
+    if not move_selections_old:
+        return {}
+
+    remapped_base: Dict[HelixID, MoveSelection] = {}
+    for helix_id, selection in move_selections_old.items():
+        try:
+            base_helix = tuple(sorted(mapping_upper_to_new[ch.upper()] for ch in helix_id))
+            base_selection: MoveSelection = {}
+            for ch, bounds in selection.items():
+                mapped_ch = mapping_upper_to_new[ch.upper()]
+                base_selection[mapped_ch] = None if bounds is None else (int(bounds[0]), int(bounds[1]))
+        except KeyError:
+            continue
+        remapped_base[base_helix] = dict(sorted(base_selection.items()))
+
+    selections_repl: Dict[HelixID, MoveSelection] = {}
+    n_base = len(base_index)
+    for copy_idx in range(num_copies):
+        offset = copy_idx * n_base
+        for base_helix, base_selection in remapped_base.items():
+            new_helix = tuple(sorted(letters[offset + base_index[ch]] for ch in base_helix))
+            new_selection: MoveSelection = {}
+            for ch, bounds in base_selection.items():
+                new_ch = letters[offset + base_index[ch]]
+                new_selection[new_ch] = None if bounds is None else bounds
+            selections_repl[new_helix] = dict(sorted(new_selection.items()))
+
+    return selections_repl
 
 
 # ---------------------------------------------------------------------------
@@ -1176,18 +1659,23 @@ def build_chain_to_helix_from_defs(
         if len(helix_id) == 3:
             _prompt_for_triplex_axis_override(helix_id, "user-defined helix")
 
+        mapped_any_p_chain = False
         for ch in helix_id:
             if ch not in chain_to_P_atoms:
-                raise ValueError(
-                    f"User-defined helix {helix_id_str(helix_id)} includes chain '{ch}', "
-                    f"but this chain has no P atoms in the input PDB."
-                )
+                continue
             if ch in chain_to_helix and chain_to_helix[ch] != helix_id:
                 raise ValueError(
                     f"Chain '{ch}' appears in more than one helix definition: "
                     f"{helix_id_str(chain_to_helix[ch])} and {helix_id_str(helix_id)}."
                 )
             chain_to_helix[ch] = helix_id
+            mapped_any_p_chain = True
+
+        if not mapped_any_p_chain:
+            raise ValueError(
+                f"User-defined helix {helix_id_str(helix_id)} contains no chains with P atoms; "
+                "at least one P-bearing chain is needed to define or participate in a helix."
+            )
 
     return chain_to_helix
 
@@ -1204,7 +1692,7 @@ def helix_id_str(h: HelixID) -> str:
 def compute_helix_axis(
     chain_to_P_atoms: Dict[str, List[pdb_atom_record]],
     helix_id: HelixID,
-    residue_ranges: Optional[Dict[str, Tuple[int, int]]] = None,
+    residue_ranges: Optional[ResolvedAxisRange] = None,
 ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
     """
     Estimate the helical axis of a helix group.
@@ -1216,10 +1704,14 @@ def compute_helix_axis(
 
     Returns (axis_dir (unit), center point).
     """
+    helix_key = _canonical_helix_id(helix_id)
     if residue_ranges:
         axis_chains = tuple(sorted(residue_ranges.keys()))
+    elif helix_key in _HELIX_AXIS_RANGE_OVERRIDES:
+        residue_ranges = _HELIX_AXIS_RANGE_OVERRIDES[helix_key]
+        axis_chains = tuple(sorted(residue_ranges.keys()))
     else:
-        axis_chains = get_axis_chains_for_helix(helix_id)
+        axis_chains = get_axis_chains_for_helix(helix_key)
 
     coords: List[Tuple[float, float, float]] = []
     for ch in axis_chains:
@@ -1282,8 +1774,8 @@ def align_axes_for_pair(
     axis_dist: float,
     subset_fixed: Optional[Iterable[str]] = None,
     subset_moving: Optional[Iterable[str]] = None,
-    axis_ranges_fixed: Optional[Dict[str, Tuple[int, int]]] = None,
-    axis_ranges_moving: Optional[Dict[str, Tuple[int, int]]] = None,
+    axis_ranges_fixed: Optional[ResolvedAxisRange] = None,
+    axis_ranges_moving: Optional[ResolvedAxisRange] = None,
 ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]:
     """
     Rigidly align the axis of helix_moving to that of helix_fixed, and
@@ -1304,6 +1796,11 @@ def align_axes_for_pair(
     # axis estimation, regardless of which chains appear in the P-pair subset.
     fixed_axis_override = get_helix_axis_overrides().get(tuple(sorted(helix_fixed)))
     moving_axis_override = get_helix_axis_overrides().get(tuple(sorted(helix_moving)))
+    axis_range_overrides = get_helix_axis_range_overrides()
+    if axis_ranges_fixed is None:
+        axis_ranges_fixed = axis_range_overrides.get(tuple(sorted(helix_fixed)))
+    if axis_ranges_moving is None:
+        axis_ranges_moving = axis_range_overrides.get(tuple(sorted(helix_moving)))
 
     if axis_ranges_fixed:
         fixed_axis_chains = tuple(sorted(axis_ranges_fixed.keys()))
@@ -1353,11 +1850,10 @@ def align_axes_for_pair(
         rot_axis = v_scale(cross_v, 1.0 / norm_cross)
         angle = math.acos(max(min(v_dot(axis2_dir, axis1_dir), 1.0), -1.0))
 
-        moving_chains: Set[str] = set(helix_moving)
         for atom in rec_list:
             if atom.recordName not in ("ATOM", "HETATM"):
                 continue
-            if atom.chainID not in moving_chains:
+            if not atom_moves_with_helix(atom, helix_moving):
                 continue
             x, y, z = rotate_around_line(
                 (atom.x, atom.y, atom.z), center2, rot_axis, angle
@@ -1398,11 +1894,10 @@ def align_axes_for_pair(
     translation = v_sub(v_add(center1, desired_delta), center2)
 
     # Apply the translation to ALL chains in the moving helix group
-    moving_chains = set(helix_moving)
     for atom in rec_list:
         if atom.recordName not in ("ATOM", "HETATM"):
             continue
-        if atom.chainID not in moving_chains:
+        if not atom_moves_with_helix(atom, helix_moving):
             continue
         new_xyz = v_add((atom.x, atom.y, atom.z), translation)
         atom.update_xyz(*new_xyz)
@@ -1434,6 +1929,7 @@ def build_pair_objective(
     axis2_point: Tuple[float, float, float],
     axis_parallel: bool,
     pre_flip: bool = False,
+    fixed_beta: Optional[float] = None,
     fixed_rho: Optional[float] = None,
 ):
     """
@@ -1444,26 +1940,32 @@ def build_pair_objective(
 
         1) rotate around helix 1's axis by phi,
         2) translate along axis_dir by d,
-        3) rotate around helix 2's axis by theta,
+        3) rotate around helix 2's axis by tau,
         4) if axis_parallel is False, rotate around a P-pair optimised
-           common perpendicular line (through anchor1) by rho.
+           common perpendicular line (through anchor1) by beta.
 
     If axis_parallel is True:
-        params = [d, theta, phi]
-    Else if fixed_rho is None:
-        params = [d, theta, phi, rho]
+        params = [d, tau, phi]
+    Else if fixed_beta is None:
+        params = [d, tau, phi, beta]
     Else:
-        params = [d, theta, phi] and rho is held at fixed_rho.
+        params = [d, tau, phi] and beta is held at fixed_beta.
 
-    fixed_rho, when not None, is a user-defined rho angle in radians and is
+    fixed_beta, when not None, is a user-defined beta angle in radians and is
     meaningful only when axis_parallel is False.
 
     Also returns d0, an initial guess for d, and anchor1 (the P-pair-based
-    anchor point on helix 1's axis used for rho).
+    anchor point on helix 1's axis used for beta).
 
     Note: the 'pairs' passed in are already the subset chosen for alignment
     (either 1–2 P pairs or the two extreme P pairs along helix 1's axis).
     """
+    if fixed_rho is not None:
+        if fixed_beta is not None:
+            raise ValueError("Use only one of fixed_beta or legacy fixed_rho.")
+        note_legacy_rho_alias_once()
+        fixed_beta = fixed_rho
+
     p1_list: List[Tuple[float, float, float]] = []
     p2_list: List[Tuple[float, float, float]] = []
 
@@ -1504,24 +2006,24 @@ def build_pair_objective(
     def objective(params: List[float]) -> float:
         if axis_parallel:
             if len(params) != 3:
-                raise ValueError("Expected 3 params [d, theta, phi] for axis_parallel=True.")
-            d, theta, phi = params
-            rho = 0.0
+                raise ValueError("Expected 3 params [d, tau, phi] for axis_parallel=True.")
+            d, tau, phi = params
+            beta = 0.0
         else:
-            if fixed_rho is None:
+            if fixed_beta is None:
                 if len(params) != 4:
-                    raise ValueError("Expected 4 params [d, theta, phi, rho] for axis_parallel=False.")
-                d, theta, phi, rho = params
+                    raise ValueError("Expected 4 params [d, tau, phi, beta] for axis_parallel=False.")
+                d, tau, phi, beta = params
             else:
                 if len(params) != 3:
-                    raise ValueError("Expected 3 params [d, theta, phi] when fixed_rho is supplied.")
-                d, theta, phi = params
-                rho = fixed_rho
+                    raise ValueError("Expected 3 params [d, tau, phi] when fixed_beta is supplied.")
+                d, tau, phi = params
+                beta = fixed_beta
 
         # Center of helix-2 axis after phi and d
         C2_phi = rotate_around_line(axis2_point, axis1_point, axis_dir, phi)
         C2_phi_d = v_add(C2_phi, v_scale(axis_dir, d))
-        axis2_base = C2_phi_d  # axis point for theta
+        axis2_base = C2_phi_d  # axis point for tau
 
         if axis_parallel:
             axis_perp_dir = None
@@ -1561,13 +2063,13 @@ def build_pair_objective(
             if abs(d) > 1.0e-10:
                 p = v_add(p, v_scale(axis_dir, d))
 
-            # theta: rotate around helix-2 axis
-            if abs(theta) > 1.0e-10:
-                p = rotate_around_line(p, axis2_base, axis_dir, theta)
+            # tau: rotate around helix-2 axis
+            if abs(tau) > 1.0e-10:
+                p = rotate_around_line(p, axis2_base, axis_dir, tau)
 
-            # rho: tilt around common perpendicular through anchor1
-            if (not axis_parallel) and abs(rho) > 1.0e-10:
-                p = rotate_around_line(p, axis_perp_point, axis_perp_dir, rho)  # type: ignore[arg-type]
+            # beta: tilt around common perpendicular through anchor1
+            if (not axis_parallel) and abs(beta) > 1.0e-10:
+                p = rotate_around_line(p, axis_perp_point, axis_perp_dir, beta)  # type: ignore[arg-type]
 
             dx = p1[0] - p[0]
             dy = p1[1] - p[1]
@@ -1637,23 +2139,23 @@ def apply_transform_to_helix(
     axis1_point: Tuple[float, float, float],
     axis2_point: Tuple[float, float, float],
     d: float,
-    theta: float,
+    tau: float,
     phi: float,
-    rho: float,
+    beta: float,
     axis_parallel: bool,
     anchor1: Tuple[float, float, float],
     pre_flip: bool = False,
 ) -> None:
     """
-    Apply the optimised (d, theta, phi, rho) transform to all atoms of the
+    Apply the optimised (d, tau, phi, beta) transform to all atoms of the
     moving helix group in-place.
 
     Order:
         1) rotate around helix 1's axis by phi,
         2) translate along axis_dir by d,
-        3) rotate around helix 2's axis by theta,
+        3) rotate around helix 2's axis by tau,
         4) if axis_parallel is False, rotate around the P-pair-based common
-           perpendicular through anchor1 by rho.
+           perpendicular through anchor1 by beta.
     """
     axis_dir = v_norm(axis_dir)
 
@@ -1684,11 +2186,10 @@ def apply_transform_to_helix(
             axis_perp_dir = v_scale(r_perp, 1.0 / r_len)
         axis_perp_point = anchor1
 
-    moving_chains: Set[str] = set(helix_moving)
     for atom in rec_list:
         if atom.recordName not in ("ATOM", "HETATM"):
             continue
-        if atom.chainID not in moving_chains:
+        if not atom_moves_with_helix(atom, helix_moving):
             continue
 
         p = (atom.x, atom.y, atom.z)
@@ -1706,13 +2207,13 @@ def apply_transform_to_helix(
         if abs(d) > 1.0e-10:
             p = v_add(p, v_scale(axis_dir, d))
 
-        # 3) theta around helix-2 axis
-        if abs(theta) > 1.0e-10:
-            p = rotate_around_line(p, axis2_base, axis_dir, theta)
+        # 3) tau around helix-2 axis
+        if abs(tau) > 1.0e-10:
+            p = rotate_around_line(p, axis2_base, axis_dir, tau)
 
-        # 4) rho around common perpendicular through anchor1
-        if (not axis_parallel) and abs(rho) > 1.0e-10:
-            p = rotate_around_line(p, axis_perp_point, axis_perp_dir, rho)  # type: ignore[arg-type]
+        # 4) beta around common perpendicular through anchor1
+        if (not axis_parallel) and abs(beta) > 1.0e-10:
+            p = rotate_around_line(p, axis_perp_point, axis_perp_dir, beta)  # type: ignore[arg-type]
 
         atom.update_xyz(*p)
 
@@ -1747,11 +2248,11 @@ def apply_reciprocal_exchanges_in_memory(
     linker_phosphate_style = rex.coerce_linker_phosphate_style(linker_phosphate_style)
 
     # Convert legacy V2/V3.5-style exchange_specs into V3.3 dict specs.
-    # V3.5 optional rho angles are alignment-only metadata and are ignored by
+    # Optional beta angles are alignment-only metadata and are ignored by
     # the reciprocal-exchange topology layer.
     specs_v3: List[Dict[str, object]] = []
     for spec in exchange_specs:
-        pos1, pos2, kind, _rho_deg = unpack_exchange_spec(spec)
+        pos1, pos2, kind, _beta_deg = unpack_exchange_spec(spec)
         c1, r1 = pos1
         c2, r2 = pos2
         specs_v3.append(
@@ -1955,6 +2456,8 @@ def replicate_all_chains(
         if len(tuple(sorted(helix_id))) == 3:
             _prompt_for_triplex_axis_override(tuple(sorted(helix_id)), "replication template")
     axis_overrides_old = get_helix_axis_overrides()
+    axis_range_overrides_old = get_helix_axis_range_overrides()
+    move_selections_old = get_helix_move_selections()
 
     # 1) Gather original chain IDs from the PDB (case-insensitive, but keep their actual chars)
     orig_chains: List[str] = sorted(
@@ -2040,7 +2543,7 @@ def replicate_all_chains(
     chains_used: Set[str] = set()
 
     for spec in exchange_specs:
-        (c1, r1), (c2, r2), kind, rho_deg = unpack_exchange_spec(spec)
+        (c1, r1), (c2, r2), kind, beta_deg = unpack_exchange_spec(spec)
         u1 = c1.upper()
         u2 = c2.upper()
         nc1 = mapping_upper_to_new.get(u1, u1)  # map if base chain, otherwise future copy
@@ -2051,7 +2554,7 @@ def replicate_all_chains(
                 f"Replication mode only supports chain IDs A-Z after remap; got '{nc1}'/'{nc2}'."
             )
 
-        new_exchange_specs.append(((nc1, r1), (nc2, r2), kind, rho_deg))
+        new_exchange_specs.append(((nc1, r1), (nc2, r2), kind, beta_deg))
         chains_used.add(nc1)
         chains_used.add(nc2)
 
@@ -2121,12 +2624,46 @@ def replicate_all_chains(
         letters,
     )
     set_helix_axis_overrides(axis_overrides_repl)
+    axis_range_overrides_repl = _replicate_axis_range_overrides(
+        axis_range_overrides_old,
+        mapping_upper_to_new,
+        base_index,
+        num_copies,
+        letters,
+    )
+    set_helix_axis_range_overrides(axis_range_overrides_repl)
+    move_selections_repl = _replicate_move_selections(
+        move_selections_old,
+        mapping_upper_to_new,
+        base_index,
+        num_copies,
+        letters,
+    )
+    set_helix_move_selections(move_selections_repl)
     if axis_overrides_repl:
         sys.stderr.write(
             "[re_helix]  Axis-strand overrides after replication: "
             + ", ".join(
                 f"{helix_id_str(h)} -> {helix_id_str(axis_overrides_repl[h])}"
                 for h in sorted(axis_overrides_repl)
+            )
+            + "\n"
+        )
+    if axis_range_overrides_repl:
+        sys.stderr.write(
+            "[re_helix]  Axis-range overrides after replication: "
+            + ", ".join(
+                f"{helix_id_str(h)} -> {_format_axis_range_spec(axis_range_overrides_repl[h])}"
+                for h in sorted(axis_range_overrides_repl)
+            )
+            + "\n"
+        )
+    if move_selections_repl:
+        sys.stderr.write(
+            "[re_helix]  Axis-move selections after replication: "
+            + ", ".join(
+                f"{helix_id_str(h)} -> {_format_axis_range_spec(move_selections_repl[h])}"
+                for h in sorted(move_selections_repl)
             )
             + "\n"
         )
@@ -2171,14 +2708,14 @@ def build_helix_pair_graph(
     """
     From exchange_specs, build:
         helix_pair_data: map frozenset({H1,H2}) ->
-            {helix1, helix2, pairs, rho_angles}
+            {helix1, helix2, pairs, beta_angles}
         adjacency: helix -> set(neighbour helices)
     """
     helix_pair_data: Dict[frozenset, Dict[str, object]] = {}
     adjacency: Dict[HelixID, Set[HelixID]] = defaultdict(set)
 
     for spec in exchange_specs:
-        pos1, pos2, _kind, rho_deg = unpack_exchange_spec(spec)
+        pos1, pos2, _kind, beta_deg = unpack_exchange_spec(spec)
         chain1, res1 = pos1
         chain2, res2 = pos2
 
@@ -2206,7 +2743,7 @@ def build_helix_pair_graph(
                 "helix1": helix1,
                 "helix2": helix2,
                 "pairs": [],
-                "rho_angles": [],
+                "beta_angles": [],
             }
 
         entry = helix_pair_data[key]
@@ -2223,7 +2760,7 @@ def build_helix_pair_graph(
             )
 
         entry["pairs"].append((pos_h1, pos_h2))  # type: ignore[arg-type]
-        entry["rho_angles"].append(rho_deg)  # type: ignore[index]
+        entry["beta_angles"].append(beta_deg)  # type: ignore[index]
 
         adjacency[helix1].add(helix2)
         adjacency[helix2].add(helix1)
@@ -2308,6 +2845,8 @@ def align_helices_for_exchanges(
     if not chain_to_P_atoms:
         raise ValueError("No P atoms found in input PDB; alignment cannot proceed.")
 
+    write_angle_definitions_once()
+
     # Build chain -> helix map
     if explicit_helices:
         chain_to_helix = build_chain_to_helix_from_defs(explicit_helices, chain_to_P_atoms)
@@ -2327,11 +2866,25 @@ def align_helices_for_exchanges(
         )
 
     axis_range_defs = get_helix_axis_range_definitions()
+    axis_move_defs = get_helix_axis_move_definitions()
+    if axis_range_defs:
+        chain_to_helix = apply_axis_coupling_to_chain_map(
+            chain_to_helix,
+            axis_range_defs,
+            axis_move_defs,
+            chain_to_P_atoms,
+        )
     if axis_range_defs:
         validate_axis_range_definitions(axis_range_defs, chain_to_P_atoms, chain_to_helix)
         sys.stderr.write(
             "[re_helix] Using axis residue-range overrides: "
             + ", ".join(_format_axis_range_spec(spec) for spec in axis_range_defs)
+            + "\n"
+        )
+    if axis_move_defs:
+        sys.stderr.write(
+            "[re_helix] Using axis-coupled move selections: "
+            + ", ".join(_format_axis_range_spec(spec) if spec else "(none)" for spec in axis_move_defs)
             + "\n"
         )
 
@@ -2394,19 +2947,22 @@ def align_helices_for_exchanges(
                 h1 = entry["helix1"]  # type: ignore[assignment]
                 h2 = entry["helix2"]  # type: ignore[assignment]
                 pairs_h1_h2: List[Tuple[Tuple[str, int], Tuple[str, int]]] = entry["pairs"]  # type: ignore[assignment]
-                rho_angles_h1_h2: List[Optional[float]] = entry.get("rho_angles", [])  # type: ignore[assignment]
+                beta_angles_h1_h2: List[Optional[float]] = entry.get(
+                    "beta_angles",
+                    entry.get("rho_angles", []),
+                )  # type: ignore[assignment]
 
                 # Orient pairs so first pos is on 'fixed', second on 'neighbour'.
-                # The rho-angle annotation follows the same site index. Its sign is
+                # The beta-angle annotation follows the same site index. Its sign is
                 # not changed when the fixed/moving roles are reversed because the
-                # rho axis direction is reconstructed from the current fixed-to-moving
+                # beta axis direction is reconstructed from the current fixed-to-moving
                 # geometry.
                 if fixed == h1 and neighbour == h2:
                     pairs_fixed_moving = pairs_h1_h2
-                    rho_angles_fixed_moving = rho_angles_h1_h2
+                    beta_angles_fixed_moving = beta_angles_h1_h2
                 elif fixed == h2 and neighbour == h1:
                     pairs_fixed_moving = [(b, a) for (a, b) in pairs_h1_h2]
-                    rho_angles_fixed_moving = rho_angles_h1_h2
+                    beta_angles_fixed_moving = beta_angles_h1_h2
                 else:
                     raise RuntimeError(
                         f"Internal error: helix {helix_id_str(fixed)} / "
@@ -2419,11 +2975,11 @@ def align_helices_for_exchanges(
                     f"{len(pairs_fixed_moving)} P-atom pair(s) specified.\n"
                 )
 
-                fixed_rho_deg: Optional[float] = None
-                fixed_rho_rad: Optional[float] = None
-                defined_rho_angles = [angle for angle in rho_angles_fixed_moving if angle is not None]
-                if defined_rho_angles:
-                    angle_list = ", ".join(f"{angle:.3g}°" for angle in defined_rho_angles)
+                fixed_beta_deg: Optional[float] = None
+                fixed_beta_rad: Optional[float] = None
+                defined_beta_angles = [angle for angle in beta_angles_fixed_moving if angle is not None]
+                if defined_beta_angles:
+                    angle_list = ", ".join(f"{angle:.3g}°" for angle in defined_beta_angles)
                     if axis_parallel_flag:
                         reason = "--axis_parallel y keeps helix axes parallel"
                         if len(pairs_fixed_moving) != 1:
@@ -2432,25 +2988,25 @@ def align_helices_for_exchanges(
                                 f"connect this helix pair"
                             )
                         sys.stderr.write(
-                            f"[re_helix]   Warning: fixed rho-angle definition(s) "
+                            f"[re_helix]   Warning: fixed beta-angle definition(s) "
                             f"({angle_list}) for helix pair "
                             f"{helix_id_str(fixed)}/{helix_id_str(neighbour)} ignored because "
                             f"{reason}.\n"
                         )
                     elif len(pairs_fixed_moving) != 1:
                         sys.stderr.write(
-                            f"[re_helix]   Warning: fixed rho-angle definition(s) "
+                            f"[re_helix]   Warning: fixed beta-angle definition(s) "
                             f"({angle_list}) for helix pair "
                             f"{helix_id_str(fixed)}/{helix_id_str(neighbour)} ignored because "
                             f"{len(pairs_fixed_moving)} reciprocal-exchange sites connect this "
-                            f"helix pair; fixed rho is used only for exactly one site.\n"
+                            f"helix pair; fixed beta is used only for exactly one site.\n"
                         )
                     else:
-                        fixed_rho_deg = defined_rho_angles[0]
-                        fixed_rho_rad = fixed_rho_deg * math.pi / 180.0
+                        fixed_beta_deg = defined_beta_angles[0]
+                        fixed_beta_rad = fixed_beta_deg * math.pi / 180.0
                         sys.stderr.write(
-                            f"[re_helix]    Using fixed single-site rho angle: "
-                            f"{fixed_rho_deg:.2f}°.\n"
+                            f"[re_helix]    Using fixed single-site beta angle: "
+                            f"{fixed_beta_deg:.2f}°.\n"
                         )
 
                 # Identify which chains within each helix group actually
@@ -2466,6 +3022,11 @@ def align_helices_for_exchanges(
 
                 axis_ranges_fixed = find_axis_range_definition_for_positions(fixed, fixed_positions)
                 axis_ranges_moving = find_axis_range_definition_for_positions(neighbour, moving_positions)
+                axis_range_overrides = get_helix_axis_range_overrides()
+                if axis_ranges_fixed is None:
+                    axis_ranges_fixed = axis_range_overrides.get(tuple(sorted(fixed)))
+                if axis_ranges_moving is None:
+                    axis_ranges_moving = axis_range_overrides.get(tuple(sorted(neighbour)))
 
                 if axis_ranges_fixed is not None:
                     sys.stderr.write(
@@ -2550,7 +3111,7 @@ def align_helices_for_exchanges(
                         if not p1_list:
                             continue
 
-                        # params = [d, theta, phi]
+                        # params = [d, tau, phi]
                         x0 = [d0, 0.0, 0.0]
                         steps0 = [3.4, math.pi / 2.0, math.pi / 2.0]
                         angle_indices = {1, 2}
@@ -2585,16 +3146,16 @@ def align_helices_for_exchanges(
                         continue
 
                     # Unpack the chosen solution.
-                    d_opt, theta_opt, phi_opt = best_params
-                    rho_opt = 0.0
+                    d_opt, tau_opt, phi_opt = best_params
+                    beta_opt = 0.0
                     chosen_orient = "parallel" if not best_pre_flip else "anti-parallel"
                     best_val_final = best_val
                     anchor1_final = best_anchor1
 
                 else:
                     # Original behaviour for --axis_parallel n, except that a valid
-                    # single-site fixed-rho annotation holds rho constant and optimises
-                    # only d/theta/phi.
+                    # single-site fixed-beta annotation holds beta constant and optimises
+                    # only d/tau/phi.
                     objective, p1_list, _p2_list, d0, anchor1 = build_pair_objective(
                         effective_pairs,
                         residue_to_P_atom,
@@ -2602,7 +3163,7 @@ def align_helices_for_exchanges(
                         center_fixed,
                         center_moving,
                         axis_parallel_flag,
-                        fixed_rho=fixed_rho_rad,
+                        fixed_beta=fixed_beta_rad,
                     )
 
                     if not p1_list:
@@ -2615,13 +3176,13 @@ def align_helices_for_exchanges(
                         queue.append(neighbour)
                         continue
 
-                    if fixed_rho_rad is None:
-                        # params = [d, theta, phi, rho]
+                    if fixed_beta_rad is None:
+                        # params = [d, tau, phi, beta]
                         x0 = [d0, 0.0, 0.0, 0.0]
                         steps0 = [3.4, math.pi / 2.0, math.pi / 2.0, math.pi / 2.0]
                         angle_indices = {1, 2, 3}
                     else:
-                        # params = [d, theta, phi]; rho is held at fixed_rho_rad
+                        # params = [d, tau, phi]; beta is held at fixed_beta_rad
                         x0 = [d0, 0.0, 0.0]
                         steps0 = [3.4, math.pi / 2.0, math.pi / 2.0]
                         angle_indices = {1, 2}
@@ -2633,26 +3194,26 @@ def align_helices_for_exchanges(
                         angle_indices=angle_indices,
                     )
 
-                    if fixed_rho_rad is None:
-                        d_opt, theta_opt, phi_opt, rho_opt = best_params
+                    if fixed_beta_rad is None:
+                        d_opt, tau_opt, phi_opt, beta_opt = best_params
                     else:
-                        d_opt, theta_opt, phi_opt = best_params
-                        rho_opt = fixed_rho_rad
+                        d_opt, tau_opt, phi_opt = best_params
+                        beta_opt = fixed_beta_rad
                     chosen_orient = "n/a"
                     best_val_final = best_val
                     anchor1_final = anchor1
 
-                theta_deg = theta_opt * 180.0 / math.pi
+                tau_deg = tau_opt * 180.0 / math.pi
                 phi_deg = phi_opt * 180.0 / math.pi
-                rho_deg = rho_opt * 180.0 / math.pi
+                beta_deg = beta_opt * 180.0 / math.pi
 
                 msg = (
                     f"[re_helix]   Optimised: d = {d_opt:.3f} Å, "
-                    f"theta = {theta_deg:.2f}°, phi = {phi_deg:.2f}°"
+                    f"tau = {tau_deg:.2f}°, phi = {phi_deg:.2f}°"
                 )
                 if not axis_parallel_flag:
-                    msg += f", rho = {rho_deg:.2f}°"
-                    if fixed_rho_rad is not None:
+                    msg += f", beta = {beta_deg:.2f}°"
+                    if fixed_beta_rad is not None:
                         msg += " (fixed single-site angle)"
                 else:
                     msg += f" (axis orientation: {chosen_orient})"
@@ -2667,9 +3228,9 @@ def align_helices_for_exchanges(
                     center_fixed,
                     center_moving,
                     d_opt,
-                    theta_opt,
+                    tau_opt,
                     phi_opt,
-                    rho_opt,
+                    beta_opt,
                     axis_parallel_flag,
                     anchor1_final,
                     pre_flip=best_pre_flip,
@@ -2737,10 +3298,10 @@ Units: Å
 Default: 22.0""",
     "axis_parallel": """Choose whether the aligned helix axes must stay parallel.
 
-y: keep the axes parallel (or anti-parallel) and optimise d/theta/phi.
-n: also allow a tilt of helix 2 (rho), so the axes may become non-parallel.
+y: keep the axes parallel (or anti-parallel) and optimise d/tau/phi.
+n: also allow a tilt of helix 2 (beta), so the axes may become non-parallel.
 
-For --axis_parallel n, a single-site pair may optionally define a fixed rho
+For --axis_parallel n, a single-site pair may optionally define a fixed beta
 angle in the pair row. That controlled angle is ignored with a warning when
 more than one site connects the same helix pair, or when --axis_parallel y is
 selected.""",
@@ -2759,7 +3320,7 @@ chain IDs directly.""",
     "re_only": """Apply reciprocal exchanges directly to the input structure
 without running helix alignment first.
 
-The output is <base>_rex.pdb. Explicit helix definitions and rho-angle values
+The output is <base>_rex.pdb. Explicit helix definitions and beta-angle values
 may be left in the rows, but only the residue pairs and exchange kinds are
 used for reciprocal exchange.""",
     "cir_shift": """Shift applied when writing circular strands after reciprocal exchange,
@@ -2787,10 +3348,11 @@ RE-only mode they only drive reciprocal exchange.
 
 pos1 / pos2 format: residue number + chain ID, such as 30A or A30
 Units: nt + chain ID
-rho angle: optional fixed rho angle in degrees for --axis_parallel n when
+beta angle: optional fixed beta angle in degrees for --axis_parallel n when
 exactly one reciprocal-exchange site connects that helix pair; leave blank for
 normal behavior. Ignored with a warning for multi-site helix pairs or when
 --axis_parallel y is selected. This helps make controlled interhelical angles.
+Legacy rho-angle wording means the same beta angle.
 kind: d = double, s = single, b = bowtie
 
 Example rows:
@@ -2804,18 +3366,24 @@ string, such as:
   30A 8D d 26A 9C 90 d 13B 24C s
 
 If this field is filled, the individual pair rows above it are ignored.""",
-    "axis_range": """Optional residue windows used to define a helical axis when the alignment
-positions for that helix fall inside the specified ranges.
+    "axis_range": """Optional chain or residue windows used to define a helical axis.
 
-Format: comma-separated chain-specific ranges
+Format: comma-separated chain IDs or chain-specific ranges
 Units: nt
-Example:
+Examples:
+  A,B
   B26-B60,A1-A35
 
-All chains in one axis-range definition must belong to the same helix.
+The adjacent "move with axis" field can list additional chains or residue
+windows that should receive the same rigid transform, for example:
+  C,D
+  C1-C50,D
+
+This can define a triplex-like group without stdin prompts: use axis A,B and
+move C. The axis is fit from A/B while C moves together with that axis.
 In replication mode, enter the final post-replication chain IDs you want
-to target; replicated copies are not filled in automatically. Blank rows
-are ignored.""",
+to target, or use a base-template row that covers the input chains before
+replication to propagate it across copies. Blank rows are ignored.""",
 }
 
 
@@ -2826,6 +3394,7 @@ def _build_equivalent_cli_command(
     pair_rows: List[Dict[str, str]],
     pair_args_text: str,
     axis_range_rows: List[str],
+    axis_move_rows: List[str],
     output_base: str,
     axis_dist: str,
     axis_parallel: str,
@@ -2855,12 +3424,12 @@ def _build_equivalent_cli_command(
         for row in pair_rows:
             pos1 = row.get("pos1", "").strip()
             pos2 = row.get("pos2", "").strip()
-            rho_angle = row.get("rho_angle", "").strip()
+            beta_angle = row.get("beta_angle", row.get("rho_angle", "")).strip()
             kind = row.get("kind", "").strip()
             if not pos1 or not pos2 or not kind:
                 continue
-            if rho_angle:
-                cmd.extend([pos1, pos2, rho_angle, kind])
+            if beta_angle:
+                cmd.extend([pos1, pos2, beta_angle, kind])
             else:
                 cmd.extend([pos1, pos2, kind])
             n_pairs += 1
@@ -2868,10 +3437,15 @@ def _build_equivalent_cli_command(
         if n_pairs == 0:
             raise ValueError("Please provide at least one complete exchange pair.")
 
-    for spec in axis_range_rows:
+    for idx, spec in enumerate(axis_range_rows):
         spec = spec.strip()
+        move_spec = axis_move_rows[idx].strip() if idx < len(axis_move_rows) else ""
+        if move_spec and not spec:
+            raise ValueError("A move-with-axis entry requires an axis definition in the same row.")
         if spec:
             cmd.extend(["--axis_range", spec])
+            if move_spec:
+                cmd.extend(["--axis_move", move_spec])
 
     if output_base.strip():
         cmd.extend(["-o", output_base.strip()])
@@ -3170,14 +3744,14 @@ def _launch_gui() -> None:
     make_help_button(pairs_header, "Exchange pairs", "pairs").pack(side="left")
     ttk.Label(
         pairs_header,
-        text="pos1 / pos2 use residue+chain; optional rho angle is in degrees; kind = d / s / b.",
+        text="pos1 / pos2 use residue+chain; optional beta angle is in degrees; kind = d / s / b.",
     ).pack(side="left", padx=8)
     pair_rows_frame = ttk.Frame(pairs_box)
     pair_rows_frame.pack(fill="x", pady=(8, 0))
     ttk.Label(pair_rows_frame, text="").grid(row=0, column=0, sticky="w")
     ttk.Label(pair_rows_frame, text="pos1 (nt+chain)").grid(row=0, column=1, sticky="w", padx=4)
     ttk.Label(pair_rows_frame, text="pos2 (nt+chain)").grid(row=0, column=2, sticky="w", padx=4)
-    ttk.Label(pair_rows_frame, text="rho angle (deg, optional)").grid(row=0, column=3, sticky="w", padx=4)
+    ttk.Label(pair_rows_frame, text="beta angle (deg, optional)").grid(row=0, column=3, sticky="w", padx=4)
     ttk.Label(pair_rows_frame, text="kind").grid(row=0, column=4, sticky="w", padx=4)
 
     pair_args_frame = ttk.Frame(pairs_box)
@@ -3191,7 +3765,7 @@ def _launch_gui() -> None:
     )
     make_help_button(pair_args_frame, "CLI pair args", "pair_args").pack(side="left")
 
-    axis_box = ttk.LabelFrame(outer, text="Axis residue ranges", padding=10, style="Section.TLabelframe")
+    axis_box = ttk.LabelFrame(outer, text="Axis definitions", padding=10, style="Section.TLabelframe")
     axis_box.pack(fill="x", padx=2, pady=4)
     axis_header = ttk.Frame(axis_box)
     axis_header.pack(fill="x")
@@ -3206,12 +3780,13 @@ def _launch_gui() -> None:
         validatecommand=validate_count_cmd,
         command=lambda: schedule_axis_rows(),
     ).pack(side="left", padx=6)
-    make_help_button(axis_header, "Axis residue ranges", "axis_range").pack(side="left")
-    ttk.Label(axis_header, text="Range format (nt): B26-B60,A1-A35").pack(side="left", padx=8)
+    make_help_button(axis_header, "Axis definitions", "axis_range").pack(side="left")
+    ttk.Label(axis_header, text="Axis: A,B or B26-B60,A1-A35; move: C,D or C1-C50,D").pack(side="left", padx=8)
     axis_rows_frame = ttk.Frame(axis_box)
     axis_rows_frame.pack(fill="x", pady=(8, 0))
     ttk.Label(axis_rows_frame, text="").grid(row=0, column=0, sticky="w")
-    ttk.Label(axis_rows_frame, text="range spec (nt)").grid(row=0, column=1, sticky="w", padx=4)
+    ttk.Label(axis_rows_frame, text="axis definition").grid(row=0, column=1, sticky="w", padx=4)
+    ttk.Label(axis_rows_frame, text="move with axis").grid(row=0, column=2, sticky="w", padx=4)
 
     other_tools_box = ttk.LabelFrame(outer, text="Other tools", padding=10, style="Section.TLabelframe")
     other_tools_box.pack(fill="x", padx=2, pady=4)
@@ -3336,12 +3911,12 @@ def _launch_gui() -> None:
             row_index = len(pair_widgets)
             pos1_var = tk.StringVar()
             pos2_var = tk.StringVar()
-            rho_var = tk.StringVar()
+            beta_var = tk.StringVar()
             kind_var = tk.StringVar(value="d")
             label = ttk.Label(pair_rows_frame, text=f"Pair {row_index + 1}")
             e1 = ttk.Entry(pair_rows_frame, textvariable=pos1_var, width=16)
             e2 = ttk.Entry(pair_rows_frame, textvariable=pos2_var, width=16)
-            e_rho = ttk.Entry(pair_rows_frame, textvariable=rho_var, width=14)
+            e_beta = ttk.Entry(pair_rows_frame, textvariable=beta_var, width=14)
             kind_box = ttk.Combobox(
                 pair_rows_frame,
                 textvariable=kind_var,
@@ -3354,9 +3929,9 @@ def _launch_gui() -> None:
                     "label_widget": label,
                     "pos1_var": pos1_var,
                     "pos2_var": pos2_var,
-                    "rho_var": rho_var,
+                    "beta_var": beta_var,
                     "kind_var": kind_var,
-                    "widgets": [e1, e2, e_rho, kind_box],
+                    "widgets": [e1, e2, e_beta, kind_box],
                 }
             )
         for idx, item in enumerate(pair_widgets):
@@ -3382,20 +3957,24 @@ def _launch_gui() -> None:
         row_targets["axis"] = target
         while len(axis_widgets) < target:
             row_index = len(axis_widgets)
-            var = tk.StringVar()
+            axis_var = tk.StringVar()
+            move_var = tk.StringVar()
             label = ttk.Label(axis_rows_frame, text=f"Axis {row_index + 1}")
-            entry = ttk.Entry(axis_rows_frame, textvariable=var, width=50)
-            axis_widgets.append((label, var, entry))
+            axis_entry = ttk.Entry(axis_rows_frame, textvariable=axis_var, width=42)
+            move_entry = ttk.Entry(axis_rows_frame, textvariable=move_var, width=42)
+            axis_widgets.append((label, axis_var, move_var, axis_entry, move_entry))
         for idx, item in enumerate(axis_widgets):
-            label, var, entry = item
+            label, axis_var, move_var, axis_entry, move_entry = item
             grid_row = idx + 1
             if idx < target:
                 label.configure(text=f"Axis {idx + 1}")
                 label.grid(row=grid_row, column=0, sticky="w", pady=2)
-                entry.grid(row=grid_row, column=1, sticky="w", padx=4, pady=2)
+                axis_entry.grid(row=grid_row, column=1, sticky="w", padx=4, pady=2)
+                move_entry.grid(row=grid_row, column=2, sticky="w", padx=4, pady=2)
             else:
                 label.grid_remove()
-                entry.grid_remove()
+                axis_entry.grid_remove()
+                move_entry.grid_remove()
         schedule_scrollbar_refresh()
 
     def schedule_pair_rows(*_args) -> None:
@@ -3453,11 +4032,20 @@ def _launch_gui() -> None:
                     {
                         "pos1": item["pos1_var"].get(),
                         "pos2": item["pos2_var"].get(),
-                        "rho_angle": item["rho_var"].get(),
+                        "beta_angle": item["beta_var"].get(),
                         "kind": item["kind_var"].get(),
                     }
                 )
-            axis_rows = [var.get() for _label, var, _entry in axis_widgets[: current_axis_target()]]
+            axis_rows = [
+                axis_var.get()
+                for _label, axis_var, _move_var, _axis_entry, _move_entry
+                in axis_widgets[: current_axis_target()]
+            ]
+            axis_move_rows = [
+                move_var.get()
+                for _label, _axis_var, move_var, _axis_entry, _move_entry
+                in axis_widgets[: current_axis_target()]
+            ]
             cmd = _build_equivalent_cli_command(
                 str(Path(__file__).resolve()),
                 pdb_var.get().strip(),
@@ -3465,6 +4053,7 @@ def _launch_gui() -> None:
                 pair_rows,
                 pair_args_var.get(),
                 axis_rows,
+                axis_move_rows,
                 output_var.get(),
                 axis_dist_var.get(),
                 axis_parallel_var.get(),
@@ -3559,13 +4148,13 @@ def main() -> None:
             "  (AB) (CD) 30A 8D d 13B 24C s\n"
             "  (ABMN) 30A 8D d 13B 24C s\n"
             "  30A 8D d 13B 24C s\n"
-            "  26A 9C 90 d     # fixed rho angle for one single-site helix pair\n"
+            "  26A 9C 90 d     # fixed beta angle for one single-site helix pair\n"
             "Helix defs like (AB) or (ABMN) mean all chains inside the "
             "parentheses form one helix group that moves as a rigid block. "
             "If any are provided, helices are not auto-detected. "
-            "Each exchange can also be written as <pos1> <pos2> <rho_deg> <kind>; "
-            "the optional rho angle is used only for exactly one site between a "
-            "helix pair under --axis_parallel n."
+            "Each exchange can also be written as <pos1> <pos2> <beta_deg> <kind>; "
+            "the optional beta angle is used only for exactly one site between a "
+            "helix pair under --axis_parallel n. Legacy docs called this rho_deg."
         ),
     )
     parser.add_argument(
@@ -3600,12 +4189,22 @@ def main() -> None:
         action="append",
         default=[],
         help=(
-            "Residue-range definition for helical-axis estimation. Repeat this option as needed. "
-            "Example: --axis_range B26-B60,A1-A35. If all P positions used for a given helix "
-            "pair fall inside one of these user-defined windows, the axis is determined from the "
-            "specified residue ranges instead of from the full helix model. In replication mode, "
-            "these definitions are not copied automatically; they are interpreted against the "
-            "final post-replication chain IDs so replicated chains can be targeted explicitly."
+            "Chain/range definition for helical-axis estimation. Repeat this option as needed. "
+            "Examples: --axis_range B26-B60,A1-A35 or --axis_range A,B. Whole-chain letters "
+            "use all P atoms on that chain for the axis. If paired with --axis_move, the same "
+            "row defines an axis-coupled helix group and the listed move payload follows that axis. "
+            "In replication mode, base-template axis groups can be propagated to copies, and final "
+            "post-replication chain IDs can still be targeted explicitly."
+        ),
+    )
+    parser.add_argument(
+        "--axis_move",
+        action="append",
+        default=[],
+        help=(
+            "Additional chains or residue windows to move with the corresponding --axis_range row. "
+            "Examples: --axis_move C,D or --axis_move C1-C50,D. This avoids triplex stdin prompts "
+            "by letting an axis row such as --axis_range A,B move payload chain C with that axis."
         ),
     )
     parser.add_argument(
@@ -3620,14 +4219,16 @@ def main() -> None:
         default="y",
         help=(
             "If 'y' (default), helices are kept parallel and we optimise "
-            "d (slide), theta (self-twist) and phi (around helix 1's axis). "
+            "d (axial slide), tau (axial twist/spin of the moving helix) and "
+            "phi (orbital azimuth around the fixed helix). "
             "If 'n', we additionally allow a tilt of helix 2 around a "
-            "P-pair–dependent common perpendicular (rho), so the axes are "
+            "P-pair–dependent common perpendicular (beta), so the axes are "
             "no longer parallel. With a single reciprocal-exchange site between "
             "two helices, an operation can be written as <pos1> <pos2> "
-            "<rho_deg> <kind> to hold rho at that angle while optimizing "
-            "d/theta/phi. Fixed rho definitions are ignored with a warning "
-            "for --axis_parallel y or multi-site helix pairs."
+            "<beta_deg> <kind> to hold beta at that angle while optimizing "
+            "d/tau/phi. Legacy <rho_deg> examples are accepted as beta. "
+            "Fixed beta definitions are ignored with a warning for --axis_parallel y "
+            "or multi-site helix pairs."
         ),
     )
     parser.add_argument(
@@ -3718,11 +4319,14 @@ def main() -> None:
 
     if args.re_only:
         axis_range_defs_input = []
+        axis_move_defs_input = []
     else:
         try:
             axis_range_defs_input = parse_axis_range_specs(args.axis_range)
+            axis_move_defs_input = parse_axis_move_specs(args.axis_move)
+            pair_axis_move_definitions(axis_range_defs_input, axis_move_defs_input)
         except ValueError as exc:
-            print(f"Error parsing --axis_range definitions: {exc}", file=sys.stderr)
+            print(f"Error parsing --axis_range / --axis_move definitions: {exc}", file=sys.stderr)
             sys.exit(1)
 
     # Determine base name for outputs
@@ -3771,8 +4375,8 @@ def main() -> None:
 
     command_text = " ".join(shlex.quote(arg) for arg in [sys.executable] + sys.argv)
 
-    if args.re_only and args.axis_range:
-        sys.stderr.write("[re_helix] Warning: --axis_range is ignored in RE-only mode.\n")
+    if args.re_only and (args.axis_range or args.axis_move):
+        sys.stderr.write("[re_helix] Warning: --axis_range/--axis_move is ignored in RE-only mode.\n")
 
     if args.re_only and not args.replicate:
         try:
@@ -3800,10 +4404,54 @@ def main() -> None:
     if not chain_to_P_atoms0:
         print("No P atoms found in input PDB; alignment cannot proceed.", file=sys.stderr)
         sys.exit(1)
+    original_atom_chains0 = sorted(
+        {atom.chainID for atom in rec_list if atom.recordName in ("ATOM", "HETATM")}
+    )
+
+    original_chain_lookup0 = {ch.upper(): ch for ch in original_atom_chains0}
+    template_axis_defs_input: List[AxisSelection] = []
+    template_move_defs_input: List[MoveSelection] = []
+    for axis_def, move_def in pair_axis_move_definitions(axis_range_defs_input, axis_move_defs_input):
+        row_chains = _selection_chains(axis_def) | _selection_chains(move_def)
+        if row_chains and all(ch.upper() in original_chain_lookup0 for ch in row_chains):
+            template_axis_defs_input.append(axis_def)
+            template_move_defs_input.append(move_def)
+
+    template_axis_defs_resolved: List[ResolvedAxisRange] = []
+    template_move_defs_resolved: List[MoveSelection] = []
+    axis_coupled_helices0: List[HelixID] = []
+    if template_axis_defs_input:
+        try:
+            template_axis_defs_resolved = resolve_axis_range_definitions(
+                template_axis_defs_input,
+                chain_to_P_atoms0.keys(),
+                chain_to_P_atoms0,
+            )
+            template_move_defs_resolved = resolve_axis_move_definitions(
+                template_move_defs_input,
+                original_atom_chains0,
+            )
+            axis_coupled_helices0 = build_axis_coupled_helix_defs(
+                template_axis_defs_resolved,
+                template_move_defs_resolved,
+                helix_defs if helix_defs else None,
+            )
+            register_axis_coupling_overrides(
+                template_axis_defs_resolved,
+                template_move_defs_resolved,
+                helix_defs if helix_defs else None,
+            )
+        except ValueError as exc:
+            print(f"Error resolving base-template --axis_range / --axis_move definitions: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     # Determine how many helices the input PDB appears to contain
     if helix_defs:
         helices0 = sorted({tuple(sorted(h)) for h in helix_defs})
+    elif axis_coupled_helices0 and set(chain_to_P_atoms0.keys()).issubset(
+        set().union(*(set(h) for h in axis_coupled_helices0))
+    ):
+        helices0 = sorted(set(axis_coupled_helices0))
     else:
         chain_to_helix0 = compute_chain_partner_map(chain_to_P_atoms0)
         helices0 = sorted({chain_to_helix0[ch] for ch in chain_to_helix0})
@@ -3819,14 +4467,14 @@ def main() -> None:
                 rec_list,
                 helices0,
                 exchange_specs,
-                helix_defs if helix_defs else None,
+                helix_defs if helix_defs else (axis_coupled_helices0 if axis_coupled_helices0 else None),
             )
         except Exception as exc:
             print(f"Error during helix replication: {exc}", file=sys.stderr)
             sys.exit(1)
         helix_defs_for_align: Optional[List[HelixID]] = helix_defs_repl
     else:
-        helix_defs_for_align = helix_defs if helix_defs else None
+        helix_defs_for_align = helix_defs if helix_defs else (axis_coupled_helices0 if axis_coupled_helices0 else None)
 
     if args.re_only:
         try:
@@ -3850,24 +4498,40 @@ def main() -> None:
         return
 
     _chain_to_res_atoms_curr, _residue_to_P_atom_curr, chain_to_P_atoms_curr = build_nucleic_acid_maps(rec_list)
+    atom_chains_curr = sorted(
+        {atom.chainID for atom in rec_list if atom.recordName in ("ATOM", "HETATM")}
+    )
     if replicate_active:
         axis_range_defs_for_resolve = translate_axis_range_definitions_for_replication(
             axis_range_defs_input,
             chain_to_P_atoms0.keys(),
             chain_to_P_atoms_curr.keys(),
         )
+        axis_move_defs_for_resolve = translate_axis_range_definitions_for_replication(
+            axis_move_defs_input,
+            original_atom_chains0,
+            atom_chains_curr,
+        )
     else:
         axis_range_defs_for_resolve = axis_range_defs_input
+        axis_move_defs_for_resolve = axis_move_defs_input
 
     try:
         axis_range_defs_resolved = resolve_axis_range_definitions(
             axis_range_defs_for_resolve,
             chain_to_P_atoms_curr.keys(),
+            chain_to_P_atoms_curr,
         )
+        axis_move_defs_resolved = resolve_axis_move_definitions(
+            axis_move_defs_for_resolve,
+            atom_chains_curr,
+        )
+        pair_axis_move_definitions(axis_range_defs_resolved, axis_move_defs_resolved)
     except ValueError as exc:
-        print(f"Error resolving --axis_range definitions: {exc}", file=sys.stderr)
+        print(f"Error resolving --axis_range / --axis_move definitions: {exc}", file=sys.stderr)
         sys.exit(1)
     set_helix_axis_range_definitions(axis_range_defs_resolved)
+    set_helix_axis_move_definitions(axis_move_defs_resolved)
 
     axis_parallel_flag = args.axis_parallel.lower() == "y"
 

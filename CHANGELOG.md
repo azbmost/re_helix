@@ -1,5 +1,16 @@
 # Changelog
 
+## V3.17 - 2026-06-28
+
+- Bumped `re_helix` to V3.17.
+- Bumped `re_helix_ccg` and `re_helix_cck` to V3.1.
+- Renamed the cyclic alignment scripts to `re_helix_lib/re_helix_ccgV3_1.py` and `re_helix_lib/re_helix_cckV3_1.py`.
+- Renamed alignment angle terminology from `theta` to `tau` and from `rho` to `beta`; legacy rho-angle input remains accepted as a beta alias.
+- Extended `--axis_range` so whole-chain letters such as `A,B` can define an axis from all P atoms on those chains, alongside residue-window terms such as `A1-A35,B60-B26`.
+- Added paired `--axis_move` definitions for moving additional whole chains or residue windows with a defined axis, for example `--axis_range A,B --axis_move C,D` or `--axis_range A,B --axis_move C1-C50,D`.
+- Added GUI fields for axis-coupled move definitions, allowing triplex-like groups to be defined without stdin prompts.
+- Updated Get Phenix Restraints so X33/internal linker support files and suggested-command arguments are generated only when a standalone linker phosphate has two explicit P--O3' LINK records.
+
 ## V3.16 - 2026-06-26
 
 - Bumped `re_helix` to V3.16.
@@ -95,9 +106,9 @@
 
 ## V3.5 - 2026-06-14
 
-- Added optional fixed rho-angle syntax for single-site inter-helix reciprocal exchanges.
-- Supported `<pos1> <pos2> <rho_deg> <kind>` for a single reciprocal-exchange site when `--axis_parallel n` is selected.
-- Ignored fixed rho definitions with warnings for multi-site helix pairs or `--axis_parallel y`.
+- Added optional fixed beta-angle syntax for single-site inter-helix reciprocal exchanges.
+- Supported `<pos1> <pos2> <beta_deg> <kind>` for a single reciprocal-exchange site when `--axis_parallel n` is selected. This field was formerly documented as legacy `rho_deg`.
+- Ignored fixed beta definitions with warnings for multi-site helix pairs or `--axis_parallel y`.
 
 ## V3.4 - 2026-05-23
 
