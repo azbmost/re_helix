@@ -68,8 +68,10 @@ class CyclicAlignmentLauncher:
         self.fix_var = tk.StringVar()
         self.replicate_var = tk.BooleanVar(value=False)
         self.cir_shift_var = tk.StringVar(value="8")
-        self.axis_range_var = tk.StringVar()
-        self.axis_move_var = tk.StringVar()
+        self.axis_count_var = tk.StringVar(value="1")
+        self.axis_row_target = 1
+        self.axis_render_pending = False
+        self.axis_widgets: list[dict[str, object]] = []
         self.w_pp_var = tk.StringVar(value="1.0")
         self.w_line_var = tk.StringVar(value="1.0")
         self.w_axis_var = tk.StringVar(value="10000")
@@ -90,6 +92,7 @@ class CyclicAlignmentLauncher:
 
         self._build_ui()
         self.method_var.trace_add("write", lambda *_: self._refresh_method_options())
+        self.axis_count_var.trace_add("write", lambda *_: self._schedule_axis_rows())
         self._refresh_method_options()
         self.root.after(100, self._drain_output_queue)
 
@@ -99,7 +102,7 @@ class CyclicAlignmentLauncher:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(2, weight=1)
+        outer.rowconfigure(4, weight=1)
 
         top = ttk.LabelFrame(outer, text="Method")
         top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
@@ -115,41 +118,45 @@ class CyclicAlignmentLauncher:
         form = ttk.LabelFrame(outer, text="Inputs")
         form.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         form.columnconfigure(1, weight=1)
-        form.columnconfigure(6, weight=1)
 
-        self._inline_entry(
+        self._entry_row(
             form,
-            0,
             0,
             "Input PDB",
             self.pdb_var,
             browse=lambda: self._browse_file(self.pdb_var, [("PDB files", "*.pdb *.pdb.txt"), ("All files", "*")]),
             help_text="Input PDB file to align.",
-            width=30,
+            entry_colspan=8,
+            help_col=11,
         )
-        self._inline_entry(
+        self._entry_row(
             form,
-            0,
-            5,
+            1,
             "Output base",
             self.output_var,
             browse=lambda: self._browse_save_base(self.output_var),
             help_text="Optional output base path. The method-specific suffixes are added automatically.",
-            width=28,
+            entry_colspan=8,
+            help_col=11,
         )
 
-        ttk.Label(form, text="Exchange ops").grid(row=1, column=0, sticky="nw", padx=(8, 6), pady=4)
+        ttk.Label(form, text="Exchange ops").grid(row=2, column=0, sticky="nw", padx=(8, 6), pady=4)
         self.ops_text = tk.Text(form, height=3, wrap="word", undo=True)
-        self.ops_text.grid(row=1, column=1, columnspan=9, sticky="ew", pady=4)
+        self.ops_text.grid(row=2, column=1, columnspan=9, sticky="ew", pady=4)
         self._help_button(
             form,
             "Tokens may include helix definitions and reciprocal-exchange specs, for example: (AB) (CD) 30A 8D d 13B 24C s",
-        ).grid(row=1, column=10, sticky="n", padx=(6, 8), pady=4)
+        ).grid(row=2, column=10, sticky="n", padx=(6, 8), pady=4)
 
-        self._inline_entry(form, 2, 0, "axis_dist", self.axis_dist_var, help_text="Target helix-axis distance in Angstroms.", width=8)
+        run_options = ttk.LabelFrame(outer, text="Options")
+        run_options.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        run_options.columnconfigure(1, weight=1)
+        run_options.columnconfigure(7, weight=1)
+
+        self._inline_entry(run_options, 0, 0, "axis_dist", self.axis_dist_var, help_text="Target helix-axis distance in Angstroms.", width=8)
         self._inline_combo(
-            form,
-            2,
+            run_options,
+            0,
             3,
             "axis_parallel",
             self.axis_parallel_var,
@@ -157,35 +164,51 @@ class CyclicAlignmentLauncher:
             "Use n for cyclic tilt/refinement; y keeps the original tree alignment behavior.",
             width=5,
         )
-        self._inline_entry(form, 2, 6, "fix", self.fix_var, help_text="Optional chain ID whose helix should remain fixed.", width=5)
-        ttk.Checkbutton(form, text="replicate", variable=self.replicate_var).grid(row=2, column=9, sticky="w", padx=(10, 2), pady=4)
-        self._help_button(form, "Replicate all chains using the same semantics as re_helix.py.").grid(row=2, column=10, sticky="w", padx=(0, 8), pady=4)
+        self._inline_entry(run_options, 0, 6, "fix", self.fix_var, help_text="Optional chain ID whose helix should remain fixed.", width=5)
+        ttk.Checkbutton(run_options, text="replicate", variable=self.replicate_var).grid(row=0, column=9, sticky="w", padx=(10, 2), pady=4)
+        self._help_button(run_options, "Replicate all chains using the same semantics as re_helix.py.").grid(row=0, column=10, sticky="w", padx=(0, 8), pady=4)
 
-        self._inline_entry(form, 3, 0, "cir_shift", self.cir_shift_var, help_text="Residue shift for circular strands during reciprocal exchange.", width=8)
-        self._inline_entry(form, 3, 3, "w_pp", self.w_pp_var, help_text="Weight for phosphate-pair distance residuals or scores.", width=8)
-        self._inline_entry(form, 3, 6, "w_line", self.w_line_var, help_text="Weight for line-topology residuals or scores.", width=8)
-        self._inline_entry(form, 3, 9, "w_axis", self.w_axis_var, help_text="Weight for target axis-distance mismatch.", width=9)
-        self._inline_entry(
-            form,
-            4,
-            0,
-            "axis defining",
-            self.axis_range_var,
-            help_text="Optional axis definition such as A,B or B26-B60,A1-A35.",
-            width=22,
-        )
-        self._inline_entry(
-            form,
-            4,
-            4,
-            "move with axis",
-            self.axis_move_var,
-            help_text="Optional payload moved with the axis definition, such as C,D or C1-C50,D.",
-            width=22,
-        )
+        self._inline_entry(run_options, 1, 0, "cir_shift", self.cir_shift_var, help_text="Residue shift for circular strands during reciprocal exchange.", width=8)
+        self._inline_entry(run_options, 1, 3, "w_pp", self.w_pp_var, help_text="Weight for phosphate-pair distance residuals or scores.", width=8)
+        self._inline_entry(run_options, 1, 6, "w_line", self.w_line_var, help_text="Weight for line-topology residuals or scores.", width=8)
+        self._inline_entry(run_options, 1, 9, "w_axis", self.w_axis_var, help_text="Weight for target axis-distance mismatch.", width=9)
+
+        axis_box = ttk.LabelFrame(outer, text="Axis definitions")
+        axis_box.grid(row=3, column=0, sticky="ew", pady=(0, 8))
+        axis_box.columnconfigure(0, weight=1)
+
+        axis_header = ttk.Frame(axis_box)
+        axis_header.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 0))
+        ttk.Label(axis_header, text="Rows").pack(side="left")
+        validate_count_cmd = (self.root.register(self._validate_count_text), "%P")
+        tk.Spinbox(
+            axis_header,
+            from_=0,
+            to=30,
+            width=5,
+            textvariable=self.axis_count_var,
+            validate="key",
+            validatecommand=validate_count_cmd,
+            command=self._render_axis_rows,
+        ).pack(side="left", padx=6)
+        self._help_button(
+            axis_header,
+            "Each row pairs an axis definition with optional additional chains or residues that move with that axis. Examples: axis A,B with move C,D; or axis B26-B60,A1-A35 with move C1-C50,D.",
+        ).pack(side="left")
+        ttk.Label(axis_header, text="Axis: A,B or B26-B60,A1-A35; move: C,D or C1-C50,D").pack(side="left", padx=8)
+
+        self.axis_rows_frame = ttk.Frame(axis_box)
+        self.axis_rows_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=8)
+        self.axis_rows_frame.columnconfigure(1, weight=1)
+        self.axis_rows_frame.columnconfigure(2, weight=1)
+        ttk.Label(self.axis_rows_frame, text="").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.axis_rows_frame, text="axis definition").grid(row=0, column=1, sticky="w", padx=4)
+        ttk.Label(self.axis_rows_frame, text="move with axis").grid(row=0, column=2, sticky="w", padx=4)
+        self._render_axis_rows()
+
         self._entry_row(
-            form,
-            5,
+            run_options,
+            2,
             "extra args",
             self.extra_args_var,
             help_text="Optional raw command-line arguments appended after the launcher-generated options.",
@@ -194,7 +217,7 @@ class CyclicAlignmentLauncher:
         )
 
         options = ttk.Frame(outer)
-        options.grid(row=2, column=0, sticky="nsew", pady=(0, 8))
+        options.grid(row=4, column=0, sticky="nsew", pady=(0, 8))
         options.columnconfigure(0, weight=1)
         options.rowconfigure(2, weight=1)
 
@@ -240,7 +263,7 @@ class CyclicAlignmentLauncher:
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
         buttons = ttk.Frame(outer)
-        buttons.grid(row=3, column=0, sticky="ew")
+        buttons.grid(row=5, column=0, sticky="ew")
         buttons.columnconfigure(0, weight=1)
         self.run_button = ttk.Button(buttons, text="Run", command=self._run)
         self.run_button.grid(row=0, column=1, padx=(8, 0))
@@ -318,6 +341,68 @@ class CyclicAlignmentLauncher:
                 if browse is not None:
                     help_col += 2
             self._help_button(parent, help_text).grid(row=row, column=help_col, sticky="w", padx=(6, 0), pady=4)
+
+    def _validate_count_text(self, proposed: str) -> bool:
+        return proposed == "" or proposed.isdigit()
+
+    def _coerce_count(self, raw_value: str, minimum: int, maximum: int) -> int | None:
+        value_text = str(raw_value).strip()
+        if not value_text or not value_text.isdigit():
+            return None
+        return max(minimum, min(maximum, int(value_text)))
+
+    def _current_axis_target(self) -> int:
+        return self.axis_row_target
+
+    def _schedule_axis_rows(self) -> None:
+        if self.axis_render_pending:
+            return
+        self.axis_render_pending = True
+
+        def _run() -> None:
+            self.axis_render_pending = False
+            self._render_axis_rows()
+
+        self.root.after_idle(_run)
+
+    def _render_axis_rows(self) -> None:
+        if not hasattr(self, "axis_rows_frame"):
+            return
+        target_opt = self._coerce_count(self.axis_count_var.get(), 0, 30)
+        if target_opt is None:
+            return
+        target = target_opt
+        self.axis_row_target = target
+        while len(self.axis_widgets) < target:
+            row_index = len(self.axis_widgets)
+            axis_var = tk.StringVar()
+            move_var = tk.StringVar()
+            label = ttk.Label(self.axis_rows_frame, text=f"Axis {row_index + 1}")
+            axis_entry = ttk.Entry(self.axis_rows_frame, textvariable=axis_var, width=32)
+            move_entry = ttk.Entry(self.axis_rows_frame, textvariable=move_var, width=32)
+            self.axis_widgets.append(
+                {
+                    "label_widget": label,
+                    "axis_var": axis_var,
+                    "move_var": move_var,
+                    "widgets": [axis_entry, move_entry],
+                }
+            )
+
+        for idx, item in enumerate(self.axis_widgets):
+            visible = idx < target
+            label_widget = item["label_widget"]
+            widgets = item["widgets"]
+            grid_row = idx + 1
+            if visible:
+                label_widget.configure(text=f"Axis {idx + 1}")
+                label_widget.grid(row=grid_row, column=0, sticky="w", pady=2)
+                for col, widget in enumerate(widgets, start=1):
+                    widget.grid(row=grid_row, column=col, sticky="ew", padx=4, pady=2)
+            else:
+                label_widget.grid_remove()
+                for widget in widgets:
+                    widget.grid_remove()
 
     def _combo_row(
         self,
@@ -402,14 +487,15 @@ class CyclicAlignmentLauncher:
         if self.replicate_var.get():
             cmd.append("--replicate")
         self._add_option(cmd, "--cir_shift", self.cir_shift_var.get())
-        axis_range = self.axis_range_var.get().strip()
-        axis_move = self.axis_move_var.get().strip()
-        if axis_move and not axis_range:
-            raise ValueError("move with axis requires an axis defining value.")
-        if axis_range:
-            cmd.extend(["--axis_range", axis_range])
-            if axis_move:
-                cmd.extend(["--axis_move", axis_move])
+        for idx, item in enumerate(self.axis_widgets[: self._current_axis_target()]):
+            axis_range = item["axis_var"].get().strip()
+            axis_move = item["move_var"].get().strip()
+            if axis_move and not axis_range:
+                raise ValueError(f"Axis {idx + 1}: move with axis requires an axis definition.")
+            if axis_range:
+                cmd.extend(["--axis_range", axis_range])
+                if axis_move:
+                    cmd.extend(["--axis_move", axis_move])
         self._add_option(cmd, "--w_pp", self.w_pp_var.get())
         self._add_option(cmd, "--w_line", self.w_line_var.get())
         self._add_option(cmd, "--w_axis", self.w_axis_var.get())
