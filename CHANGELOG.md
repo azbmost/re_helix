@@ -9,6 +9,7 @@
 - Extended `--axis_range` so whole-chain letters such as `A,B` can define an axis from all P atoms on those chains, alongside residue-window terms such as `A1-A35,B60-B26`.
 - Added paired `--axis_move` definitions for moving additional whole chains or residue windows with a defined axis, for example `--axis_range A,B --axis_move C,D` or `--axis_range A,B --axis_move C1-C50,D`.
 - Added GUI fields for axis-coupled move definitions, allowing triplex-like groups to be defined without stdin prompts.
+- Added optional `assets/icon.png` window icons to the bundled helper GUIs.
 - Updated Get Phenix Restraints so X33/internal linker support files and suggested-command arguments are generated only when a standalone linker phosphate has two explicit P--O3' LINK records.
 
 ## V3.16 - 2026-06-26

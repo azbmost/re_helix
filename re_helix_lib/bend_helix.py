@@ -68,6 +68,11 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
+try:
+    from re_helix_lib.gui_icon import apply_optional_icon
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from gui_icon import apply_optional_icon
+
 EPS = 1.0e-8
 CHAIN_ID_CANDIDATES = string.ascii_uppercase + string.ascii_lowercase + string.digits
 
@@ -1380,6 +1385,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         return 1
 
     root.title("bend_helixV2_4")
+    apply_optional_icon(root, __file__)
     root.geometry("940x760")
     root.resizable(True, True)
     root.columnconfigure(1, weight=1)

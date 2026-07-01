@@ -13,6 +13,11 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+try:
+    from re_helix_lib.gui_icon import apply_optional_icon
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from gui_icon import apply_optional_icon
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 HELP_BUTTON_BG = "#cfeeff"
@@ -54,6 +59,7 @@ class CyclicAlignmentLauncher:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("re_helix cyclic alignment V3.1")
+        apply_optional_icon(self.root, __file__)
         self.root.geometry("1040x650")
         self.root.minsize(880, 520)
 

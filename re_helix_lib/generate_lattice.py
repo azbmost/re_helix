@@ -41,6 +41,11 @@ import os
 import sys
 
 try:
+    from re_helix_lib.gui_icon import apply_optional_icon
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from gui_icon import apply_optional_icon
+
+try:
     import tkinter as tk
     from tkinter import filedialog, messagebox
 except Exception:
@@ -526,6 +531,7 @@ def run_gui(initial_path=None):
 
     root = tk.Tk()
     root.title("{} {}".format(TOOL_NAME, VERSION))
+    apply_optional_icon(root, __file__)
     root.geometry("860x720")
     root.minsize(820, 680)
 

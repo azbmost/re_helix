@@ -69,6 +69,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Set
 
 try:
+    from re_helix_lib.gui_icon import apply_optional_icon
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from gui_icon import apply_optional_icon
+
+try:
     import tkinter as tk
     from tkinter import filedialog, messagebox, scrolledtext
 except Exception:
@@ -1638,6 +1643,7 @@ def run_gui(initial_path=None) -> int:
 
     root = tk.Tk()
     root.title(f"{TOOL_NAME} {VERSION}")
+    apply_optional_icon(root, __file__)
     root.geometry("980x760")
     root.minsize(900, 680)
 

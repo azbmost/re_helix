@@ -20,6 +20,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+try:
+    from re_helix_lib.gui_icon import apply_optional_icon
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from gui_icon import apply_optional_icon
+
 TOOL_NAME = "Insert Virtual Resi"
 VERSION = "1.0"
 
@@ -286,6 +291,7 @@ def run_gui(initial_path: Optional[str] = None) -> int:
 
     root = tk.Tk()
     root.title(f"{TOOL_NAME} V{VERSION}")
+    apply_optional_icon(root, __file__)
     root.geometry("780x500")
 
     style = ttk.Style(root)

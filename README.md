@@ -16,7 +16,7 @@ Current version: V3.17
 - `re_helix_lib/insert_virtual_resi.py`: bundled Insert Virtual Resi tool for inserting residue-numbering gaps and updating LINK endpoints.
 - `re_helix_lib/generate_lattice.py`: bundled Generate Lattice tool for writing a P1 CRYST1 lattice record from three lattice vectors.
 - `re_helix_lib/get_phenix_restraints.py`: bundled Get Phenix Restraints tool for converting LINK records into Phenix geometry restraints, optional junction movement-selection params, and linker support files.
-- `assets/icon.png`: optional GUI/task-menu icon. The script uses it when present and falls back to the default Tk icon when it is missing.
+- `assets/icon.png`: optional GUI/task-menu icon. The main GUI and bundled helper GUIs use it when present and fall back to the default Tk icon when it is missing.
 
 ## Requirements
 

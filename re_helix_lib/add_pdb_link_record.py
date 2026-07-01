@@ -62,6 +62,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+try:
+    from re_helix_lib.gui_icon import apply_optional_icon
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from gui_icon import apply_optional_icon
+
 TOOL_NAME = "Add PDB LINK Record"
 VERSION = "1.1"
 
@@ -1176,6 +1181,7 @@ def run_gui(initial_path: Optional[str] = None) -> None:
         def __init__(self):
             super().__init__()
             self.title(f"{TOOL_NAME} V{VERSION}")
+            apply_optional_icon(self, __file__)
             self.geometry("1000x820")
 
             self.inp_path_var = tk.StringVar(value=initial_path or "")

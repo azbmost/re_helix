@@ -41,6 +41,11 @@ import shlex
 import sys
 
 try:
+    from re_helix_lib.gui_icon import apply_optional_icon
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from gui_icon import apply_optional_icon
+
+try:
     import tkinter as tk
     from tkinter import filedialog, messagebox
 except Exception:  # Tkinter is optional for CLI mode.
@@ -798,6 +803,7 @@ class SymmetryGUI(object):
         self.root = root
         defaults = defaults or {}
         root.title("Do Symmetry V%s" % VERSION)
+        apply_optional_icon(root, __file__)
         self.input_var = tk.StringVar(value=defaults.get("input_pdb", ""))
         self.output_var = tk.StringVar(value=defaults.get("output_base", ""))
         self.mode_var = tk.StringVar(value=defaults.get("mode", "groups"))
