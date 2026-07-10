@@ -1,5 +1,12 @@
 # Changelog
 
+## V3.18 - 2026-07-09
+
+- Bumped `re_helix` to V3.18.
+- Added user-defined alignment axes with `--user_axis_dir X Y Z` and `--user_axis_point X Y Z`.
+- Added GUI controls in Axis definitions for direction-plus-point axis mode, including dynamic greying of the residue-range axis rows when the checkbox is enabled.
+- In user-defined-axis mode, skipped fixed/moving helix-axis estimation and optimized movable helices by rotation around the supplied axis.
+
 ## V3.17 - 2026-06-28
 
 - Bumped `re_helix` to V3.17.

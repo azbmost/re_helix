@@ -2,6 +2,13 @@
 """
 re_helix.py
 
+V3.18 update (2026-07-09):
+- Add a user-defined alignment axis option. When a direction vector and point
+  are supplied, re_helix skips fixed/moving helix-axis estimation for alignment
+  and optimizes a single rotation of the movable helix around that line.
+- Add GUI controls with dynamic greying for the user-defined axis mode.
+- Bump the re_helix app version to V3.18.
+
 V3.17 update (2026-06-28):
 - Allow --axis_range terms to be whole-chain letters such as A,B in addition
   to residue windows such as A1-A35,B60-B26.
@@ -306,10 +313,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.17"
+SOFTWARE_VERSION = "V3.18"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V3.17: AZBMOST Package Module #2 - "
+    "re_helix V3.18: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -525,6 +532,8 @@ def parse_exchange_specs(
     return ops
 
 
+Point3D = Tuple[float, float, float]
+UserAxisDefinition = Tuple[Point3D, Point3D]  # (axis_dir, axis_point)
 HelixID = Tuple[str, ...]  # can be 2 or more chains, e.g. ('A', 'B', 'M', 'N')
 AxisBounds = Optional[Tuple[int, int]]
 AxisSelection = Dict[str, AxisBounds]
@@ -1448,6 +1457,22 @@ def v_norm(a: Tuple[float, float, float]) -> Tuple[float, float, float]:
     return (a[0] / l, a[1] / l, a[2] / l)
 
 
+def normalize_user_axis_definition(
+    axis_dir: Iterable[float],
+    axis_point: Iterable[float],
+) -> UserAxisDefinition:
+    dir_tuple = tuple(float(value) for value in axis_dir)
+    point_tuple = tuple(float(value) for value in axis_point)
+    if len(dir_tuple) != 3 or len(point_tuple) != 3:
+        raise ValueError("User-defined axis direction and point must each have exactly three numeric values.")
+    if not all(math.isfinite(value) for value in dir_tuple + point_tuple):
+        raise ValueError("User-defined axis direction and point values must be finite numbers.")
+    normalized_dir = v_norm(dir_tuple)  # type: ignore[arg-type]
+    if v_length(normalized_dir) < 1.0e-12:
+        raise ValueError("User-defined axis direction vector cannot be zero.")
+    return normalized_dir, point_tuple  # type: ignore[return-value]
+
+
 def rotate_around_line(
     point: Tuple[float, float, float],
     axis_point: Tuple[float, float, float],
@@ -2093,6 +2118,53 @@ def build_pair_objective(
     return objective, p1_list, p2_list, d0, anchor1
 
 
+def build_user_axis_rotation_objective(
+    pairs: List[Tuple[Tuple[str, int], Tuple[str, int]]],
+    residue_to_P_atom: Dict[Tuple[str, int], pdb_atom_record],
+    axis_dir: Point3D,
+    axis_point: Point3D,
+):
+    """
+    Build an objective for user-defined-axis mode.
+
+    The movable helix is transformed only by a rotation around the supplied
+    line. No fixed/moving helix axes are estimated in this mode.
+    """
+    p1_list: List[Point3D] = []
+    p2_list: List[Point3D] = []
+
+    for posA, posB in pairs:
+        atom1 = residue_to_P_atom.get(posA)
+        atom2 = residue_to_P_atom.get(posB)
+        if atom1 is None:
+            raise ValueError(
+                f"No P atom found for residue {posA[1]}{posA[0]} (fixed helix)."
+            )
+        if atom2 is None:
+            raise ValueError(
+                f"No P atom found for residue {posB[1]}{posB[0]} (moving helix)."
+            )
+        p1_list.append((atom1.x, atom1.y, atom1.z))
+        p2_list.append((atom2.x, atom2.y, atom2.z))
+
+    axis_dir = v_norm(axis_dir)
+
+    def objective(params: List[float]) -> float:
+        if len(params) != 1:
+            raise ValueError("Expected 1 param [angle] for user-defined-axis rotation.")
+        angle = params[0]
+        total = 0.0
+        for p1, p2_0 in zip(p1_list, p2_list):
+            p = rotate_around_line(p2_0, axis_point, axis_dir, angle)
+            dx = p1[0] - p[0]
+            dy = p1[1] - p[1]
+            dz = p1[2] - p[2]
+            total += dx * dx + dy * dy + dz * dz
+        return total
+
+    return objective, p1_list, p2_list
+
+
 def coordinate_descent(
     objective,
     initial_params: List[float],
@@ -2215,6 +2287,24 @@ def apply_transform_to_helix(
         if (not axis_parallel) and abs(beta) > 1.0e-10:
             p = rotate_around_line(p, axis_perp_point, axis_perp_dir, beta)  # type: ignore[arg-type]
 
+        atom.update_xyz(*p)
+
+
+def apply_user_axis_rotation_to_helix(
+    rec_list: List[pdb_atom_record],
+    helix_moving: HelixID,
+    axis_dir: Point3D,
+    axis_point: Point3D,
+    angle: float,
+) -> None:
+    """Rotate the movable helix group around a user-defined line."""
+    axis_dir = v_norm(axis_dir)
+    for atom in rec_list:
+        if atom.recordName not in ("ATOM", "HETATM"):
+            continue
+        if not atom_moves_with_helix(atom, helix_moving):
+            continue
+        p = rotate_around_line((atom.x, atom.y, atom.z), axis_point, axis_dir, angle)
         atom.update_xyz(*p)
 
 
@@ -2829,6 +2919,7 @@ def align_helices_for_exchanges(
     axis_parallel_flag: bool,
     explicit_helices: Optional[List[HelixID]] = None,
     fix_chain: Optional[str] = None,
+    user_axis: Optional[UserAxisDefinition] = None,
 ) -> None:
     """
     Align helices (or multi-chain helix groups) in-place according to
@@ -2846,6 +2937,15 @@ def align_helices_for_exchanges(
         raise ValueError("No P atoms found in input PDB; alignment cannot proceed.")
 
     write_angle_definitions_once()
+    if user_axis is not None:
+        user_axis_dir, user_axis_point = user_axis
+        sys.stderr.write(
+            "[re_helix] Using user-defined alignment axis: "
+            f"point=({user_axis_point[0]:.3f}, {user_axis_point[1]:.3f}, {user_axis_point[2]:.3f}), "
+            f"direction=({user_axis_dir[0]:.6f}, {user_axis_dir[1]:.6f}, {user_axis_dir[2]:.6f}). "
+            "Fixed/moving helix-axis estimation and axis_dist are skipped; each movable helix "
+            "is optimized by rotation around this line.\n"
+        )
 
     # Build chain -> helix map
     if explicit_helices:
@@ -2980,7 +3080,15 @@ def align_helices_for_exchanges(
                 defined_beta_angles = [angle for angle in beta_angles_fixed_moving if angle is not None]
                 if defined_beta_angles:
                     angle_list = ", ".join(f"{angle:.3g}°" for angle in defined_beta_angles)
-                    if axis_parallel_flag:
+                    if user_axis is not None:
+                        sys.stderr.write(
+                            f"[re_helix]   Warning: fixed beta-angle definition(s) "
+                            f"({angle_list}) for helix pair "
+                            f"{helix_id_str(fixed)}/{helix_id_str(neighbour)} ignored because "
+                            "user-defined-axis mode only rotates the moving helix around the "
+                            "supplied axis.\n"
+                        )
+                    elif axis_parallel_flag:
                         reason = "--axis_parallel y keeps helix axes parallel"
                         if len(pairs_fixed_moving) != 1:
                             reason += (
@@ -3019,6 +3127,74 @@ def align_helices_for_exchanges(
 
                 fixed_positions = [(c1, r1) for (c1, r1), (_c2, _r2) in pairs_fixed_moving]
                 moving_positions = [(c2, r2) for (_c1, _r1), (c2, r2) in pairs_fixed_moving]
+
+                if user_axis is not None:
+                    axis_dir, axis_point = user_axis
+                    effective_pairs = select_pairs_for_alignment(
+                        pairs_fixed_moving,
+                        residue_to_P_atom,
+                        axis_dir,
+                        axis_point,
+                    )
+                    if not effective_pairs:
+                        sys.stderr.write(
+                            f"[re_helix]   Warning: no usable P-atom pairs "
+                            f"for helix pair {helix_id_str(fixed)}/{helix_id_str(neighbour)}; "
+                            f"skipping user-axis rotation.\n"
+                        )
+                        visited.add(neighbour)
+                        queue.append(neighbour)
+                        continue
+
+                    pair_strs = []
+                    for (c1, r1), (c2, r2) in effective_pairs:
+                        pair_strs.append(f"{r1}{c1}-{r2}{c2}")
+                    sys.stderr.write(
+                        "[re_helix]    Using P pairs for user-axis rotation: "
+                        + ", ".join(pair_strs)
+                        + "\n"
+                    )
+
+                    objective, p1_list, _p2_list = build_user_axis_rotation_objective(
+                        effective_pairs,
+                        residue_to_P_atom,
+                        axis_dir,
+                        axis_point,
+                    )
+                    if not p1_list:
+                        sys.stderr.write(
+                            f"[re_helix]   Warning: no valid P-atom coordinates "
+                            f"for helix pair {helix_id_str(fixed)}/{helix_id_str(neighbour)}; "
+                            f"skipping user-axis rotation.\n"
+                        )
+                        visited.add(neighbour)
+                        queue.append(neighbour)
+                        continue
+
+                    best_params, best_val = coordinate_descent(
+                        objective,
+                        [0.0],
+                        [math.pi / 2.0],
+                        angle_indices={0},
+                    )
+                    angle_opt = best_params[0]
+                    angle_deg = angle_opt * 180.0 / math.pi
+                    sys.stderr.write(
+                        f"[re_helix]   Optimised user-axis rotation: angle = {angle_deg:.2f}°; "
+                        f"sum(dist^2) = {best_val:.3f}.\n"
+                    )
+
+                    apply_user_axis_rotation_to_helix(
+                        rec_list,
+                        neighbour,
+                        axis_dir,
+                        axis_point,
+                        angle_opt,
+                    )
+
+                    visited.add(neighbour)
+                    queue.append(neighbour)
+                    continue
 
                 axis_ranges_fixed = find_axis_range_definition_for_positions(fixed, fixed_positions)
                 axis_ranges_moving = find_axis_range_definition_for_positions(neighbour, moving_positions)
@@ -3384,6 +3560,16 @@ move C. The axis is fit from A/B while C moves together with that axis.
 In replication mode, enter the final post-replication chain IDs you want
 to target, or use a base-template row that covers the input chains before
 replication to propagate it across copies. Blank rows are ignored.""",
+    "user_axis": """Optional user-defined alignment axis.
+
+Provide a direction vector and one point on the axis. When enabled, re_helix
+does not estimate the fixed and moving helix axes from P atoms. Each movable
+helix is optimized by rotating it around the supplied line.
+
+Direction and point format:
+  x y z
+
+The direction vector is normalized automatically and cannot be zero.""",
 }
 
 
@@ -3395,6 +3581,9 @@ def _build_equivalent_cli_command(
     pair_args_text: str,
     axis_range_rows: List[str],
     axis_move_rows: List[str],
+    use_user_axis: bool,
+    user_axis_dir: List[str],
+    user_axis_point: List[str],
     output_base: str,
     axis_dist: str,
     axis_parallel: str,
@@ -3437,15 +3626,33 @@ def _build_equivalent_cli_command(
         if n_pairs == 0:
             raise ValueError("Please provide at least one complete exchange pair.")
 
-    for idx, spec in enumerate(axis_range_rows):
-        spec = spec.strip()
-        move_spec = axis_move_rows[idx].strip() if idx < len(axis_move_rows) else ""
-        if move_spec and not spec:
-            raise ValueError("A move-with-axis entry requires an axis definition in the same row.")
-        if spec:
-            cmd.extend(["--axis_range", spec])
-            if move_spec:
-                cmd.extend(["--axis_move", move_spec])
+    if not use_user_axis:
+        for idx, spec in enumerate(axis_range_rows):
+            spec = spec.strip()
+            move_spec = axis_move_rows[idx].strip() if idx < len(axis_move_rows) else ""
+            if move_spec and not spec:
+                raise ValueError("A move-with-axis entry requires an axis definition in the same row.")
+            if spec:
+                cmd.extend(["--axis_range", spec])
+                if move_spec:
+                    cmd.extend(["--axis_move", move_spec])
+
+    if use_user_axis:
+        if len(user_axis_dir) != 3 or len(user_axis_point) != 3:
+            raise ValueError("User axis direction and point must each have three values.")
+        dir_values = [value.strip() for value in user_axis_dir]
+        point_values = [value.strip() for value in user_axis_point]
+        if not all(dir_values) or not all(point_values):
+            raise ValueError("Please fill all user axis direction and point coordinates.")
+        try:
+            normalize_user_axis_definition(
+                [float(value) for value in dir_values],
+                [float(value) for value in point_values],
+            )
+        except ValueError as exc:
+            raise ValueError(f"Invalid user-defined axis: {exc}") from exc
+        cmd.extend(["--user_axis_dir", *dir_values])
+        cmd.extend(["--user_axis_point", *point_values])
 
     if output_base.strip():
         cmd.extend(["-o", output_base.strip()])
@@ -3515,6 +3722,9 @@ def _launch_gui() -> None:
     output_auto_state = {"last_default": ""}
     axis_dist_var = tk.StringVar(value="22.0")
     axis_parallel_var = tk.StringVar(value="y")
+    user_axis_var = tk.BooleanVar(value=False)
+    user_axis_dir_vars = [tk.StringVar(value=value) for value in ("0", "0", "1")]
+    user_axis_point_vars = [tk.StringVar(value=value) for value in ("0", "0", "0")]
     fix_chain_var = tk.StringVar()
     replicate_var = tk.BooleanVar(value=False)
     re_only_var = tk.BooleanVar(value=False)
@@ -3524,6 +3734,7 @@ def _launch_gui() -> None:
 
     pair_widgets: List[Dict[str, object]] = []
     axis_widgets: List[object] = []
+    user_axis_input_widgets: List[object] = []
     process_state: Dict[str, object] = {"proc": None, "queue": queue.Queue()}
 
     def show_help(title: str, message: str) -> None:
@@ -3770,7 +3981,7 @@ def _launch_gui() -> None:
     axis_header = ttk.Frame(axis_box)
     axis_header.pack(fill="x")
     ttk.Label(axis_header, text="Rows").pack(side="left")
-    tk.Spinbox(
+    axis_count_spinbox = tk.Spinbox(
         axis_header,
         from_=0,
         to=30,
@@ -3779,9 +3990,34 @@ def _launch_gui() -> None:
         validate="key",
         validatecommand=validate_count_cmd,
         command=lambda: schedule_axis_rows(),
-    ).pack(side="left", padx=6)
+    )
+    axis_count_spinbox.pack(side="left", padx=6)
     make_help_button(axis_header, "Axis definitions", "axis_range").pack(side="left")
     ttk.Label(axis_header, text="Axis: A,B or B26-B60,A1-A35; move: C,D or C1-C50,D").pack(side="left", padx=8)
+
+    user_axis_frame = ttk.Frame(axis_box)
+    user_axis_frame.pack(fill="x", pady=(8, 0))
+    user_axis_check = ttk.Checkbutton(
+        user_axis_frame,
+        text="Use direction + point axis",
+        variable=user_axis_var,
+        command=lambda: refresh_user_axis_state(),
+    )
+    user_axis_check.pack(side="left")
+    make_help_button(user_axis_frame, "Direction + point axis", "user_axis").pack(side="left", padx=(4, 8))
+    ttk.Label(user_axis_frame, text="dir").pack(side="left")
+    for idx, label_text in enumerate(("x", "y", "z")):
+        ttk.Label(user_axis_frame, text=label_text).pack(side="left", padx=(6 if idx == 0 else 2, 0))
+        entry = ttk.Entry(user_axis_frame, textvariable=user_axis_dir_vars[idx], width=9)
+        entry.pack(side="left", padx=(2, 0))
+        user_axis_input_widgets.append(entry)
+    ttk.Label(user_axis_frame, text="point").pack(side="left", padx=(12, 0))
+    for idx, label_text in enumerate(("x", "y", "z")):
+        ttk.Label(user_axis_frame, text=label_text).pack(side="left", padx=(6 if idx == 0 else 2, 0))
+        entry = ttk.Entry(user_axis_frame, textvariable=user_axis_point_vars[idx], width=9)
+        entry.pack(side="left", padx=(2, 0))
+        user_axis_input_widgets.append(entry)
+
     axis_rows_frame = ttk.Frame(axis_box)
     axis_rows_frame.pack(fill="x", pady=(8, 0))
     ttk.Label(axis_rows_frame, text="").grid(row=0, column=0, sticky="w")
@@ -3901,6 +4137,19 @@ def _launch_gui() -> None:
     def current_axis_target() -> int:
         return int(row_targets["axis"])
 
+    def refresh_user_axis_state() -> None:
+        use_user_axis = bool(user_axis_var.get())
+        user_entry_state = "normal" if use_user_axis else "disabled"
+        range_entry_state = "disabled" if use_user_axis else "normal"
+        axis_count_spinbox.configure(state=range_entry_state)
+        for widget in user_axis_input_widgets:
+            widget.configure(state=user_entry_state)
+        for item in axis_widgets:
+            _label, _axis_var, _move_var, axis_entry, move_entry = item
+            axis_entry.configure(state=range_entry_state)
+            move_entry.configure(state=range_entry_state)
+        schedule_scrollbar_refresh()
+
     def render_pair_rows() -> None:
         target_opt = _coerce_gui_count(pair_count_var.get(), 1, 30)
         if target_opt is None:
@@ -3975,6 +4224,7 @@ def _launch_gui() -> None:
                 label.grid_remove()
                 axis_entry.grid_remove()
                 move_entry.grid_remove()
+        refresh_user_axis_state()
         schedule_scrollbar_refresh()
 
     def schedule_pair_rows(*_args) -> None:
@@ -4054,6 +4304,9 @@ def _launch_gui() -> None:
                 pair_args_var.get(),
                 axis_rows,
                 axis_move_rows,
+                bool(user_axis_var.get()),
+                [var.get() for var in user_axis_dir_vars],
+                [var.get() for var in user_axis_point_vars],
                 output_var.get(),
                 axis_dist_var.get(),
                 axis_parallel_var.get(),
@@ -4208,6 +4461,32 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--user_axis_dir",
+        "--user-axis-dir",
+        nargs=3,
+        type=float,
+        metavar=("X", "Y", "Z"),
+        default=None,
+        help=(
+            "Direction vector for a user-defined alignment axis. Must be supplied "
+            "together with --user_axis_point. When used, fixed/moving helix-axis "
+            "estimation is skipped and each moving helix is optimized by rotation "
+            "around this axis."
+        ),
+    )
+    parser.add_argument(
+        "--user_axis_point",
+        "--user-axis-point",
+        nargs=3,
+        type=float,
+        metavar=("X", "Y", "Z"),
+        default=None,
+        help=(
+            "Point on the user-defined alignment axis. Must be supplied together "
+            "with --user_axis_dir."
+        ),
+    )
+    parser.add_argument(
         "--axis_dist",
         type=float,
         default=22.0,
@@ -4317,7 +4596,16 @@ def main() -> None:
 
     reset_helix_axis_overrides()
 
-    if args.re_only:
+    user_axis: Optional[UserAxisDefinition] = None
+    if (args.user_axis_dir is None) != (args.user_axis_point is None):
+        parser.error("--user_axis_dir and --user_axis_point must be supplied together.")
+    if args.user_axis_dir is not None and args.user_axis_point is not None:
+        try:
+            user_axis = normalize_user_axis_definition(args.user_axis_dir, args.user_axis_point)
+        except ValueError as exc:
+            parser.error(str(exc))
+
+    if args.re_only or user_axis is not None:
         axis_range_defs_input = []
         axis_move_defs_input = []
     else:
@@ -4377,6 +4665,13 @@ def main() -> None:
 
     if args.re_only and (args.axis_range or args.axis_move):
         sys.stderr.write("[re_helix] Warning: --axis_range/--axis_move is ignored in RE-only mode.\n")
+    if user_axis is not None and (args.axis_range or args.axis_move):
+        sys.stderr.write(
+            "[re_helix] Warning: --axis_range/--axis_move is ignored when "
+            "--user_axis_dir/--user_axis_point is supplied.\n"
+        )
+    if args.re_only and user_axis is not None:
+        sys.stderr.write("[re_helix] Warning: user-defined alignment axis is ignored in RE-only mode.\n")
 
     if args.re_only and not args.replicate:
         try:
@@ -4544,6 +4839,7 @@ def main() -> None:
             axis_parallel_flag=axis_parallel_flag,
             explicit_helices=helix_defs_for_align,
             fix_chain=args.fix_chain,
+            user_axis=user_axis,
         )
     except Exception as exc:
         print(f"Error during helix alignment: {exc}", file=sys.stderr)
