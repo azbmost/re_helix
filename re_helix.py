@@ -2,6 +2,17 @@
 """
 re_helix.py
 
+V3.20 update (2026-07-13):
+- Allow a full XYZ translation in user-defined-axis alignment mode. For every
+  candidate rotation angle, use the exact centroid-matching translation of the
+  selected P-atom pairs.
+- Bump the re_helix app version to V3.20.
+
+V3.19 update (2026-07-13):
+- In user-defined-axis alignment mode, optimize translation along the supplied
+  axis as well as rotation around it.
+- Bump the re_helix app version to V3.19.
+
 V3.18 update (2026-07-09):
 - Add a user-defined alignment axis option. When a direction vector and point
   are supplied, re_helix skips fixed/moving helix-axis estimation for alignment
@@ -313,10 +324,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.18"
+SOFTWARE_VERSION = "V3.20"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V3.18: AZBMOST Package Module #2 - "
+    "re_helix V3.20: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -2118,7 +2129,7 @@ def build_pair_objective(
     return objective, p1_list, p2_list, d0, anchor1
 
 
-def build_user_axis_rotation_objective(
+def build_user_axis_transform_objective(
     pairs: List[Tuple[Tuple[str, int], Tuple[str, int]]],
     residue_to_P_atom: Dict[Tuple[str, int], pdb_atom_record],
     axis_dir: Point3D,
@@ -2127,8 +2138,8 @@ def build_user_axis_rotation_objective(
     """
     Build an objective for user-defined-axis mode.
 
-    The movable helix is transformed only by a rotation around the supplied
-    line. No fixed/moving helix axes are estimated in this mode.
+    The movable helix is rotated around the supplied line and then translated
+    freely in XYZ. No fixed/moving helix axes are estimated in this mode.
     """
     p1_list: List[Point3D] = []
     p2_list: List[Point3D] = []
@@ -2149,20 +2160,35 @@ def build_user_axis_rotation_objective(
 
     axis_dir = v_norm(axis_dir)
 
+    def translation_for_angle(angle: float) -> Point3D:
+        if not p1_list:
+            return (0.0, 0.0, 0.0)
+        rotated_p2 = [
+            rotate_around_line(p2, axis_point, axis_dir, angle)
+            for p2 in p2_list
+        ]
+        return (
+            sum(p1[0] - p2[0] for p1, p2 in zip(p1_list, rotated_p2)) / len(p1_list),
+            sum(p1[1] - p2[1] for p1, p2 in zip(p1_list, rotated_p2)) / len(p1_list),
+            sum(p1[2] - p2[2] for p1, p2 in zip(p1_list, rotated_p2)) / len(p1_list),
+        )
+
     def objective(params: List[float]) -> float:
         if len(params) != 1:
-            raise ValueError("Expected 1 param [angle] for user-defined-axis rotation.")
+            raise ValueError("Expected 1 param [angle] for user-defined-axis alignment.")
         angle = params[0]
+        translation = translation_for_angle(angle)
         total = 0.0
         for p1, p2_0 in zip(p1_list, p2_list):
             p = rotate_around_line(p2_0, axis_point, axis_dir, angle)
+            p = v_add(p, translation)
             dx = p1[0] - p[0]
             dy = p1[1] - p[1]
             dz = p1[2] - p[2]
             total += dx * dx + dy * dy + dz * dz
         return total
 
-    return objective, p1_list, p2_list
+    return objective, p1_list, p2_list, translation_for_angle
 
 
 def coordinate_descent(
@@ -2290,14 +2316,15 @@ def apply_transform_to_helix(
         atom.update_xyz(*p)
 
 
-def apply_user_axis_rotation_to_helix(
+def apply_user_axis_transform_to_helix(
     rec_list: List[pdb_atom_record],
     helix_moving: HelixID,
     axis_dir: Point3D,
     axis_point: Point3D,
+    translation: Point3D,
     angle: float,
 ) -> None:
-    """Rotate the movable helix group around a user-defined line."""
+    """Rotate the movable helix group around a user axis, then translate it in XYZ."""
     axis_dir = v_norm(axis_dir)
     for atom in rec_list:
         if atom.recordName not in ("ATOM", "HETATM"):
@@ -2305,6 +2332,7 @@ def apply_user_axis_rotation_to_helix(
         if not atom_moves_with_helix(atom, helix_moving):
             continue
         p = rotate_around_line((atom.x, atom.y, atom.z), axis_point, axis_dir, angle)
+        p = v_add(p, translation)
         atom.update_xyz(*p)
 
 
@@ -2944,7 +2972,7 @@ def align_helices_for_exchanges(
             f"point=({user_axis_point[0]:.3f}, {user_axis_point[1]:.3f}, {user_axis_point[2]:.3f}), "
             f"direction=({user_axis_dir[0]:.6f}, {user_axis_dir[1]:.6f}, {user_axis_dir[2]:.6f}). "
             "Fixed/moving helix-axis estimation and axis_dist are skipped; each movable helix "
-            "is optimized by rotation around this line.\n"
+            "is optimized by rotation around this line plus a full XYZ translation.\n"
         )
 
     # Build chain -> helix map
@@ -3085,8 +3113,8 @@ def align_helices_for_exchanges(
                             f"[re_helix]   Warning: fixed beta-angle definition(s) "
                             f"({angle_list}) for helix pair "
                             f"{helix_id_str(fixed)}/{helix_id_str(neighbour)} ignored because "
-                            "user-defined-axis mode only rotates the moving helix around the "
-                            "supplied axis.\n"
+                            "user-defined-axis mode uses only rotation around the supplied "
+                            "axis plus XYZ translation.\n"
                         )
                     elif axis_parallel_flag:
                         reason = "--axis_parallel y keeps helix axes parallel"
@@ -3140,7 +3168,7 @@ def align_helices_for_exchanges(
                         sys.stderr.write(
                             f"[re_helix]   Warning: no usable P-atom pairs "
                             f"for helix pair {helix_id_str(fixed)}/{helix_id_str(neighbour)}; "
-                            f"skipping user-axis rotation.\n"
+                            f"skipping user-axis alignment.\n"
                         )
                         visited.add(neighbour)
                         queue.append(neighbour)
@@ -3150,22 +3178,24 @@ def align_helices_for_exchanges(
                     for (c1, r1), (c2, r2) in effective_pairs:
                         pair_strs.append(f"{r1}{c1}-{r2}{c2}")
                     sys.stderr.write(
-                        "[re_helix]    Using P pairs for user-axis rotation: "
+                        "[re_helix]    Using P pairs for user-axis alignment: "
                         + ", ".join(pair_strs)
                         + "\n"
                     )
 
-                    objective, p1_list, _p2_list = build_user_axis_rotation_objective(
-                        effective_pairs,
-                        residue_to_P_atom,
-                        axis_dir,
-                        axis_point,
+                    objective, p1_list, _p2_list, translation_for_angle = (
+                        build_user_axis_transform_objective(
+                            effective_pairs,
+                            residue_to_P_atom,
+                            axis_dir,
+                            axis_point,
+                        )
                     )
                     if not p1_list:
                         sys.stderr.write(
                             f"[re_helix]   Warning: no valid P-atom coordinates "
                             f"for helix pair {helix_id_str(fixed)}/{helix_id_str(neighbour)}; "
-                            f"skipping user-axis rotation.\n"
+                            f"skipping user-axis alignment.\n"
                         )
                         visited.add(neighbour)
                         queue.append(neighbour)
@@ -3178,17 +3208,21 @@ def align_helices_for_exchanges(
                         angle_indices={0},
                     )
                     angle_opt = best_params[0]
+                    translation_opt = translation_for_angle(angle_opt)
                     angle_deg = angle_opt * 180.0 / math.pi
                     sys.stderr.write(
-                        f"[re_helix]   Optimised user-axis rotation: angle = {angle_deg:.2f}°; "
+                        f"[re_helix]   Optimised user-axis alignment: translation = "
+                        f"({translation_opt[0]:.3f}, {translation_opt[1]:.3f}, "
+                        f"{translation_opt[2]:.3f}) A; angle = {angle_deg:.2f}°; "
                         f"sum(dist^2) = {best_val:.3f}.\n"
                     )
 
-                    apply_user_axis_rotation_to_helix(
+                    apply_user_axis_transform_to_helix(
                         rec_list,
                         neighbour,
                         axis_dir,
                         axis_point,
+                        translation_opt,
                         angle_opt,
                     )
 
@@ -3564,7 +3598,8 @@ replication to propagate it across copies. Blank rows are ignored.""",
 
 Provide a direction vector and one point on the axis. When enabled, re_helix
 does not estimate the fixed and moving helix axes from P atoms. Each movable
-helix is optimized by rotating it around the supplied line.
+helix is optimized by rotating it around the supplied line and translating it
+freely in XYZ.
 
 Direction and point format:
   x y z
@@ -4471,7 +4506,7 @@ def main() -> None:
             "Direction vector for a user-defined alignment axis. Must be supplied "
             "together with --user_axis_point. When used, fixed/moving helix-axis "
             "estimation is skipped and each moving helix is optimized by rotation "
-            "around this axis."
+            "around this axis plus a full XYZ translation."
         ),
     )
     parser.add_argument(

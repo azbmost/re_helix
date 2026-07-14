@@ -1,5 +1,15 @@
 # Changelog
 
+## V3.20 - 2026-07-13
+
+- Bumped `re_helix` to V3.20.
+- Corrected user-defined-axis alignment to optimize a full XYZ translation after rotation, rather than restricting translation to the axis direction.
+
+## V3.19 - 2026-07-13
+
+- Bumped `re_helix` to V3.19.
+- Fixed user-defined-axis alignment so movable helices can translate along the supplied axis while rotating around it.
+
 ## V3.18 - 2026-07-09
 
 - Bumped `re_helix` to V3.18.
