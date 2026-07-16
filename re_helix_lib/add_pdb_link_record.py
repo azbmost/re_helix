@@ -7,14 +7,13 @@ Supported actions
 -----------------
 1) Automatic circularization
    - For each selected chain, the script finds:
-       P atom on the 5'-terminal residue (lowest resSeq)
-       O3' (or O3*) atom on the 3'-terminal residue (highest resSeq)
+       nucleic acid: P on the 5' residue and O3' on the 3' residue, or
+       peptide: N on the N-terminal residue and C on the C-terminal residue
    - The selected chain is added as a LINK-driven topology edit.
 
 2) Manual LINK creation in the GUI
-   - The user can specify:
-       P atom of residue [resSeq] in chain [chainID]
-       O3' atom of residue [resSeq] in chain [chainID]
+   - The user selects nucleic-acid P/O3' or peptide N/C mode and specifies the
+     residue number and chain ID for each endpoint.
    - Clicking "Add Link" stages a default-checked LINK entry below.
    - Clicking "Run" rebuilds the topology from the checked automatic and
      manual LINKs in one pass.
@@ -25,14 +24,13 @@ Behavior
   output chains, reassign chain IDs, rewrite TER records, and renumber residues.
 - Existing LINK lines are preserved, remapped to rebuilt residue numbering when
   possible, and written before any newly selected LINK edits.
-- Output filename is the input name with "_circ" inserted before the final
-  extension, e.g.:
-      input.pdb -> input_circ.pdb
+- Nucleic-acid output defaults to "_circ" before the extension; peptide output
+  defaults to "_peptide_circ".
 
 Important notes
 ---------------
-- 5' and 3' ends are inferred from residue numbering (min/max resSeq) within
-  each chain for automatic circularization.
+- 5'/3' and N/C termini are inferred from residue numbering (min/max resSeq)
+  within each chain for automatic circularization.
 - O3' atom name may appear as "O3'" or "O3*"; both are supported.
 - The output topology assumes the selected P/O3' endpoints are valid chain
   endpoints for the intended segment merge.
@@ -40,11 +38,10 @@ Important notes
 GUI
 ---
 - If run with no arguments, or with --gui, a small Tk GUI is launched.
-- After selecting a PDB, the GUI reports the distance between:
-      P of the 5' residue (lowest resSeq)
-      and O3' (or O3*) of the 3' residue (highest resSeq)
-  for every chain, to help decide which chain(s) to circularize.
-- The GUI also includes a manual LINK creation panel and a pending LINK list.
+- After selecting a PDB and molecule type, the GUI reports either P-O3' or N-C
+  terminal distance for every chain.
+- The GUI also includes a molecule-type-aware manual LINK panel and a pending
+  LINK list.
 
 License/usage
 -------------
@@ -68,7 +65,7 @@ except ImportError:  # pragma: no cover - direct script execution fallback
     from gui_icon import apply_optional_icon
 
 TOOL_NAME = "Add PDB LINK Record"
-VERSION = "1.1"
+VERSION = "1.2"
 
 
 # ----------------------------
@@ -102,13 +99,16 @@ class ChainEndInfo:
     p_atom: Optional[AtomInfo]
     o3_atom: Optional[AtomInfo]
     distance: Optional[float]
+    n_atom: Optional[AtomInfo]
+    c_atom: Optional[AtomInfo]
+    peptide_distance: Optional[float]
 
 
 @dataclass
 class PendingManualLink:
     label: str
-    p_atom: AtomInfo
-    o3_atom: AtomInfo
+    endpoint1_atom: AtomInfo
+    endpoint2_atom: AtomInfo
     endpoint1: Tuple[str, int, str]
     endpoint2: Tuple[str, int, str]
     var: object
@@ -382,7 +382,7 @@ def build_atom_index(atoms: Iterable[AtomInfo]) -> Dict[str, Dict[int, Dict[str,
 
 
 def build_chain_end_info(atoms: Iterable[AtomInfo]) -> Dict[str, ChainEndInfo]:
-    """For each chain, identify min/max resSeq and get P(5') and O3'(3') atoms."""
+    """Identify nucleic-acid and peptide terminal atoms for each chain."""
     chain_res_atoms = build_atom_index(atoms)
     out: Dict[str, ChainEndInfo] = {}
 
@@ -398,6 +398,8 @@ def build_chain_end_info(atoms: Iterable[AtomInfo]) -> Dict[str, ChainEndInfo]:
         last_atoms = res_map[last_r]
 
         p_atom = first_atoms.get("P")
+        n_atom = first_atoms.get("N")
+        c_atom = last_atoms.get("C")
 
         o3_atom: Optional[AtomInfo] = None
         for nm in O3_CANDIDATES:
@@ -409,6 +411,10 @@ def build_chain_end_info(atoms: Iterable[AtomInfo]) -> Dict[str, ChainEndInfo]:
         dist: Optional[float] = None
         if p_atom is not None and o3_atom is not None:
             dist = distance(p_atom, o3_atom)
+
+        peptide_dist: Optional[float] = None
+        if n_atom is not None and c_atom is not None:
+            peptide_dist = distance(n_atom, c_atom)
 
         first_resName = p_atom.resName if p_atom is not None else next(iter(first_atoms.values())).resName
         last_resName = o3_atom.resName if o3_atom is not None else next(iter(last_atoms.values())).resName
@@ -422,6 +428,9 @@ def build_chain_end_info(atoms: Iterable[AtomInfo]) -> Dict[str, ChainEndInfo]:
             p_atom=p_atom,
             o3_atom=o3_atom,
             distance=dist,
+            n_atom=n_atom,
+            c_atom=c_atom,
+            peptide_distance=peptide_dist,
         )
 
     return out
@@ -430,6 +439,11 @@ def build_chain_end_info(atoms: Iterable[AtomInfo]) -> Dict[str, ChainEndInfo]:
 def default_output_path(inp_path: Path) -> Path:
     """Insert '_circ' before the final suffix (extension)."""
     return inp_path.with_name(f"{inp_path.stem}_circ{inp_path.suffix}")
+
+
+def default_peptide_output_path(inp_path: Path) -> Path:
+    """Insert '_peptide_circ' before the final suffix."""
+    return inp_path.with_name(f"{inp_path.stem}_peptide_circ{inp_path.suffix}")
 
 
 def _find_first_atom_line_index(lines: Sequence[str]) -> int:
@@ -473,20 +487,27 @@ def _validate_endpoint_not_already_linked(
         )
 
 
-def circularize_pdb(
+def _add_automatic_terminal_links(
     inp_path: Path,
     chains: Optional[Sequence[str]] = None,
     out_path: Optional[Path] = None,
     verbose: bool = True,
+    link_type: str = "nucleic",
 ) -> Tuple[Path, Dict[str, ChainEndInfo], List[str]]:
-    """Circularize selected chains by inserting LINK records.
+    """Circularize selected nucleic-acid or peptide chains with LINK records.
 
     Returns:
         out_path, chain_info, new_link_lines
     """
     inp_path = Path(inp_path)
+    if link_type not in {"nucleic", "peptide"}:
+        raise ValueError(f"Unknown automatic LINK type: {link_type!r}")
     if out_path is None:
-        out_path = default_output_path(inp_path)
+        out_path = (
+            default_peptide_output_path(inp_path)
+            if link_type == "peptide"
+            else default_output_path(inp_path)
+        )
 
     lines = inp_path.read_text(errors="replace").splitlines(True)
 
@@ -521,47 +542,72 @@ def circularize_pdb(
             continue
 
         info = chain_info[chain]
+        if link_type == "peptide":
+            endpoint1_atom = info.n_atom
+            endpoint2_atom = info.c_atom
+            endpoint1_name = "N"
+            endpoint2_name = "C"
+            endpoint1_label = "N-terminal N"
+            endpoint2_label = "C-terminal C"
+            link_distance = info.peptide_distance
+        else:
+            endpoint1_atom = info.p_atom
+            endpoint2_atom = info.o3_atom
+            endpoint1_name = "P"
+            endpoint2_name = "O3'"
+            endpoint1_label = "5' P"
+            endpoint2_label = "3' O3'"
+            link_distance = info.distance
 
-        if info.p_atom is None:
-            if verbose:
-                print(f"[WARN] Chain {chain!r}: missing P atom on 5' residue {info.first_resSeq}; skipping.")
-            continue
-        if info.o3_atom is None:
+        if endpoint1_atom is None:
             if verbose:
                 print(
-                    f"[WARN] Chain {chain!r}: missing O3' (or O3*) atom on 3' residue {info.last_resSeq}; skipping."
+                    f"[WARN] Chain {chain!r}: missing {endpoint1_label} atom on "
+                    f"residue {info.first_resSeq}; skipping."
+                )
+            continue
+        if endpoint2_atom is None:
+            if verbose:
+                print(
+                    f"[WARN] Chain {chain!r}: missing {endpoint2_label} atom on "
+                    f"residue {info.last_resSeq}; skipping."
                 )
             continue
 
-        e1 = _format_endpoint(chain, info.first_resSeq, "P")
-        e2 = _format_endpoint(chain, info.last_resSeq, "O3'")
+        e1 = _format_endpoint(chain, info.first_resSeq, endpoint1_name)
+        e2 = _format_endpoint(chain, info.last_resSeq, endpoint2_name)
 
         key = frozenset((e1, e2))
         if key in existing_links:
             if verbose:
-                print(f"[INFO] Chain {chain!r}: circularization LINK already present; not adding duplicate.")
+                print(
+                    f"[INFO] Chain {chain!r}: terminal {endpoint1_name}-{endpoint2_name} "
+                    "LINK already present; not adding duplicate."
+                )
             continue
 
         # Prevent duplicate use of either endpoint in another LINK record
         if e1 in existing_link_endpoints:
             raise ValueError(
-                f"Chain {chain!r}: the 5' P atom on residue {info.first_resSeq} is already used in an existing LINK record."
+                f"Chain {chain!r}: the {endpoint1_label} atom on residue "
+                f"{info.first_resSeq} is already used in an existing LINK record."
             )
         if e2 in existing_link_endpoints:
             raise ValueError(
-                f"Chain {chain!r}: the 3' O3' atom on residue {info.last_resSeq} is already used in an existing LINK record."
+                f"Chain {chain!r}: the {endpoint2_label} atom on residue "
+                f"{info.last_resSeq} is already used in an existing LINK record."
             )
 
         link_line = format_link_line(
-            atom1_name=info.p_atom.name,
-            resName1=info.p_atom.resName,
-            chainID1=info.p_atom.chainID,
-            resSeq1=info.p_atom.resSeq,
-            atom2_name=info.o3_atom.name,
-            resName2=info.o3_atom.resName,
-            chainID2=info.o3_atom.chainID,
-            resSeq2=info.o3_atom.resSeq,
-            dist=info.distance,
+            atom1_name=endpoint1_atom.name,
+            resName1=endpoint1_atom.resName,
+            chainID1=endpoint1_atom.chainID,
+            resSeq1=endpoint1_atom.resSeq,
+            atom2_name=endpoint2_atom.name,
+            resName2=endpoint2_atom.resName,
+            chainID2=endpoint2_atom.chainID,
+            resSeq2=endpoint2_atom.resSeq,
+            dist=link_distance,
         )
         new_links.append(link_line)
 
@@ -569,6 +615,102 @@ def circularize_pdb(
     out_path.write_text("".join(out_lines))
 
     return out_path, chain_info, new_links
+
+
+def circularize_pdb(
+    inp_path: Path,
+    chains: Optional[Sequence[str]] = None,
+    out_path: Optional[Path] = None,
+    verbose: bool = True,
+) -> Tuple[Path, Dict[str, ChainEndInfo], List[str]]:
+    """Circularize selected nucleic-acid chains with terminal P-O3' LINKs."""
+    return _add_automatic_terminal_links(
+        inp_path, chains=chains, out_path=out_path, verbose=verbose, link_type="nucleic"
+    )
+
+
+def cyclize_peptide_pdb(
+    inp_path: Path,
+    chains: Optional[Sequence[str]] = None,
+    out_path: Optional[Path] = None,
+    verbose: bool = True,
+) -> Tuple[Path, Dict[str, ChainEndInfo], List[str]]:
+    """Cyclize selected peptide chains with terminal N-C LINKs."""
+    return _add_automatic_terminal_links(
+        inp_path, chains=chains, out_path=out_path, verbose=verbose, link_type="peptide"
+    )
+
+
+def _prepare_named_manual_link_spec(
+    lines: Sequence[str],
+    atoms: Sequence[AtomInfo],
+    endpoint1_chain: str,
+    endpoint1_resseq: int,
+    endpoint1_name: str,
+    endpoint2_chain: str,
+    endpoint2_resseq: int,
+    endpoint2_name: str,
+) -> Tuple[AtomInfo, AtomInfo, Tuple[str, int, str], Tuple[str, int, str]]:
+    """Validate and build a named manual LINK record without writing output.
+
+    Manual endpoints may be on internal residues; the output stage will split
+    segments at the selected endpoints and rebuild chain IDs / TER records.
+    """
+    atom_index = build_atom_index(atoms)
+
+    endpoint1_chain = endpoint1_chain.strip()
+    endpoint2_chain = endpoint2_chain.strip()
+
+    if endpoint1_chain == "":
+        raise ValueError(f"Please enter a valid chain ID for the {endpoint1_name} atom.")
+    if endpoint2_chain == "":
+        raise ValueError(f"Please enter a valid chain ID for the {endpoint2_name} atom.")
+
+    try:
+        endpoint1_res_map = atom_index[endpoint1_chain]
+    except KeyError:
+        raise ValueError(f"Chain {endpoint1_chain!r} was not found in the PDB file.")
+
+    try:
+        endpoint2_res_map = atom_index[endpoint2_chain]
+    except KeyError:
+        raise ValueError(f"Chain {endpoint2_chain!r} was not found in the PDB file.")
+
+    if endpoint1_resseq not in endpoint1_res_map:
+        raise ValueError(
+            f"Residue {endpoint1_resseq} was not found in chain {endpoint1_chain!r}."
+        )
+    if endpoint2_resseq not in endpoint2_res_map:
+        raise ValueError(
+            f"Residue {endpoint2_resseq} was not found in chain {endpoint2_chain!r}."
+        )
+
+    def find_atom(residue_atoms: Dict[str, AtomInfo], atom_name: str) -> Optional[AtomInfo]:
+        if _norm_atom_for_link(atom_name) == "O3":
+            for candidate in O3_CANDIDATES:
+                found = residue_atoms.get(candidate.upper())
+                if found is not None:
+                    return found
+            return None
+        return residue_atoms.get(atom_name.strip().upper())
+
+    endpoint1_atom = find_atom(endpoint1_res_map[endpoint1_resseq], endpoint1_name)
+    if endpoint1_atom is None:
+        raise ValueError(
+            f"No {endpoint1_name} atom was found on residue {endpoint1_resseq} "
+            f"in chain {endpoint1_chain!r}."
+        )
+    endpoint2_atom = find_atom(endpoint2_res_map[endpoint2_resseq], endpoint2_name)
+    if endpoint2_atom is None:
+        atom_label = "O3' (or O3*)" if _norm_atom_for_link(endpoint2_name) == "O3" else endpoint2_name
+        raise ValueError(
+            f"No {atom_label} atom was found on residue {endpoint2_resseq} "
+            f"in chain {endpoint2_chain!r}."
+        )
+
+    e1 = _format_endpoint(endpoint1_chain, endpoint1_resseq, endpoint1_atom.name)
+    e2 = _format_endpoint(endpoint2_chain, endpoint2_resseq, endpoint2_atom.name)
+    return endpoint1_atom, endpoint2_atom, e1, e2
 
 
 def _prepare_manual_link_spec(
@@ -579,52 +721,17 @@ def _prepare_manual_link_spec(
     o3_chain: str,
     o3_resseq: int,
 ) -> Tuple[AtomInfo, AtomInfo, Tuple[str, int, str], Tuple[str, int, str]]:
-    """Validate and build a manual LINK record spec without writing output.
-
-    This version allows internal residues too; the output stage will split
-    segments at the selected endpoints and rebuild chain IDs / TER records.
-    """
-    atom_index = build_atom_index(atoms)
-
-    p_chain = p_chain.strip()
-    o3_chain = o3_chain.strip()
-
-    if p_chain == "":
-        raise ValueError("Please enter a valid chain ID for the P atom.")
-    if o3_chain == "":
-        raise ValueError("Please enter a valid chain ID for the O3' atom.")
-
-    try:
-        p_res_map = atom_index[p_chain]
-    except KeyError:
-        raise ValueError(f"Chain {p_chain!r} was not found in the PDB file.")
-
-    try:
-        o3_res_map = atom_index[o3_chain]
-    except KeyError:
-        raise ValueError(f"Chain {o3_chain!r} was not found in the PDB file.")
-
-    if p_resseq not in p_res_map:
-        raise ValueError(f"Residue {p_resseq} was not found in chain {p_chain!r}.")
-    if o3_resseq not in o3_res_map:
-        raise ValueError(f"Residue {o3_resseq} was not found in chain {o3_chain!r}.")
-
-    p_atom = p_res_map[p_resseq].get("P")
-    if p_atom is None:
-        raise ValueError(f"No P atom was found on residue {p_resseq} in chain {p_chain!r}.")
-
-    o3_atom = None
-    for nm in O3_CANDIDATES:
-        key = nm.upper()
-        if key in o3_res_map[o3_resseq]:
-            o3_atom = o3_res_map[o3_resseq][key]
-            break
-    if o3_atom is None:
-        raise ValueError(f"No O3' (or O3*) atom was found on residue {o3_resseq} in chain {o3_chain!r}.")
-
-    e1 = _format_endpoint(p_chain, p_resseq, "P")
-    e2 = _format_endpoint(o3_chain, o3_resseq, "O3'")
-    return p_atom, o3_atom, e1, e2
+    """Backward-compatible P/O3' manual LINK preparation."""
+    return _prepare_named_manual_link_spec(
+        lines,
+        atoms,
+        endpoint1_chain=p_chain,
+        endpoint1_resseq=p_resseq,
+        endpoint1_name="P",
+        endpoint2_chain=o3_chain,
+        endpoint2_resseq=o3_resseq,
+        endpoint2_name="O3'",
+    )
 
 
 def manual_link_record(
@@ -661,8 +768,8 @@ def manual_link_record(
     selected = [
         SelectedLinkSpec(
             label="manual link",
-            p_atom=p_atom,
-            o3_atom=o3_atom,
+            endpoint1_atom=p_atom,
+            endpoint2_atom=o3_atom,
             endpoint1=e1,
             endpoint2=e2,
         )
@@ -718,22 +825,22 @@ def _parse_chain_list(chain_args: Optional[Sequence[str]]) -> List[str]:
 @dataclass(frozen=True)
 class SelectedLinkSpec:
     label: str
-    p_atom: AtomInfo
-    o3_atom: AtomInfo
+    endpoint1_atom: AtomInfo
+    endpoint2_atom: AtomInfo
     endpoint1: Tuple[str, int, str]
     endpoint2: Tuple[str, int, str]
 
     def to_link_line(self) -> str:
         return format_link_line(
-            atom1_name=self.p_atom.name,
-            resName1=self.p_atom.resName,
+            atom1_name=self.endpoint1_atom.name,
+            resName1=self.endpoint1_atom.resName,
             chainID1=self.endpoint1[0],
             resSeq1=self.endpoint1[1],
-            atom2_name=self.o3_atom.name,
-            resName2=self.o3_atom.resName,
+            atom2_name=self.endpoint2_atom.name,
+            resName2=self.endpoint2_atom.resName,
             chainID2=self.endpoint2[0],
             resSeq2=self.endpoint2[1],
-            dist=distance(self.p_atom, self.o3_atom),
+            dist=distance(self.endpoint1_atom, self.endpoint2_atom),
         )
 
     def __str__(self) -> str:
@@ -886,10 +993,10 @@ def _build_segments_from_selected_links(
     cut_before: Dict[str, Set[int]] = {}
     cut_after: Dict[str, Set[int]] = {}
     for link in selected_links:
-        p_chain, p_res, _ = link.endpoint1
-        o_chain, o_res, _ = link.endpoint2
-        cut_before.setdefault(p_chain, set()).add(p_res)
-        cut_after.setdefault(o_chain, set()).add(o_res)
+        first_chain, first_res, _ = link.endpoint1
+        second_chain, second_res, _ = link.endpoint2
+        cut_before.setdefault(first_chain, set()).add(first_res)
+        cut_after.setdefault(second_chain, set()).add(second_res)
 
     segments: Dict[int, dict] = {}
     residue_to_segment: Dict[Tuple[str, int], int] = {}
@@ -928,31 +1035,34 @@ def _build_segments_from_selected_links(
     seg_in: Dict[int, int] = {sid: -1 for sid in segments}
 
     for link in selected_links:
-        p_chain, p_res, _ = link.endpoint1
-        o_chain, o_res, _ = link.endpoint2
-        s_src = residue_to_segment.get((o_chain, o_res))
-        s_tgt = residue_to_segment.get((p_chain, p_res))
+        first_chain, first_res, _ = link.endpoint1
+        second_chain, second_res, _ = link.endpoint2
+        s_src = residue_to_segment.get((second_chain, second_res))
+        s_tgt = residue_to_segment.get((first_chain, first_res))
         if s_src is None or s_tgt is None:
             raise ValueError(
-                f"Could not place selected LINK endpoints into segments: {o_res}{o_chain} -> {p_res}{p_chain}."
+                "Could not place selected LINK endpoints into segments: "
+                f"{second_res}{second_chain} -> {first_res}{first_chain}."
             )
 
-        if segments[s_src]["residues"][-1] != o_res:
+        if segments[s_src]["residues"][-1] != second_res:
             raise ValueError(
-                f"The selected O3' endpoint {o_res}{o_chain} is not the terminal residue of its segment."
+                f"The selected {link.endpoint2_atom.name} endpoint "
+                f"{second_res}{second_chain} is not the last residue of its segment."
             )
-        if segments[s_tgt]["residues"][0] != p_res:
+        if segments[s_tgt]["residues"][0] != first_res:
             raise ValueError(
-                f"The selected P endpoint {p_res}{p_chain} is not the terminal residue of its segment."
+                f"The selected {link.endpoint1_atom.name} endpoint "
+                f"{first_res}{first_chain} is not the first residue of its segment."
             )
 
         if seg_out[s_src] not in (-1, s_tgt):
             raise ValueError(
-                f"Segment starting at {o_res}{o_chain} already connects to another selected LINK."
+                f"Segment ending at {second_res}{second_chain} already connects to another selected LINK."
             )
         if seg_in[s_tgt] not in (-1, s_src):
             raise ValueError(
-                f"Segment starting at {p_res}{p_chain} already receives another selected LINK."
+                f"Segment starting at {first_res}{first_chain} already receives another selected LINK."
             )
 
         seg_out[s_src] = s_tgt
@@ -1107,29 +1217,29 @@ def build_relinked_pdb_text(
             link_lines.append(str(existing))
 
     for link in selected_links:
-        p_new = residue_to_new[(link.endpoint1[0], link.endpoint1[1])]
-        o_new = residue_to_new[(link.endpoint2[0], link.endpoint2[1])]
+        endpoint1_new = residue_to_new[(link.endpoint1[0], link.endpoint1[1])]
+        endpoint2_new = residue_to_new[(link.endpoint2[0], link.endpoint2[1])]
         selected_key = _link_endpoint_pair_key(
-            p_new[0],
-            p_new[1],
-            link.p_atom.name,
-            o_new[0],
-            o_new[1],
-            link.o3_atom.name,
+            endpoint1_new[0],
+            endpoint1_new[1],
+            link.endpoint1_atom.name,
+            endpoint2_new[0],
+            endpoint2_new[1],
+            link.endpoint2_atom.name,
         )
         if selected_key in written_link_keys:
             continue
         link_lines.append(
             format_link_line(
-                atom1_name=link.p_atom.name,
-                resName1=link.p_atom.resName,
-                chainID1=p_new[0],
-                resSeq1=p_new[1],
-                atom2_name=link.o3_atom.name,
-                resName2=link.o3_atom.resName,
-                chainID2=o_new[0],
-                resSeq2=o_new[1],
-                dist=distance(link.p_atom, link.o3_atom),
+                atom1_name=link.endpoint1_atom.name,
+                resName1=link.endpoint1_atom.resName,
+                chainID1=endpoint1_new[0],
+                resSeq1=endpoint1_new[1],
+                atom2_name=link.endpoint2_atom.name,
+                resName2=link.endpoint2_atom.resName,
+                chainID2=endpoint2_new[0],
+                resSeq2=endpoint2_new[1],
+                dist=distance(link.endpoint1_atom, link.endpoint2_atom),
             )
         )
         written_link_keys.add(selected_key)
@@ -1186,11 +1296,15 @@ def run_gui(initial_path: Optional[str] = None) -> None:
 
             self.inp_path_var = tk.StringVar(value=initial_path or "")
             self.out_path_var = tk.StringVar(value="")
+            self.auto_link_mode_var = tk.StringVar(value="nucleic")
+            self.manual_link_mode_var = tk.StringVar(value="nucleic")
 
-            self.manual_p_res_var = tk.StringVar(value="")
-            self.manual_p_chain_var = tk.StringVar(value="")
-            self.manual_o3_res_var = tk.StringVar(value="")
-            self.manual_o3_chain_var = tk.StringVar(value="")
+            self.manual_endpoint1_res_var = tk.StringVar(value="")
+            self.manual_endpoint1_chain_var = tk.StringVar(value="")
+            self.manual_endpoint2_res_var = tk.StringVar(value="")
+            self.manual_endpoint2_chain_var = tk.StringVar(value="")
+            self.manual_endpoint1_label_var = tk.StringVar(value="P (5') atom of residue")
+            self.manual_endpoint2_label_var = tk.StringVar(value="O3' (3') atom of residue")
 
             self.current_lines: List[str] = []
             self.current_atoms: List[AtomInfo] = []
@@ -1230,15 +1344,37 @@ def run_gui(initial_path: Optional[str] = None) -> None:
             out_ent = ttk.Entry(row2, textvariable=self.out_path_var, width=82, state="readonly")
             out_ent.pack(side="left", padx=(pad, pad), fill="x", expand=True)
 
-            ttk.Label(
+            automatic_box = ttk.LabelFrame(
                 self,
-                text=(
-                    "Automatic circularization: check the chains you want to circularize "
-                    "(distance shown is |P(5') - O3'(3')| in Angstrom)."
-                ),
+                text="Automatic terminal LINK creation",
+                style="Tool.TLabelframe",
+            )
+            automatic_box.pack(fill="x", padx=pad, pady=(0, pad))
+
+            mode_row = ttk.Frame(automatic_box)
+            mode_row.pack(fill="x", padx=pad, pady=(pad, 2))
+            ttk.Label(mode_row, text="Molecule type:").pack(side="left")
+            ttk.Radiobutton(
+                mode_row,
+                text="Nucleic acid (5' P to 3' O3')",
+                variable=self.auto_link_mode_var,
+                value="nucleic",
+                command=self._on_auto_mode_changed,
+            ).pack(side="left", padx=(8, 12))
+            ttk.Radiobutton(
+                mode_row,
+                text="Peptide (N-terminus N to C-terminus C)",
+                variable=self.auto_link_mode_var,
+                value="peptide",
+                command=self._on_auto_mode_changed,
+            ).pack(side="left")
+
+            ttk.Label(
+                automatic_box,
+                text="Check the chains to cyclize; the terminal-atom distance is shown below.",
             ).pack(anchor="w", padx=pad, pady=(2, 2))
 
-            self.auto_scroll = ScrollableFrame(self)
+            self.auto_scroll = ScrollableFrame(automatic_box)
             self.auto_scroll.pack(fill="both", expand=False, padx=pad, pady=(0, pad))
 
             manual_box = ttk.LabelFrame(
@@ -1248,26 +1384,36 @@ def run_gui(initial_path: Optional[str] = None) -> None:
             )
             manual_box.pack(fill="x", padx=pad, pady=(0, pad))
 
-            ttk.Label(
-                manual_box,
-                text=(
-                    "P (5’) atom of residue [  ] in chain [  ]\n"
-                    "O3' (3') atom of residue [  ] in chain [  ]"
-                ),
-            ).pack(anchor="w", padx=pad, pady=(pad, 4))
+            manual_mode_row = ttk.Frame(manual_box)
+            manual_mode_row.pack(fill="x", padx=pad, pady=(pad, 4))
+            ttk.Label(manual_mode_row, text="Link type:").pack(side="left")
+            ttk.Radiobutton(
+                manual_mode_row,
+                text="Nucleic acid (P to O3')",
+                variable=self.manual_link_mode_var,
+                value="nucleic",
+                command=self._on_manual_mode_changed,
+            ).pack(side="left", padx=(8, 12))
+            ttk.Radiobutton(
+                manual_mode_row,
+                text="Peptide (N to C)",
+                variable=self.manual_link_mode_var,
+                value="peptide",
+                command=self._on_manual_mode_changed,
+            ).pack(side="left")
 
             grid = ttk.Frame(manual_box)
             grid.pack(fill="x", padx=pad, pady=(0, pad))
 
-            ttk.Label(grid, text="P (5') atom of residue").grid(row=0, column=0, sticky="w")
-            ttk.Entry(grid, textvariable=self.manual_p_res_var, width=10).grid(row=0, column=1, sticky="w", padx=(4, 8))
+            ttk.Label(grid, textvariable=self.manual_endpoint1_label_var).grid(row=0, column=0, sticky="w")
+            ttk.Entry(grid, textvariable=self.manual_endpoint1_res_var, width=10).grid(row=0, column=1, sticky="w", padx=(4, 8))
             ttk.Label(grid, text="in chain").grid(row=0, column=2, sticky="w")
-            ttk.Entry(grid, textvariable=self.manual_p_chain_var, width=8).grid(row=0, column=3, sticky="w", padx=(4, 16))
+            ttk.Entry(grid, textvariable=self.manual_endpoint1_chain_var, width=8).grid(row=0, column=3, sticky="w", padx=(4, 16))
 
-            ttk.Label(grid, text="O3' (3') atom of residue").grid(row=1, column=0, sticky="w", pady=(6, 0))
-            ttk.Entry(grid, textvariable=self.manual_o3_res_var, width=10).grid(row=1, column=1, sticky="w", padx=(4, 8), pady=(6, 0))
+            ttk.Label(grid, textvariable=self.manual_endpoint2_label_var).grid(row=1, column=0, sticky="w", pady=(6, 0))
+            ttk.Entry(grid, textvariable=self.manual_endpoint2_res_var, width=10).grid(row=1, column=1, sticky="w", padx=(4, 8), pady=(6, 0))
             ttk.Label(grid, text="in chain").grid(row=1, column=2, sticky="w", pady=(6, 0))
-            ttk.Entry(grid, textvariable=self.manual_o3_chain_var, width=8).grid(row=1, column=3, sticky="w", padx=(4, 16), pady=(6, 0))
+            ttk.Entry(grid, textvariable=self.manual_endpoint2_chain_var, width=8).grid(row=1, column=3, sticky="w", padx=(4, 16), pady=(6, 0))
 
             ttk.Button(grid, text="Add Link", command=self._add_manual_link).grid(
                 row=0, column=4, rowspan=2, sticky="ns", padx=(8, 0), pady=(2, 0)
@@ -1309,7 +1455,7 @@ def run_gui(initial_path: Optional[str] = None) -> None:
                 if not self.chain_info:
                     raise ValueError("No ATOM/HETATM records found (or could not parse any).")
 
-                self.out_path_var.set(str(default_output_path(path)))
+                self.out_path_var.set(str(self._default_output_for_mode(path)))
                 self.manual_items = []
                 self._populate_auto_chain_checkboxes()
                 self._populate_manual_items()
@@ -1324,6 +1470,25 @@ def run_gui(initial_path: Optional[str] = None) -> None:
                 self._populate_auto_chain_checkboxes()
                 self._populate_manual_items()
 
+        def _default_output_for_mode(self, path: Path) -> Path:
+            if self.auto_link_mode_var.get() == "peptide":
+                return default_peptide_output_path(path)
+            return default_output_path(path)
+
+        def _on_auto_mode_changed(self) -> None:
+            self._populate_auto_chain_checkboxes()
+            input_text = self.inp_path_var.get().strip()
+            if input_text:
+                self.out_path_var.set(str(self._default_output_for_mode(Path(input_text))))
+
+        def _on_manual_mode_changed(self) -> None:
+            if self.manual_link_mode_var.get() == "peptide":
+                self.manual_endpoint1_label_var.set("N atom of residue")
+                self.manual_endpoint2_label_var.set("C atom of residue")
+            else:
+                self.manual_endpoint1_label_var.set("P (5') atom of residue")
+                self.manual_endpoint2_label_var.set("O3' (3') atom of residue")
+
         def _populate_auto_chain_checkboxes(self) -> None:
             for w in self.auto_scroll.scrollable_frame.winfo_children():
                 w.destroy()
@@ -1335,26 +1500,37 @@ def run_gui(initial_path: Optional[str] = None) -> None:
 
             for chain in sorted(self.chain_info.keys()):
                 info = self.chain_info[chain]
-                var = tk.BooleanVar(value=True)
+                peptide_mode = self.auto_link_mode_var.get() == "peptide"
+                endpoint1_atom = info.n_atom if peptide_mode else info.p_atom
+                endpoint2_atom = info.c_atom if peptide_mode else info.o3_atom
+                terminal_distance = info.peptide_distance if peptide_mode else info.distance
+                var = tk.BooleanVar(value=endpoint1_atom is not None and endpoint2_atom is not None)
                 self.auto_chain_vars[chain] = var
 
                 chain_label = chain if chain.strip() else "<blank>"
-                dist_str = "N/A" if info.distance is None else f"{info.distance:7.2f}"
+                dist_str = "N/A" if terminal_distance is None else f"{terminal_distance:7.2f}"
 
                 missing_bits: List[str] = []
-                if info.p_atom is None:
-                    missing_bits.append("missing P(5')")
-                if info.o3_atom is None:
-                    missing_bits.append("missing O3'(3')")
+                if endpoint1_atom is None:
+                    missing_bits.append("missing N(N-term)" if peptide_mode else "missing P(5')")
+                if endpoint2_atom is None:
+                    missing_bits.append("missing C(C-term)" if peptide_mode else "missing O3'(3')")
                 missing = "; ".join(missing_bits)
                 if missing:
                     missing = "  [" + missing + "]"
 
-                txt = (
-                    f"Chain {chain_label:>6s} : 5' {info.first_resName}{info.first_resSeq}  "
-                    f"3' {info.last_resName}{info.last_resSeq}   "
-                    f"|P - O3'| = {dist_str} Å{missing}"
-                )
+                if peptide_mode:
+                    txt = (
+                        f"Chain {chain_label:>6s} : N-term {info.first_resName}{info.first_resSeq}  "
+                        f"C-term {info.last_resName}{info.last_resSeq}   "
+                        f"|N - C| = {dist_str} Å{missing}"
+                    )
+                else:
+                    txt = (
+                        f"Chain {chain_label:>6s} : 5' {info.first_resName}{info.first_resSeq}  "
+                        f"3' {info.last_resName}{info.last_resSeq}   "
+                        f"|P - O3'| = {dist_str} Å{missing}"
+                    )
                 cb = ttk.Checkbutton(self.auto_scroll.scrollable_frame, text=txt, variable=var)
                 cb.pack(anchor="w")
 
@@ -1396,38 +1572,44 @@ def run_gui(initial_path: Optional[str] = None) -> None:
                 if not self.current_lines or not self.current_atoms:
                     raise ValueError("Please load a PDB file first.")
 
-                p_resseq = int(self.manual_p_res_var.get().strip())
-                p_chain = self.manual_p_chain_var.get().strip()
-                o3_resseq = int(self.manual_o3_res_var.get().strip())
-                o3_chain = self.manual_o3_chain_var.get().strip()
+                endpoint1_resseq = int(self.manual_endpoint1_res_var.get().strip())
+                endpoint1_chain = self.manual_endpoint1_chain_var.get().strip()
+                endpoint2_resseq = int(self.manual_endpoint2_res_var.get().strip())
+                endpoint2_chain = self.manual_endpoint2_chain_var.get().strip()
+                peptide_mode = self.manual_link_mode_var.get() == "peptide"
+                endpoint1_name = "N" if peptide_mode else "P"
+                endpoint2_name = "C" if peptide_mode else "O3'"
 
-                p_atom, o3_atom, _e1, _e2 = _prepare_manual_link_spec(
+                endpoint1_atom, endpoint2_atom, e1, e2 = _prepare_named_manual_link_spec(
                     lines=self.current_lines,
                     atoms=self.current_atoms,
-                    p_chain=p_chain,
-                    p_resseq=p_resseq,
-                    o3_chain=o3_chain,
-                    o3_resseq=o3_resseq,
+                    endpoint1_chain=endpoint1_chain,
+                    endpoint1_resseq=endpoint1_resseq,
+                    endpoint1_name=endpoint1_name,
+                    endpoint2_chain=endpoint2_chain,
+                    endpoint2_resseq=endpoint2_resseq,
+                    endpoint2_name=endpoint2_name,
                 )
 
                 label = (
-                    f"P atom: residue {p_atom.resSeq} in chain {p_atom.chainID} -> "
-                    f"O3' atom: residue {o3_atom.resSeq} in chain {o3_atom.chainID}"
+                    f"{endpoint1_atom.name} atom: residue {endpoint1_atom.resSeq} "
+                    f"in chain {endpoint1_atom.chainID} -> {endpoint2_atom.name} atom: "
+                    f"residue {endpoint2_atom.resSeq} in chain {endpoint2_atom.chainID}"
                 )
                 self.manual_items.append(
                     PendingManualLink(
                         label=label,
-                        p_atom=p_atom,
-                        o3_atom=o3_atom,
-                        endpoint1=_format_endpoint(p_atom.chainID, p_atom.resSeq, "P"),
-                        endpoint2=_format_endpoint(o3_atom.chainID, o3_atom.resSeq, "O3'"),
+                        endpoint1_atom=endpoint1_atom,
+                        endpoint2_atom=endpoint2_atom,
+                        endpoint1=e1,
+                        endpoint2=e2,
                         var=tk.BooleanVar(value=True),
                     )
                 )
-                self.manual_p_res_var.set("")
-                self.manual_p_chain_var.set("")
-                self.manual_o3_res_var.set("")
-                self.manual_o3_chain_var.set("")
+                self.manual_endpoint1_res_var.set("")
+                self.manual_endpoint1_chain_var.set("")
+                self.manual_endpoint2_res_var.set("")
+                self.manual_endpoint2_chain_var.set("")
                 self._populate_manual_items()
             except Exception as e:
                 messagebox.showerror("Error", str(e))
@@ -1439,7 +1621,7 @@ def run_gui(initial_path: Optional[str] = None) -> None:
             selected_links: List[SelectedLinkSpec] = []
             selected_endpoints: Set[Tuple[str, int, str]] = set()
 
-            # Automatic circularization links
+            # Automatic terminal links
             for chain in sorted(self.auto_chain_vars.keys()):
                 if not self.auto_chain_vars[chain].get():
                     continue
@@ -1447,17 +1629,26 @@ def run_gui(initial_path: Optional[str] = None) -> None:
                 info = self.chain_info.get(chain)
                 if info is None:
                     continue
-                if info.p_atom is None:
+                peptide_mode = self.auto_link_mode_var.get() == "peptide"
+                endpoint1_atom = info.n_atom if peptide_mode else info.p_atom
+                endpoint2_atom = info.c_atom if peptide_mode else info.o3_atom
+                endpoint1_name = "N" if peptide_mode else "P"
+                endpoint2_name = "C" if peptide_mode else "O3'"
+                endpoint1_label = "N-terminal N" if peptide_mode else "5' P"
+                endpoint2_label = "C-terminal C" if peptide_mode else "3' O3'"
+                if endpoint1_atom is None:
                     raise ValueError(
-                        f"Chain {chain!r}: missing P atom on the 5' terminal residue {info.first_resSeq}."
+                        f"Chain {chain!r}: missing {endpoint1_label} atom on terminal "
+                        f"residue {info.first_resSeq}."
                     )
-                if info.o3_atom is None:
+                if endpoint2_atom is None:
                     raise ValueError(
-                        f"Chain {chain!r}: missing O3' atom on the 3' terminal residue {info.last_resSeq}."
+                        f"Chain {chain!r}: missing {endpoint2_label} atom on terminal "
+                        f"residue {info.last_resSeq}."
                     )
 
-                e1 = _format_endpoint(chain, info.first_resSeq, "P")
-                e2 = _format_endpoint(chain, info.last_resSeq, "O3'")
+                e1 = _format_endpoint(chain, info.first_resSeq, endpoint1_name)
+                e2 = _format_endpoint(chain, info.last_resSeq, endpoint2_name)
                 if e1 in selected_endpoints or e2 in selected_endpoints:
                     raise ValueError(
                         f"Chain {chain!r}: this LINK conflicts with another selected LINK record. Please uncheck one of them."
@@ -1465,9 +1656,13 @@ def run_gui(initial_path: Optional[str] = None) -> None:
 
                 selected_links.append(
                     SelectedLinkSpec(
-                        label=f"Automatic circularization: chain {chain}",
-                        p_atom=info.p_atom,
-                        o3_atom=info.o3_atom,
+                        label=(
+                            f"Automatic peptide N-C cyclization: chain {chain}"
+                            if peptide_mode
+                            else f"Automatic nucleic-acid P-O3' circularization: chain {chain}"
+                        ),
+                        endpoint1_atom=endpoint1_atom,
+                        endpoint2_atom=endpoint2_atom,
                         endpoint1=e1,
                         endpoint2=e2,
                     )
@@ -1488,8 +1683,8 @@ def run_gui(initial_path: Optional[str] = None) -> None:
                 selected_links.append(
                     SelectedLinkSpec(
                         label=item.label,
-                        p_atom=item.p_atom,
-                        o3_atom=item.o3_atom,
+                        endpoint1_atom=item.endpoint1_atom,
+                        endpoint2_atom=item.endpoint2_atom,
                         endpoint1=item.endpoint1,
                         endpoint2=item.endpoint2,
                     )
@@ -1508,11 +1703,16 @@ def run_gui(initial_path: Optional[str] = None) -> None:
                 manual_count = sum(1 for item in self.manual_items if item.var.get())
 
                 if manual_count == 0 and auto_chains and all(chain.strip() for chain in auto_chains):
+                    chain_option = (
+                        "--peptide-chains"
+                        if self.auto_link_mode_var.get() == "peptide"
+                        else "--chains"
+                    )
                     cli_parts = [
                         sys.executable,
                         Path(__file__).name,
                         str(inp_path),
-                        "--chains",
+                        chain_option,
                         *auto_chains,
                         "-o",
                         str(out_path),
@@ -1529,7 +1729,12 @@ def run_gui(initial_path: Optional[str] = None) -> None:
                             flush=True,
                         )
                     elif auto_chains:
-                        print("Automatic circularization chains: " + ", ".join(auto_chains), flush=True)
+                        mode_label = (
+                            "Peptide N-C cyclization"
+                            if self.auto_link_mode_var.get() == "peptide"
+                            else "Nucleic-acid P-O3' circularization"
+                        )
+                        print(f"{mode_label} chains: " + ", ".join(auto_chains), flush=True)
 
                 print("Selected LINK records:", flush=True)
                 for idx, link in enumerate(new_links, start=1):
@@ -1558,12 +1763,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="add_pdb_link_record.py",
         description=(
-            "Add PDB LINK records between P and O3' endpoints, with GUI support "
-            "for manual links and automatic circularization."
+            "Add PDB LINK records for nucleic-acid P-O3' or peptide N-C "
+            "cyclization, with GUI support for automatic and manual links."
         ),
     )
     p.add_argument("pdb", nargs="?", help="Input PDB file.")
-    p.add_argument(
+    automatic_group = p.add_mutually_exclusive_group()
+    automatic_group.add_argument(
         "-c",
         "--chains",
         nargs="*",
@@ -1571,6 +1777,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Chain IDs to circularize. If omitted, circularize all chains. "
             "Accepts space-separated and/or comma-separated values, e.g. --chains A B or --chains A,B"
+        ),
+    )
+    automatic_group.add_argument(
+        "--peptide-chains",
+        nargs="*",
+        default=None,
+        help=(
+            "Peptide chain IDs to cyclize by linking the N-terminal N to the "
+            "C-terminal C. If supplied without IDs, process all usable chains."
         ),
     )
     p.add_argument("-o", "--output", default=None, help="Output PDB filename (optional).")
@@ -1604,15 +1819,15 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         sys.exit(2)
 
     inp_path = Path(args.pdb)
-    chains = _parse_chain_list(args.chains)
+    peptide_mode = args.peptide_chains is not None
+    chain_args = args.peptide_chains if peptide_mode else args.chains
+    chains = _parse_chain_list(chain_args)
     out_path = Path(args.output) if args.output else None
     verbose = not args.quiet
 
-    out_path2, chain_info, new_links = circularize_pdb(
-        inp_path,
-        chains=chains if chains else None,
-        out_path=out_path,
-        verbose=verbose,
+    link_function = cyclize_peptide_pdb if peptide_mode else circularize_pdb
+    out_path2, chain_info, new_links = link_function(
+        inp_path, chains=chains if chains else None, out_path=out_path, verbose=verbose
     )
 
     if verbose:
@@ -1620,11 +1835,20 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         for chain in sorted(chain_info.keys()):
             info = chain_info[chain]
             chain_label = chain if chain.strip() else "<blank>"
-            dist_str = "N/A" if info.distance is None else f"{info.distance:.2f}"
-            print(
-                f"  Chain {chain_label}: 5' {info.first_resName}{info.first_resSeq}  "
-                f"3' {info.last_resName}{info.last_resSeq}  |P-O3'|={dist_str} Å"
-            )
+            if peptide_mode:
+                dist_str = (
+                    "N/A" if info.peptide_distance is None else f"{info.peptide_distance:.2f}"
+                )
+                print(
+                    f"  Chain {chain_label}: N-term {info.first_resName}{info.first_resSeq}  "
+                    f"C-term {info.last_resName}{info.last_resSeq}  |N-C|={dist_str} Å"
+                )
+            else:
+                dist_str = "N/A" if info.distance is None else f"{info.distance:.2f}"
+                print(
+                    f"  Chain {chain_label}: 5' {info.first_resName}{info.first_resSeq}  "
+                    f"3' {info.last_resName}{info.last_resSeq}  |P-O3'|={dist_str} Å"
+                )
 
         print(f"\nAdded {len(new_links)} LINK record(s).")
         print(f"Wrote output: {out_path2}")

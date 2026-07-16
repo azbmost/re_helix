@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from real P-atom or chain-associated virtual-atom pairs and then applies reciprocal exchanges when every endpoint is real. It can also run reciprocal exchange only, without alignment.
 
-Current version: V3.22
+Current version: V3.23
 
 ## Contents
 
@@ -12,7 +12,7 @@ Current version: V3.22
 - `re_helix_lib/`: helper modules for PDB parsing, LINK records, and reciprocal-exchange graph handling.
 - `re_helix_lib/bend_helix.py`: bundled Bend Helix tool for bending a straight two-chain helix.
 - `re_helix_lib/do_symmetry.py`: bundled Do Symmetry tool for averaging a pseudosymmetric assembly into an idealized symmetric PDB.
-- `re_helix_lib/add_pdb_link_record.py`: bundled Add PDB LINK Record tool for staging P/O3' LINK records and rebuilding chain topology.
+- `re_helix_lib/add_pdb_link_record.py`: bundled Add PDB LINK Record tool for nucleic-acid P/O3' and peptide N/C terminal links, manual P/O3' links, and chain-topology rebuilding.
 - `re_helix_lib/insert_virtual_resi.py`: bundled Insert Virtual Resi tool for inserting residue-numbering gaps and updating LINK endpoints.
 - `re_helix_lib/permute_chain.py`: bundled Permute Chain tool for cyclically rearranging and continuously renumbering one or more chains.
 - `re_helix_lib/generate_lattice.py`: bundled Generate Lattice tool for writing a P1 CRYST1 lattice record from three lattice vectors.
@@ -124,7 +124,9 @@ Working principle: the script builds cyclic chain permutations from the symmetry
 
 ## Add PDB LINK Record Tool
 
-The bundled Add PDB LINK Record tool helps create PDB `LINK` records between phosphate `P` atoms and `O3'`/`O3*`/`O3` atoms. In GUI mode, it can automatically stage terminal-chain circularization links and manually stage internal or inter-chain P/O3' links, then rebuild the chain topology, chain IDs, TER records, residue numbering, and LINK records in one pass. Existing input `LINK` records are preserved and remapped to the rebuilt chain/residue labels when possible.
+The bundled Add PDB LINK Record tool creates terminal cyclization links for nucleic acids and peptides. Its automatic GUI mode can link a nucleic-acid 5'-terminal `P` to its 3'-terminal `O3'`/`O3*`/`O3`, or a peptide N-terminal `N` to its C-terminal carbonyl `C`. Select the molecule type, then check the chains to process; the corresponding terminal-atom distance is displayed for each chain.
+
+The GUI can also manually stage internal or inter-chain links. In the Manual LINK creation section, choose `Nucleic acid (P to O3')` or `Peptide (N to C)`, then provide the residue number and chain for both endpoints. Manual peptide mode validates the selected `N` and carbonyl `C` atoms and stages them in C-to-N topology order. GUI runs rebuild chain topology, chain IDs, TER records, residue numbering, and LINK records in one pass. Existing input `LINK` records are preserved and remapped to the rebuilt chain/residue labels when possible.
 
 Open its GUI directly:
 
@@ -138,12 +140,19 @@ Run automatic chain circularization from the command line:
 python3 re_helix_lib/add_pdb_link_record.py input.pdb --chains A B -o input_linked.pdb
 ```
 
-If `--chains` is omitted, the command-line mode attempts automatic circularization for every chain with usable terminal `P` and `O3'` atoms. Without `-o`, the default output inserts `_circ` before the input extension, for example `input.pdb` becomes `input_circ.pdb`.
+Run automatic peptide cyclization by linking N-terminal `N` to C-terminal `C`:
+
+```bash
+python3 re_helix_lib/add_pdb_link_record.py peptide.pdb --peptide-chains A -o peptide_circ.pdb
+```
+
+If `--chains` is omitted, command-line mode attempts nucleic-acid circularization for every chain with usable terminal `P` and `O3'` atoms. Supplying `--peptide-chains` without chain IDs processes every chain with usable terminal `N` and `C` atoms. The default peptide output inserts `_peptide_circ` before the extension; the nucleic-acid default remains `_circ`.
 
 Useful Add PDB LINK Record options:
 
 - `--gui`: open the GUI for automatic and manual LINK staging.
 - `--chains A B` or `--chains A,B`: choose chains for automatic terminal circularization.
+- `--peptide-chains A B` or `--peptide-chains A,B`: choose peptide chains for automatic N-to-C cyclization.
 - `-o output.pdb`: choose the output file.
 - `-q`: suppress console messages.
 - `-v` or `--version`: show the bundled tool version.
@@ -185,7 +194,7 @@ The bundled Permute Chain tool cyclically rearranges complete residue blocks in 
 
 The output residue numbers remain continuous and increase from top to bottom. Numbering begins at the smallest residue number used by the input chain, so a chain originally numbered `10-50` remains numbered `10-50` after permutation. The same old-to-new mapping is applied to coordinate-like records, `TER`, `HET`, both endpoints of `LINK` records, and recognizable residue references in `REMARK` lines. re_helix `REMARK 950 RE_SCRIPT CHAIN_RANGE` and `CHAIN_RESIDUES` inventories are rebuilt in the new order.
 
-In the GUI, set `Number of permutation sites` to create that many dynamic rows, then enter one chain ID and signed shift per row. Each chain may occur once. All listed sites are applied to the same output PDB.
+In the GUI, set `Number of permutation sites` to create that many dynamic rows, then enter one chain ID and signed shift per row. Each chain may occur once. All listed sites are applied to the same output PDB. The light-blue `?` button beside `Signed shift (+n / -n)` opens detailed movement and renumbering examples for both signs.
 
 Open its GUI directly:
 

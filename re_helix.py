@@ -2,6 +2,12 @@
 """
 re_helix.py
 
+V3.23 update (2026-07-16):
+- Extend Add PDB LINK Record with automatic and manual peptide links between
+  N and C atoms, including N-terminal-to-C-terminal peptide cyclization.
+- Add GUI molecule/link-type controls and the --peptide-chains CLI option.
+- Bump the re_helix app version to V3.23.
+
 V3.22 update (2026-07-15):
 - Add Permute Chain to the GUI Other tools area. The bundled
   re_helix_lib/permute_chain.py tool cyclically rearranges one or more chains
@@ -339,10 +345,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.22"
+SOFTWARE_VERSION = "V3.23"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V3.22: AZBMOST Package Module #2 - "
+    "re_helix V3.23: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 

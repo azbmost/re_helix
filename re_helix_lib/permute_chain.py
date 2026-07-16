@@ -612,6 +612,51 @@ def run_gui(initial_path: Optional[str] = None) -> int:
     style.configure("ToolTitle.TLabel", font=("TkDefaultFont", 12, "bold"))
     style.configure("Tool.TLabelframe.Label", font=("TkDefaultFont", 10, "bold"))
 
+    signed_shift_help = (
+        "+n: POSITIVE SHIFT\n\n"
+        "A positive shift +n moves the first n complete residue blocks of the "
+        "selected chain to its end. The original residue at position n+1 becomes "
+        "the first residue in the new chain order.\n\n"
+        "Example: suppose chain A contains eight residues numbered A10 through A17. "
+        "With +3, their source order becomes:\n\n"
+        "A13, A14, A15, A16, A17, A10, A11, A12\n\n"
+        "The output is then relabeled continuously as A10 through A17. Thus original "
+        "A13 becomes new A10, and original A10 becomes new A15. Every ATOM/HETATM "
+        "record belonging to a residue moves together.\n\n"
+        "Shifts wrap around the chain length. For an eight-residue chain, +10 has "
+        "the same ordering effect as +2; +8 and +0 leave the order unchanged. "
+        "Related REMARK, HET, LINK, and TER residue references are updated using the "
+        "same old-to-new numbering map.\n\n"
+        "-n: NEGATIVE SHIFT\n\n"
+        "A negative shift -n moves the last n complete residue blocks of the selected "
+        "chain to its beginning, preserving the order within that moved block.\n\n"
+        "Example: suppose chain A contains eight residues numbered A10 through A17. "
+        "With -3, their source order becomes:\n\n"
+        "A15, A16, A17, A10, A11, A12, A13, A14\n\n"
+        "The output is then relabeled continuously as A10 through A17. Thus original "
+        "A15 becomes new A10, and original A10 becomes new A13. Every ATOM/HETATM "
+        "record belonging to a residue moves together.\n\n"
+        "Shifts wrap around the chain length. For an eight-residue chain, -10 has "
+        "the same ordering effect as -2; -8 and 0 leave the order unchanged. Related "
+        "REMARK, HET, LINK, and TER residue references are updated using the same "
+        "old-to-new numbering map."
+    )
+
+    def make_help_button(parent, title: str, message: str):
+        return tk.Button(
+            parent,
+            text="?",
+            width=2,
+            padx=0,
+            pady=0,
+            bg="#d9ecff",
+            activebackground="#c4e0ff",
+            highlightbackground="#d9ecff",
+            relief="raised",
+            bd=1,
+            command=lambda: messagebox.showinfo(title, message, parent=root),
+        )
+
     input_var = tk.StringVar(value=initial_path or "")
     output_var = tk.StringVar()
     site_count_var = tk.StringVar(value="1")
@@ -677,8 +722,9 @@ def run_gui(initial_path: Optional[str] = None) -> int:
         textvariable=site_count_var,
     )
     site_count_spinbox.pack(side="left", padx=(6, 12))
-    ttk.Label(site_header, text="+n: first n to end; -n: last n to front").pack(
-        side="left"
+    ttk.Label(site_header, text="Signed shift (+n / -n)").pack(side="left")
+    make_help_button(site_header, "Signed shift (+n / -n)", signed_shift_help).pack(
+        side="left", padx=(4, 0)
     )
 
     site_area = ttk.Frame(settings)

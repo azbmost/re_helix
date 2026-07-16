@@ -1,5 +1,15 @@
 # Changelog
 
+## V3.23 - 2026-07-16
+
+- Bumped `re_helix` to V3.23 and Add PDB LINK Record to V1.2.
+- Added automatic peptide cyclization by linking the N-terminal `N` atom to the C-terminal carbonyl `C` atom of each selected chain.
+- Added nucleic-acid/peptide molecule-type controls to the Add PDB LINK Record GUI with dynamic terminal labels, availability checks, and N-C or P-O3' distance reporting.
+- Extended Manual LINK creation with an independent nucleic-acid/peptide selector, dynamic P/O3' or N/C endpoint rows, and atom-specific validation for peptide links.
+- Added `--peptide-chains` for peptide terminal LINK insertion from the command line and a distinct `_peptide_circ.pdb` default output name.
+- Generalized LINK-driven topology rebuilding so peptide C-to-N connectivity follows the same segment ordering, residue remapping, and existing-LINK preservation rules as nucleic-acid O3'-to-P connectivity.
+- Added a light-blue `?` help button with expanded positive- and negative-shift explanations and examples to the Permute Chain GUI.
+
 ## V3.22 - 2026-07-15
 
 - Bumped `re_helix` to V3.22.
