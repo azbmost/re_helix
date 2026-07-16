@@ -2,9 +2,9 @@
 
 `re_helix` is AZBMOST Package Module #2: Align Helices and Performing Reciprocal Exchanges.
 
-It aligns nucleic-acid helices from reciprocal-exchange-style P-atom pairs and then applies reciprocal exchanges to the aligned structure. It can also run reciprocal exchange only, without alignment.
+It aligns nucleic-acid helices from real P-atom or chain-associated virtual-atom pairs and then applies reciprocal exchanges when every endpoint is real. It can also run reciprocal exchange only, without alignment.
 
-Current version: V3.20
+Current version: V3.22
 
 ## Contents
 
@@ -14,6 +14,7 @@ Current version: V3.20
 - `re_helix_lib/do_symmetry.py`: bundled Do Symmetry tool for averaging a pseudosymmetric assembly into an idealized symmetric PDB.
 - `re_helix_lib/add_pdb_link_record.py`: bundled Add PDB LINK Record tool for staging P/O3' LINK records and rebuilding chain topology.
 - `re_helix_lib/insert_virtual_resi.py`: bundled Insert Virtual Resi tool for inserting residue-numbering gaps and updating LINK endpoints.
+- `re_helix_lib/permute_chain.py`: bundled Permute Chain tool for cyclically rearranging and continuously renumbering one or more chains.
 - `re_helix_lib/generate_lattice.py`: bundled Generate Lattice tool for writing a P1 CRYST1 lattice record from three lattice vectors.
 - `re_helix_lib/get_phenix_restraints.py`: bundled Get Phenix Restraints tool for converting LINK records into Phenix geometry restraints, optional junction movement-selection params, and linker support files.
 - `assets/icon.png`: optional GUI/task-menu icon. The main GUI and bundled helper GUIs use it when present and fall back to the default Tk icon when it is missing.
@@ -32,7 +33,7 @@ Launch the GUI:
 python3 re_helix.py
 ```
 
-In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, `Insert Virtual Resi` opens the residue-renumbering helper, `Generate Lattice` opens the P1 lattice/CRYST1 helper, and `Get Phenix Restraints` opens the Phenix restraint-generation helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
+In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, `Insert Virtual Resi` opens the residue-numbering-gap helper, `Permute Chain` opens the cyclic chain-rearrangement helper, `Generate Lattice` opens the P1 lattice/CRYST1 helper, and `Get Phenix Restraints` opens the Phenix restraint-generation helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
 
 When the input PDB changes, the GUI updates the default `Output base` automatically unless that field has been changed to a custom value. For large exchange specifications, the `CLI pair args` field below the pair rows can be filled with the same concatenated pair tokens used on the command line; when it is filled, the individual pair rows are ignored.
 
@@ -178,6 +179,37 @@ Useful Insert Virtual Resi options:
 - `-o output.pdb`: choose the output file. Without `-o`, the default output inserts `_vresi` before the input extension.
 - `-v` or `--version`: show the bundled tool version.
 
+## Permute Chain Tool
+
+The bundled Permute Chain tool cyclically rearranges complete residue blocks in one or more specified chains. A positive shift moves that many residues from the start to the end, while a negative shift moves that many residues from the end to the start. For example, shift `5` makes the original sixth residue the new first residue; shift `-5` makes the original last five residues the new first five.
+
+The output residue numbers remain continuous and increase from top to bottom. Numbering begins at the smallest residue number used by the input chain, so a chain originally numbered `10-50` remains numbered `10-50` after permutation. The same old-to-new mapping is applied to coordinate-like records, `TER`, `HET`, both endpoints of `LINK` records, and recognizable residue references in `REMARK` lines. re_helix `REMARK 950 RE_SCRIPT CHAIN_RANGE` and `CHAIN_RESIDUES` inventories are rebuilt in the new order.
+
+In the GUI, set `Number of permutation sites` to create that many dynamic rows, then enter one chain ID and signed shift per row. Each chain may occur once. All listed sites are applied to the same output PDB.
+
+Open its GUI directly:
+
+```bash
+python3 re_helix_lib/permute_chain.py --gui
+```
+
+Run it from the command line:
+
+```bash
+python3 re_helix_lib/permute_chain.py input.pdb \
+  --permute A 5 --permute B -5 \
+  -o input_permuted.pdb
+```
+
+For compatibility, one site can also be written as positional arguments: `python3 re_helix_lib/permute_chain.py input.pdb B 5`.
+
+Useful Permute Chain arguments:
+
+- `--permute B 5`: one chain ID and signed shift; repeat the option for additional chains.
+- Positive shifts move residues from start to end; negative shifts move residues from end to start.
+- `-o output.pdb`: choose the output file. Without `-o`, the default output inserts `_permuted` before the input extension.
+- `-v` or `--version`: show the bundled tool version.
+
 ## Generate Lattice Tool
 
 The bundled Generate Lattice tool writes or replaces the PDB `CRYST1` record for a P1 lattice from three user-provided lattice directions and distances. By default, it also rotates `ATOM`/`HETATM` coordinates and `ANISOU` tensors into the standard PDB crystallographic Cartesian frame, where `a` is along +X, `b` is in the XY plane, and `c` has positive Z. It preserves non-coordinate records, including `REMARK`, `LINK`, `TITLE`, and `SEQRES`, unless an option explicitly changes that behavior.
@@ -267,6 +299,14 @@ Background reading:
 ## Exchange Syntax
 
 Residue tokens can be written as `30A`, `A30`, `A.30`, or `30.A`.
+
+Virtual atoms can be written with the chain before or after their coordinates: `A(x,y,z)` or `(x,y,z)A`. The chain ID assigns the virtual point to that helix, and coordinates are in angstroms. Virtual endpoints can be paired with real or other virtual endpoints.
+
+```bash
+python3 re_helix.py input.pdb '(AB)' '(CD)' 'A(1,2,3)' 8D d '(4,5,6)B' 24C s -o virtual_model
+```
+
+If any endpoint is virtual, the run writes only `virtual_model_aligned.pdb`. Reciprocal exchange is skipped because a virtual atom has no PDB residue; consequently, `d`, `s`, and `b` are accepted for syntax compatibility but ignored for that run.
 
 Each exchange is:
 

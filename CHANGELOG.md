@@ -1,5 +1,22 @@
 # Changelog
 
+## V3.22 - 2026-07-15
+
+- Bumped `re_helix` to V3.22.
+- Added the bundled Permute Chain V1.0 tool as `re_helix_lib/permute_chain.py` with standalone GUI and CLI workflows.
+- Added a `Permute Chain` button to the `re_helix` GUI `Other tools` area and pre-filled the selected input PDB when available.
+- Added signed cyclic residue-block shifts: positive values move residues from the chain start to its end, while negative values move residues from the end to the start.
+- Added a permutation-site count with dynamic GUI rows and repeatable CLI `--permute CHAIN SHIFT` arguments so multiple chains can be rearranged in one output.
+- Continuously renumbered the permuted chain from its original minimum residue number and applied the same mapping to coordinate-like records, `TER`, `HET`, `LINK`, and recognizable `REMARK` residue references.
+- Rebuilt re_helix `REMARK 950 RE_SCRIPT CHAIN_RANGE` and `CHAIN_RESIDUES` inventories in the new chain order.
+
+## V3.21 - 2026-07-15
+
+- Bumped `re_helix` to V3.21.
+- Added chain-associated virtual exchange-pair endpoints using either `A(x,y,z)` or `(x,y,z)A` syntax; virtual and real endpoints may be mixed.
+- Applied virtual coordinates in the same alignment objectives as real P atoms and moved virtual points rigidly with their assigned helices.
+- Made every run containing a virtual endpoint alignment-only: exchange kinds are ignored and reciprocal-exchange output is skipped.
+
 ## V3.20 - 2026-07-13
 
 - Bumped `re_helix` to V3.20.

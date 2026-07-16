@@ -2,6 +2,20 @@
 """
 re_helix.py
 
+V3.22 update (2026-07-15):
+- Add Permute Chain to the GUI Other tools area. The bundled
+  re_helix_lib/permute_chain.py tool cyclically rearranges one or more chains
+  by signed residue offsets, restores continuous numbering, and updates
+  related REMARK, HET, LINK, and TER residue references.
+- Bump the re_helix app version to V3.22.
+
+V3.21 update (2026-07-15):
+- Allow exchange-pair endpoints to be virtual atoms written as A(x,y,z) or
+  (x,y,z)A, where A assigns the point to a helix through its chain ID.
+- Use virtual coordinates in alignment objectives and move them rigidly with
+  their assigned helix. Runs containing virtual atoms are alignment-only.
+- Add CLI/GUI documentation and bump the re_helix app version to V3.21.
+
 V3.20 update (2026-07-13):
 - Allow a full XYZ translation in user-defined-axis alignment mode. For every
   candidate rotation angle, use the exact centroid-matching translation of the
@@ -173,8 +187,8 @@ V2.1 update (2026-03-11):
   the better (lower sum(dist^2)) solution.
 
 Align pairs of nucleic-acid helices (or multi-chain helix groups) in a PDB
-based on user-specified cross-helix P-atom pairs, and then apply reciprocal-
-exchange operations using reciprocal_exchange_pdbV3_3.py.
+based on user-specified cross-helix real/virtual atom pairs, and then apply
+reciprocal-exchange operations when every endpoint is a real P atom.
 
 Highlights
 ----------
@@ -189,6 +203,7 @@ Highlights
           (AB) (CD) 30A 8D d 13B 24C s ...
           (ABMN) 30A 8D d ...
           26A 9C 90 d      # optional fixed beta angle for a single-site pair
+          A(1,2,3) 8D d    # chain-A virtual atom paired with real P atom 8D
 
       (AB) means chains A and B form one helix group; (ABMN) means chains A, B,
       M, and N form a single rigid helix group. If any such tokens are present,
@@ -227,12 +242,11 @@ Highlights
           with the new replicated structure and passed to the alignment stage.
 
 - Alignment per helix pair:
-    * Uses P-atom pairs connecting those two helix groups.
-    * If there are 1 or 2 P-atom pairs for the helix pair, we use all of them.
-    * If there are >2 P-atom pairs, we first select the two P pairs whose
-      helix-1 P atoms are most separated along the helix-1 axis (i.e. the
-      extreme P positions in projection onto the axis), and we perform the
-      alignment objective using ONLY these two P pairs; the others are ignored.
+    * Uses real P-atom and/or virtual-atom pairs connecting the helix groups.
+    * Virtual atoms use A(x,y,z) or (x,y,z)A; the chain assigns the point to a helix.
+    * If there are 1 or 2 pairs for the helix pair, we use all of them.
+    * If there are >2 pairs, we select the two fixed-side endpoints most
+      separated along the helix-1 axis and use only those two for alignment.
     * **For axis estimation we use only the chains inside each helix group
       that actually appear in these P-pairs.** For example, with helix groups
       (ABCDEFGH) and (IJKLMNOP) and P-pairs 35G–27J, 33H–29I, the axes are
@@ -281,7 +295,7 @@ Highlights
 
 - Helix graph:
     * Build a graph where nodes are helix groups and edges indicate at least
-      one P-atom pair between them.
+      one real/virtual alignment pair between them.
     * Process each connected component as a tree:
         - pick a root helix (fixed),
         - BFS to align each new helix only once relative to an already-fixed
@@ -293,14 +307,14 @@ Highlights
 
 - Output:
     * Always writes:  <base>_aligned.pdb     (after alignment, pre-RE)
-    * Always writes:  <base>_aligned_rex.pdb (after applying reciprocal
-      exchanges to the aligned structure).
+    * With real endpoints only, writes: <base>_aligned_rex.pdb after RE.
+    * If any endpoint is virtual, the aligned PDB is the final output and
+      reciprocal exchange is skipped; d/s/b kinds are ignored.
     * With --re_only / --re-only, writes: <base>_rex.pdb (reciprocal exchange
       directly on the input structure, with no alignment output).
       <base> is from -o/--output (extension stripped) or from input filename
       (without .pdb).
-      The legacy --re flag is kept for backward compatibility but is no longer
-      required (reciprocal exchanges are always applied).
+      The legacy --re flag is kept for backward compatibility.
 """
 
 import argparse
@@ -312,7 +326,8 @@ import subprocess
 import sys
 import threading
 from collections import defaultdict
-from typing import Dict, List, Tuple, Iterable, Set, Optional
+from dataclasses import dataclass
+from typing import Dict, List, Tuple, Iterable, Set, Optional, Union
 
 from re_helix_lib.edit_pdb_atom import (
     file2rec,
@@ -324,10 +339,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.20"
+SOFTWARE_VERSION = "V3.22"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V3.20: AZBMOST Package Module #2 - "
+    "re_helix V3.22: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -424,7 +439,31 @@ def normalize_kind(kind_token: str) -> str:
     )
 
 
-ExchangeSpec = Tuple[Tuple[str, int], Tuple[str, int], str, Optional[float]]
+Point3D = Tuple[float, float, float]
+RealAtomPosition = Tuple[str, int]
+
+
+@dataclass
+class VirtualAtom:
+    """A chain-associated alignment point that is not present in the PDB."""
+
+    chain_id: str
+    x: float
+    y: float
+    z: float
+
+    @property
+    def point(self) -> Point3D:
+        return (self.x, self.y, self.z)
+
+    def update_xyz(self, x: float, y: float, z: float) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
+
+
+ExchangeEndpoint = Union[RealAtomPosition, VirtualAtom]
+ExchangeSpec = Tuple[ExchangeEndpoint, ExchangeEndpoint, str, Optional[float]]
 
 ANGLE_DEFINITIONS_MESSAGE = (
     "Angle definitions: tau = axial twist/spin of moving helix; "
@@ -471,6 +510,111 @@ def parse_rho_angle_token(token: str) -> float:
     return parse_beta_angle_token(token)
 
 
+def parse_exchange_endpoint_token(token: str) -> ExchangeEndpoint:
+    """Parse a real P-atom position or a chain-associated virtual point."""
+    text = token.strip()
+    if "(" not in text and ")" not in text:
+        return parse_position_token(text)
+
+    chain_id: Optional[str] = None
+    coordinate_text: Optional[str] = None
+    if (
+        len(text) >= 6
+        and text[0].isalpha()
+        and text[1] == "("
+        and text.endswith(")")
+    ):
+        chain_id = text[0]
+        coordinate_text = text[2:-1]
+    elif (
+        len(text) >= 6
+        and text.startswith("(")
+        and text[-2] == ")"
+        and text[-1].isalpha()
+    ):
+        chain_id = text[-1]
+        coordinate_text = text[1:-2]
+
+    if (
+        chain_id is None
+        or coordinate_text is None
+        or text.count("(") != 1
+        or text.count(")") != 1
+    ):
+        raise ValueError(
+            f"Invalid virtual atom '{token}': expected A(x,y,z) or (x,y,z)A."
+        )
+
+    fields = [field.strip() for field in coordinate_text.split(",")]
+    if len(fields) != 3 or not all(fields):
+        raise ValueError(
+            f"Invalid virtual atom '{token}': expected exactly three coordinates "
+            "in A(x,y,z) or (x,y,z)A."
+        )
+    try:
+        coordinates = tuple(float(field) for field in fields)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid virtual atom '{token}': x, y, and z must be numeric."
+        ) from exc
+    if not all(math.isfinite(value) for value in coordinates):
+        raise ValueError(
+            f"Invalid virtual atom '{token}': x, y, and z must be finite."
+        )
+    return VirtualAtom(chain_id, coordinates[0], coordinates[1], coordinates[2])
+
+
+def endpoint_chain(endpoint: ExchangeEndpoint) -> str:
+    return endpoint.chain_id if isinstance(endpoint, VirtualAtom) else endpoint[0]
+
+
+def endpoint_label(endpoint: ExchangeEndpoint) -> str:
+    if isinstance(endpoint, VirtualAtom):
+        return (
+            f"{endpoint.chain_id}({endpoint.x:g},{endpoint.y:g},{endpoint.z:g})"
+        )
+    return f"{endpoint[1]}{endpoint[0]}"
+
+
+def endpoint_point(
+    endpoint: ExchangeEndpoint,
+    residue_to_P_atom: Dict[RealAtomPosition, pdb_atom_record],
+) -> Optional[Point3D]:
+    if isinstance(endpoint, VirtualAtom):
+        return endpoint.point
+    atom = residue_to_P_atom.get(endpoint)
+    if atom is None:
+        return None
+    return (atom.x, atom.y, atom.z)
+
+
+def exchange_specs_have_virtual_atoms(exchange_specs: Iterable[ExchangeSpec]) -> bool:
+    return any(
+        isinstance(endpoint, VirtualAtom)
+        for spec in exchange_specs
+        for endpoint in unpack_exchange_spec(spec)[:2]
+    )
+
+
+def virtual_atoms_for_helix(
+    exchange_specs: Iterable[ExchangeSpec],
+    helix_id: "HelixID",
+) -> List[VirtualAtom]:
+    atoms: List[VirtualAtom] = []
+    seen_ids: Set[int] = set()
+    chains = set(helix_id)
+    for spec in exchange_specs:
+        pos1, pos2, _kind, _beta_deg = unpack_exchange_spec(spec)
+        for endpoint in (pos1, pos2):
+            if not isinstance(endpoint, VirtualAtom):
+                continue
+            if endpoint.chain_id not in chains or id(endpoint) in seen_ids:
+                continue
+            seen_ids.add(id(endpoint))
+            atoms.append(endpoint)
+    return atoms
+
+
 def unpack_exchange_spec(spec) -> ExchangeSpec:
     """Return (pos1, pos2, kind, beta_deg_or_None) for V3.4/V3.5-style specs."""
     if len(spec) == 3:
@@ -482,13 +626,13 @@ def unpack_exchange_spec(spec) -> ExchangeSpec:
     raise ValueError(f"Invalid exchange spec record with {len(spec)} fields: {spec!r}")
 
 
-def exchange_spec_without_beta(spec) -> Tuple[Tuple[str, int], Tuple[str, int], str]:
+def exchange_spec_without_beta(spec) -> Tuple[ExchangeEndpoint, ExchangeEndpoint, str]:
     """Return the reciprocal-exchange part of a spec, dropping alignment-only beta metadata."""
     pos1, pos2, kind, _beta_deg = unpack_exchange_spec(spec)
     return pos1, pos2, kind
 
 
-def exchange_spec_without_rho(spec) -> Tuple[Tuple[str, int], Tuple[str, int], str]:
+def exchange_spec_without_rho(spec) -> Tuple[ExchangeEndpoint, ExchangeEndpoint, str]:
     """Legacy alias for exchange_spec_without_beta()."""
     note_legacy_rho_alias_once()
     return exchange_spec_without_beta(spec)
@@ -497,11 +641,15 @@ def exchange_spec_without_rho(spec) -> Tuple[Tuple[str, int], Tuple[str, int], s
 def parse_exchange_specs(
     tokens: List[str],
 ) -> List[ExchangeSpec]:
-    """Parse exchange specs into ((chain1,res1),(chain2,res2),kind,beta_deg).
+    """Parse real or virtual exchange endpoints with kind and optional beta.
 
     Accepted per-operation formats:
-        <pos1> <pos2> <kind>
-        <pos1> <pos2> <beta_deg> <kind>
+        <endpoint1> <endpoint2> <kind>
+        <endpoint1> <endpoint2> <beta_deg> <kind>
+
+    An endpoint is either a real P-atom residue such as 30A/A30 or a virtual
+    atom such as A(1.0,2.0,3.0) or (1.0,2.0,3.0)A. The virtual atom's chain
+    assigns it to a helix.
 
     The optional beta angle is alignment-only metadata.  It is used only for
     single-site helix pairs under --axis_parallel n, and is ignored by the
@@ -519,8 +667,8 @@ def parse_exchange_specs(
                 "<pos1> <pos2> <kind> or <pos1> <pos2> <beta_deg> <kind>."
             )
 
-        p1 = parse_position_token(tokens[i])
-        p2 = parse_position_token(tokens[i + 1])
+        p1 = parse_exchange_endpoint_token(tokens[i])
+        p2 = parse_exchange_endpoint_token(tokens[i + 1])
         third = tokens[i + 2]
 
         try:
@@ -543,7 +691,6 @@ def parse_exchange_specs(
     return ops
 
 
-Point3D = Tuple[float, float, float]
 UserAxisDefinition = Tuple[Point3D, Point3D]  # (axis_dir, axis_point)
 HelixID = Tuple[str, ...]  # can be 2 or more chains, e.g. ('A', 'B', 'M', 'N')
 AxisBounds = Optional[Tuple[int, int]]
@@ -1812,6 +1959,7 @@ def align_axes_for_pair(
     subset_moving: Optional[Iterable[str]] = None,
     axis_ranges_fixed: Optional[ResolvedAxisRange] = None,
     axis_ranges_moving: Optional[ResolvedAxisRange] = None,
+    virtual_atoms: Optional[Iterable[VirtualAtom]] = None,
 ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]:
     """
     Rigidly align the axis of helix_moving to that of helix_fixed, and
@@ -1827,6 +1975,8 @@ def align_axes_for_pair(
         (axis_dir, center1, center2) after alignment, where center1/center2
         are the centers of the (possibly subset-based) axes.
     """
+    virtual_atom_list = list(virtual_atoms or ())
+
     # --- NEW: choose which chains define the axes (subset of the group) ---
     # For registered triplex helices, always use the duplex-forming chains for
     # axis estimation, regardless of which chains appear in the P-pair subset.
@@ -1895,6 +2045,10 @@ def align_axes_for_pair(
                 (atom.x, atom.y, atom.z), center2, rot_axis, angle
             )
             atom.update_xyz(x, y, z)
+        for virtual_atom in virtual_atom_list:
+            virtual_atom.update_xyz(
+                *rotate_around_line(virtual_atom.point, center2, rot_axis, angle)
+            )
 
         axis2_dir = axis1_dir
 
@@ -1937,6 +2091,8 @@ def align_axes_for_pair(
             continue
         new_xyz = v_add((atom.x, atom.y, atom.z), translation)
         atom.update_xyz(*new_xyz)
+    for virtual_atom in virtual_atom_list:
+        virtual_atom.update_xyz(*v_add(virtual_atom.point, translation))
 
     # Final centers (still subset-based)
     _, center1 = compute_helix_axis(
@@ -1958,8 +2114,8 @@ def align_axes_for_pair(
 # ---------------------------------------------------------------------------
 
 def build_pair_objective(
-    pairs: List[Tuple[Tuple[str, int], Tuple[str, int]]],
-    residue_to_P_atom: Dict[Tuple[str, int], pdb_atom_record],
+    pairs: List[Tuple[ExchangeEndpoint, ExchangeEndpoint]],
+    residue_to_P_atom: Dict[RealAtomPosition, pdb_atom_record],
     axis_dir: Tuple[float, float, float],
     axis1_point: Tuple[float, float, float],
     axis2_point: Tuple[float, float, float],
@@ -2006,18 +2162,18 @@ def build_pair_objective(
     p2_list: List[Tuple[float, float, float]] = []
 
     for posA, posB in pairs:
-        atom1 = residue_to_P_atom.get(posA)
-        atom2 = residue_to_P_atom.get(posB)
-        if atom1 is None:
+        point1 = endpoint_point(posA, residue_to_P_atom)
+        point2 = endpoint_point(posB, residue_to_P_atom)
+        if point1 is None:
             raise ValueError(
-                f"No P atom found for residue {posA[1]}{posA[0]} (helix 1)."
+                f"No P atom found for endpoint {endpoint_label(posA)} (helix 1)."
             )
-        if atom2 is None:
+        if point2 is None:
             raise ValueError(
-                f"No P atom found for residue {posB[1]}{posB[0]} (helix 2)."
+                f"No P atom found for endpoint {endpoint_label(posB)} (helix 2)."
             )
-        p1_list.append((atom1.x, atom1.y, atom1.z))
-        p2_list.append((atom2.x, atom2.y, atom2.z))
+        p1_list.append(point1)
+        p2_list.append(point2)
 
     axis_dir = v_norm(axis_dir)
 
@@ -2130,8 +2286,8 @@ def build_pair_objective(
 
 
 def build_user_axis_transform_objective(
-    pairs: List[Tuple[Tuple[str, int], Tuple[str, int]]],
-    residue_to_P_atom: Dict[Tuple[str, int], pdb_atom_record],
+    pairs: List[Tuple[ExchangeEndpoint, ExchangeEndpoint]],
+    residue_to_P_atom: Dict[RealAtomPosition, pdb_atom_record],
     axis_dir: Point3D,
     axis_point: Point3D,
 ):
@@ -2145,18 +2301,18 @@ def build_user_axis_transform_objective(
     p2_list: List[Point3D] = []
 
     for posA, posB in pairs:
-        atom1 = residue_to_P_atom.get(posA)
-        atom2 = residue_to_P_atom.get(posB)
-        if atom1 is None:
+        point1 = endpoint_point(posA, residue_to_P_atom)
+        point2 = endpoint_point(posB, residue_to_P_atom)
+        if point1 is None:
             raise ValueError(
-                f"No P atom found for residue {posA[1]}{posA[0]} (fixed helix)."
+                f"No P atom found for endpoint {endpoint_label(posA)} (fixed helix)."
             )
-        if atom2 is None:
+        if point2 is None:
             raise ValueError(
-                f"No P atom found for residue {posB[1]}{posB[0]} (moving helix)."
+                f"No P atom found for endpoint {endpoint_label(posB)} (moving helix)."
             )
-        p1_list.append((atom1.x, atom1.y, atom1.z))
-        p2_list.append((atom2.x, atom2.y, atom2.z))
+        p1_list.append(point1)
+        p2_list.append(point2)
 
     axis_dir = v_norm(axis_dir)
 
@@ -2243,6 +2399,7 @@ def apply_transform_to_helix(
     axis_parallel: bool,
     anchor1: Tuple[float, float, float],
     pre_flip: bool = False,
+    virtual_atoms: Optional[Iterable[VirtualAtom]] = None,
 ) -> None:
     """
     Apply the optimised (d, tau, phi, beta) transform to all atoms of the
@@ -2284,14 +2441,8 @@ def apply_transform_to_helix(
             axis_perp_dir = v_scale(r_perp, 1.0 / r_len)
         axis_perp_point = anchor1
 
-    for atom in rec_list:
-        if atom.recordName not in ("ATOM", "HETATM"):
-            continue
-        if not atom_moves_with_helix(atom, helix_moving):
-            continue
-
-        p = (atom.x, atom.y, atom.z)
-
+    def transform_point(point: Point3D) -> Point3D:
+        p = point
         # Optional 180-degree pre-flip about a perpendicular axis through axis2_point
         # (explores parallel vs. anti-parallel axis orientations).
         if pre_flip:
@@ -2313,7 +2464,18 @@ def apply_transform_to_helix(
         if (not axis_parallel) and abs(beta) > 1.0e-10:
             p = rotate_around_line(p, axis_perp_point, axis_perp_dir, beta)  # type: ignore[arg-type]
 
-        atom.update_xyz(*p)
+        return p
+
+    for atom in rec_list:
+        if atom.recordName not in ("ATOM", "HETATM"):
+            continue
+        if not atom_moves_with_helix(atom, helix_moving):
+            continue
+
+        atom.update_xyz(*transform_point((atom.x, atom.y, atom.z)))
+
+    for virtual_atom in virtual_atoms or ():
+        virtual_atom.update_xyz(*transform_point(virtual_atom.point))
 
 
 def apply_user_axis_transform_to_helix(
@@ -2323,6 +2485,7 @@ def apply_user_axis_transform_to_helix(
     axis_point: Point3D,
     translation: Point3D,
     angle: float,
+    virtual_atoms: Optional[Iterable[VirtualAtom]] = None,
 ) -> None:
     """Rotate the movable helix group around a user axis, then translate it in XYZ."""
     axis_dir = v_norm(axis_dir)
@@ -2334,6 +2497,9 @@ def apply_user_axis_transform_to_helix(
         p = rotate_around_line((atom.x, atom.y, atom.z), axis_point, axis_dir, angle)
         p = v_add(p, translation)
         atom.update_xyz(*p)
+    for virtual_atom in virtual_atoms or ():
+        p = rotate_around_line(virtual_atom.point, axis_point, axis_dir, angle)
+        virtual_atom.update_xyz(*v_add(p, translation))
 
 
 # ---------------------------------------------------------------------------
@@ -2363,6 +2529,13 @@ def apply_reciprocal_exchanges_in_memory(
         output chain.  link_rec_list contains LINK records for special/inverted
         bonds.
     """
+    exchange_specs = list(exchange_specs)
+    if exchange_specs_have_virtual_atoms(exchange_specs):
+        raise ValueError(
+            "Reciprocal exchange cannot be applied when an exchange-pair endpoint "
+            "is a virtual atom. Virtual-atom runs are alignment-only."
+        )
+
     linker_phosphate_style = rex.coerce_linker_phosphate_style(linker_phosphate_style)
 
     # Convert legacy V2/V3.5-style exchange_specs into V3.3 dict specs.
@@ -2661,9 +2834,11 @@ def replicate_all_chains(
     chains_used: Set[str] = set()
 
     for spec in exchange_specs:
-        (c1, r1), (c2, r2), kind, beta_deg = unpack_exchange_spec(spec)
-        u1 = c1.upper()
-        u2 = c2.upper()
+        endpoint1, endpoint2, kind, beta_deg = unpack_exchange_spec(spec)
+        chain1 = endpoint_chain(endpoint1)
+        chain2 = endpoint_chain(endpoint2)
+        u1 = chain1.upper()
+        u2 = chain2.upper()
         nc1 = mapping_upper_to_new.get(u1, u1)  # map if base chain, otherwise future copy
         nc2 = mapping_upper_to_new.get(u2, u2)
 
@@ -2672,7 +2847,20 @@ def replicate_all_chains(
                 f"Replication mode only supports chain IDs A-Z after remap; got '{nc1}'/'{nc2}'."
             )
 
-        new_exchange_specs.append(((nc1, r1), (nc2, r2), kind, beta_deg))
+        if isinstance(endpoint1, VirtualAtom):
+            remapped1: ExchangeEndpoint = VirtualAtom(
+                nc1, endpoint1.x, endpoint1.y, endpoint1.z
+            )
+        else:
+            remapped1 = (nc1, endpoint1[1])
+        if isinstance(endpoint2, VirtualAtom):
+            remapped2: ExchangeEndpoint = VirtualAtom(
+                nc2, endpoint2.x, endpoint2.y, endpoint2.z
+            )
+        else:
+            remapped2 = (nc2, endpoint2[1])
+
+        new_exchange_specs.append((remapped1, remapped2, kind, beta_deg))
         chains_used.add(nc1)
         chains_used.add(nc2)
 
@@ -2834,17 +3022,17 @@ def build_helix_pair_graph(
 
     for spec in exchange_specs:
         pos1, pos2, _kind, beta_deg = unpack_exchange_spec(spec)
-        chain1, res1 = pos1
-        chain2, res2 = pos2
+        chain1 = endpoint_chain(pos1)
+        chain2 = endpoint_chain(pos2)
 
         if chain1 not in chain_to_helix:
             raise ValueError(
-                f"Chain '{chain1}' from residue {res1}{chain1} is not assigned "
+                f"Chain '{chain1}' from endpoint {endpoint_label(pos1)} is not assigned "
                 f"to any helix (check explicit helix defs or P atoms)."
             )
         if chain2 not in chain_to_helix:
             raise ValueError(
-                f"Chain '{chain2}' from residue {res2}{chain2} is not assigned "
+                f"Chain '{chain2}' from endpoint {endpoint_label(pos2)} is not assigned "
                 f"to any helix (check explicit helix defs or P atoms)."
             )
 
@@ -2887,16 +3075,16 @@ def build_helix_pair_graph(
 
 
 def select_pairs_for_alignment(
-    pairs_fixed_moving: List[Tuple[Tuple[str, int], Tuple[str, int]]],
-    residue_to_P_atom: Dict[Tuple[str, int], pdb_atom_record],
+    pairs_fixed_moving: List[Tuple[ExchangeEndpoint, ExchangeEndpoint]],
+    residue_to_P_atom: Dict[RealAtomPosition, pdb_atom_record],
     axis_dir: Tuple[float, float, float],
     axis1_point: Tuple[float, float, float],
-) -> List[Tuple[Tuple[str, int], Tuple[str, int]]]:
+) -> List[Tuple[ExchangeEndpoint, ExchangeEndpoint]]:
     """
-    Given all P-atom pairs for a helix pair (oriented as (fixed, moving)),
+    Given all real/virtual pairs for a helix pair (oriented as fixed/moving),
     choose which pairs to actually use for alignment:
 
-      - If there are 1 or 2 valid P pairs (with available P atoms), use them all.
+      - If there are 1 or 2 valid pairs, use them all.
       - If there are >2, select the two pairs whose helix-1 P atoms are
         most separated ALONG THE HELIX-1 AXIS (axis_dir), i.e. the min and
         max projection indices. All other pairs are ignored.
@@ -2906,19 +3094,20 @@ def select_pairs_for_alignment(
     """
     axis_dir = v_norm(axis_dir)
 
-    # Filter out any pairs missing P atoms, while tracking their order.
-    valid: List[Tuple[int, Tuple[Tuple[str, int], Tuple[str, int]], Tuple[float, float, float]]] = []
+    # Filter out pairs missing a requested real P atom, while tracking order.
+    valid: List[
+        Tuple[int, Tuple[ExchangeEndpoint, ExchangeEndpoint], Point3D]
+    ] = []
     for idx, (pos1, pos2) in enumerate(pairs_fixed_moving):
-        atom1 = residue_to_P_atom.get(pos1)
-        atom2 = residue_to_P_atom.get(pos2)
-        if atom1 is None or atom2 is None:
+        point1 = endpoint_point(pos1, residue_to_P_atom)
+        point2 = endpoint_point(pos2, residue_to_P_atom)
+        if point1 is None or point2 is None:
             sys.stderr.write(
-                f"[re_helix]   Warning: skipping pair {pos1[1]}{pos1[0]}-"
-                f"{pos2[1]}{pos2[0]} due to missing P atom(s).\n"
+                f"[re_helix]   Warning: skipping pair {endpoint_label(pos1)}-"
+                f"{endpoint_label(pos2)} due to missing real P atom(s).\n"
             )
             continue
-        p1 = (atom1.x, atom1.y, atom1.z)
-        valid.append((idx, (pos1, pos2), p1))
+        valid.append((idx, (pos1, pos2), point1))
 
     if len(valid) <= 2:
         # Use all remaining valid pairs
@@ -3035,7 +3224,7 @@ def align_helices_for_exchanges(
 
     if not helix_pair_data:
         sys.stderr.write(
-            "[re_helix] No inter-helix P-atom pairs found in exchanges; "
+            "[re_helix] No inter-helix alignment pairs found; "
             "nothing to align.\n"
         )
         return
@@ -3074,7 +3263,9 @@ def align_helices_for_exchanges(
                 entry = helix_pair_data[key]
                 h1 = entry["helix1"]  # type: ignore[assignment]
                 h2 = entry["helix2"]  # type: ignore[assignment]
-                pairs_h1_h2: List[Tuple[Tuple[str, int], Tuple[str, int]]] = entry["pairs"]  # type: ignore[assignment]
+                pairs_h1_h2: List[
+                    Tuple[ExchangeEndpoint, ExchangeEndpoint]
+                ] = entry["pairs"]  # type: ignore[assignment]
                 beta_angles_h1_h2: List[Optional[float]] = entry.get(
                     "beta_angles",
                     entry.get("rho_angles", []),
@@ -3100,7 +3291,7 @@ def align_helices_for_exchanges(
                 sys.stderr.write(
                     f"[re_helix]  Aligning helix {helix_id_str(fixed)} (fixed) "
                     f"with {helix_id_str(neighbour)} (moving); "
-                    f"{len(pairs_fixed_moving)} P-atom pair(s) specified.\n"
+                    f"{len(pairs_fixed_moving)} alignment pair(s) specified.\n"
                 )
 
                 fixed_beta_deg: Optional[float] = None
@@ -3149,12 +3340,20 @@ def align_helices_for_exchanges(
                 # participate in these P-pairs; use them to define the axes.
                 chains_fixed_for_axis: Set[str] = set()
                 chains_moving_for_axis: Set[str] = set()
-                for (c1, r1), (c2, r2) in pairs_fixed_moving:
-                    chains_fixed_for_axis.add(c1)
-                    chains_moving_for_axis.add(c2)
+                for endpoint1, endpoint2 in pairs_fixed_moving:
+                    chains_fixed_for_axis.add(endpoint_chain(endpoint1))
+                    chains_moving_for_axis.add(endpoint_chain(endpoint2))
 
-                fixed_positions = [(c1, r1) for (c1, r1), (_c2, _r2) in pairs_fixed_moving]
-                moving_positions = [(c2, r2) for (_c1, _r1), (c2, r2) in pairs_fixed_moving]
+                fixed_positions = [
+                    endpoint
+                    for endpoint, _other in pairs_fixed_moving
+                    if not isinstance(endpoint, VirtualAtom)
+                ]
+                moving_positions = [
+                    endpoint
+                    for _other, endpoint in pairs_fixed_moving
+                    if not isinstance(endpoint, VirtualAtom)
+                ]
 
                 if user_axis is not None:
                     axis_dir, axis_point = user_axis
@@ -3166,7 +3365,7 @@ def align_helices_for_exchanges(
                     )
                     if not effective_pairs:
                         sys.stderr.write(
-                            f"[re_helix]   Warning: no usable P-atom pairs "
+                            f"[re_helix]   Warning: no usable alignment pairs "
                             f"for helix pair {helix_id_str(fixed)}/{helix_id_str(neighbour)}; "
                             f"skipping user-axis alignment.\n"
                         )
@@ -3174,11 +3373,12 @@ def align_helices_for_exchanges(
                         queue.append(neighbour)
                         continue
 
-                    pair_strs = []
-                    for (c1, r1), (c2, r2) in effective_pairs:
-                        pair_strs.append(f"{r1}{c1}-{r2}{c2}")
+                    pair_strs = [
+                        f"{endpoint_label(endpoint1)}-{endpoint_label(endpoint2)}"
+                        for endpoint1, endpoint2 in effective_pairs
+                    ]
                     sys.stderr.write(
-                        "[re_helix]    Using P pairs for user-axis alignment: "
+                        "[re_helix]    Using pairs for user-axis alignment: "
                         + ", ".join(pair_strs)
                         + "\n"
                     )
@@ -3224,6 +3424,7 @@ def align_helices_for_exchanges(
                         axis_point,
                         translation_opt,
                         angle_opt,
+                        virtual_atoms=virtual_atoms_for_helix(exchange_specs, neighbour),
                     )
 
                     visited.add(neighbour)
@@ -3259,6 +3460,7 @@ def align_helices_for_exchanges(
                     subset_moving=chains_moving_for_axis,
                     axis_ranges_fixed=axis_ranges_fixed,
                     axis_ranges_moving=axis_ranges_moving,
+                    virtual_atoms=virtual_atoms_for_helix(exchange_specs, neighbour),
                 )
 
                 # 1b) Choose which P pairs to actually use (possibly 2 extremes)
@@ -3271,7 +3473,7 @@ def align_helices_for_exchanges(
 
                 if not effective_pairs:
                     sys.stderr.write(
-                        f"[re_helix]   Warning: no usable P-atom pairs "
+                        f"[re_helix]   Warning: no usable alignment pairs "
                         f"for helix pair {helix_id_str(fixed)}/{helix_id_str(neighbour)}; "
                         f"skipping fine optimisation.\n"
                     )
@@ -3279,12 +3481,13 @@ def align_helices_for_exchanges(
                     queue.append(neighbour)
                     continue
 
-                # Report the specific P pairs used for alignment
-                pair_strs = []
-                for (c1, r1), (c2, r2) in effective_pairs:
-                    pair_strs.append(f"{r1}{c1}-{r2}{c2}")
+                # Report the specific real/virtual pairs used for alignment.
+                pair_strs = [
+                    f"{endpoint_label(endpoint1)}-{endpoint_label(endpoint2)}"
+                    for endpoint1, endpoint2 in effective_pairs
+                ]
                 sys.stderr.write(
-                    "[re_helix]    Using P pairs for alignment: " + ", ".join(pair_strs) + "\n"
+                    "[re_helix]    Using pairs for alignment: " + ", ".join(pair_strs) + "\n"
                 )
 
                 # 2) Build objective(s) + optimise parameters for this helix pair
@@ -3444,6 +3647,7 @@ def align_helices_for_exchanges(
                     axis_parallel_flag,
                     anchor1_final,
                     pre_flip=best_pre_flip,
+                    virtual_atoms=virtual_atoms_for_helix(exchange_specs, neighbour),
                 )
 
                 visited.add(neighbour)
@@ -3456,7 +3660,7 @@ def align_helices_for_exchanges(
     elif fix_helix is not None and fix_helix not in helix_nodes:
         sys.stderr.write(
             f"[re_helix] Warning: fixed helix {helix_id_str(fix_helix)} "
-            f"has no inter-helix P-atom pairs; it will not be involved in "
+            f"has no inter-helix alignment pairs; it will not be involved in "
             f"alignment operations.\n"
         )
 
@@ -3492,9 +3696,11 @@ Examples:
   (ABMN)
 
 Leave blank to use automatic helix detection.""",
-    "output": """Base path for the output files. In normal mode the script writes:
+    "output": """Base path for the output files. With real endpoints the script writes:
   <base>_aligned.pdb
   <base>_aligned_rex.pdb
+
+With any virtual endpoint, only <base>_aligned.pdb is written.
 
 In RE-only mode the script writes:
   <base>_rex.pdb
@@ -3546,18 +3752,19 @@ Options:
   DA or dA: written as regular ATOM DA, with only P, OP1, and OP2 kept, to avoid needing a custom residue definition during Phenix relaxation.
 
 The command-line option is --linker_phosphate_resname.""",
-    "pairs": """Exchange pairs are entered as residue positions joined across helices.
+    "pairs": """Alignment/exchange pairs are entered as endpoints joined across helices.
 Blank or incomplete rows are ignored. Use at least one complete row with
 pos1, pos2, and kind.
 
 For many pairs, use the CLI-style single-line field below the rows. When that
 line is filled, the individual rows above it are ignored.
 
-In normal mode these pairs drive helix alignment and reciprocal exchange. In
-RE-only mode they only drive reciprocal exchange.
+With real endpoints, pairs drive alignment and reciprocal exchange. If any
+endpoint is virtual, the run is alignment-only and all d/s/b kinds are ignored.
 
-pos1 / pos2 format: residue number + chain ID, such as 30A or A30
-Units: nt + chain ID
+Real endpoint: residue number + chain ID, such as 30A or A30
+Virtual endpoint: A(x,y,z) or (x,y,z)A; A assigns the point to chain A's helix
+Virtual coordinate units: Å
 beta angle: optional fixed beta angle in degrees for --axis_parallel n when
 exactly one reciprocal-exchange site connects that helix pair; leave blank for
 normal behavior. Ignored with a warning for multi-site helix pairs or when
@@ -3567,6 +3774,8 @@ kind: d = double, s = single, b = bowtie
 
 Example rows:
   30A   8D        d
+  A(1,2,3)  8D    d
+  (4,5,6)B  C(7,8,9)  d
   26A   9C   90   d
   13B  24C        s""",
     "pair_args": """Optional CLI-style exchange-pair argument line.
@@ -3574,8 +3783,10 @@ Example rows:
 Use this when many exchange pairs are easier to paste as one command-line-style
 string, such as:
   30A 8D d 26A 9C 90 d 13B 24C s
+  A(1,2,3) 8D d (4,5,6)B 24C s
 
-If this field is filled, the individual pair rows above it are ignored.""",
+If any endpoint is virtual, kinds are ignored and reciprocal exchange is
+skipped. If this field is filled, the individual pair rows above it are ignored.""",
     "axis_range": """Optional chain or residue windows used to define a helical axis.
 
 Format: comma-separated chain IDs or chain-specific ranges
@@ -3990,13 +4201,13 @@ def _launch_gui() -> None:
     make_help_button(pairs_header, "Exchange pairs", "pairs").pack(side="left")
     ttk.Label(
         pairs_header,
-        text="pos1 / pos2 use residue+chain; optional beta angle is in degrees; kind = d / s / b.",
+        text="Endpoints: 30A/A30 or A(x,y,z)/(x,y,z)A; virtual runs ignore d/s/b.",
     ).pack(side="left", padx=8)
     pair_rows_frame = ttk.Frame(pairs_box)
     pair_rows_frame.pack(fill="x", pady=(8, 0))
     ttk.Label(pair_rows_frame, text="").grid(row=0, column=0, sticky="w")
-    ttk.Label(pair_rows_frame, text="pos1 (nt+chain)").grid(row=0, column=1, sticky="w", padx=4)
-    ttk.Label(pair_rows_frame, text="pos2 (nt+chain)").grid(row=0, column=2, sticky="w", padx=4)
+    ttk.Label(pair_rows_frame, text="pos1 (real or virtual)").grid(row=0, column=1, sticky="w", padx=4)
+    ttk.Label(pair_rows_frame, text="pos2 (real or virtual)").grid(row=0, column=2, sticky="w", padx=4)
     ttk.Label(pair_rows_frame, text="beta angle (deg, optional)").grid(row=0, column=3, sticky="w", padx=4)
     ttk.Label(pair_rows_frame, text="kind").grid(row=0, column=4, sticky="w", padx=4)
 
@@ -4069,6 +4280,8 @@ def _launch_gui() -> None:
     add_pdb_link_button.pack(side="left", padx=(6, 0))
     insert_virtual_resi_button = ttk.Button(other_tools_box, text="Insert Virtual Resi")
     insert_virtual_resi_button.pack(side="left", padx=(6, 0))
+    permute_chain_button = ttk.Button(other_tools_box, text="Permute Chain")
+    permute_chain_button.pack(side="left", padx=(6, 0))
     generate_lattice_button = ttk.Button(other_tools_box, text="Generate Lattice")
     generate_lattice_button.pack(side="left", padx=(6, 0))
     get_phenix_restraints_button = ttk.Button(other_tools_box, text="Get Phenix Restraints")
@@ -4153,6 +4366,11 @@ def _launch_gui() -> None:
         extra_args = [current_pdb] if current_pdb else []
         launch_bundled_gui_tool("Insert Virtual Resi", "insert_virtual_resi.py", extra_args)
 
+    def launch_permute_chain_tool() -> None:
+        current_pdb = pdb_var.get().strip()
+        extra_args = [current_pdb] if current_pdb else []
+        launch_bundled_gui_tool("Permute Chain", "permute_chain.py", extra_args)
+
     def launch_generate_lattice_tool() -> None:
         current_pdb = pdb_var.get().strip()
         extra_args = [current_pdb] if current_pdb else []
@@ -4198,8 +4416,8 @@ def _launch_gui() -> None:
             beta_var = tk.StringVar()
             kind_var = tk.StringVar(value="d")
             label = ttk.Label(pair_rows_frame, text=f"Pair {row_index + 1}")
-            e1 = ttk.Entry(pair_rows_frame, textvariable=pos1_var, width=16)
-            e2 = ttk.Entry(pair_rows_frame, textvariable=pos2_var, width=16)
+            e1 = ttk.Entry(pair_rows_frame, textvariable=pos1_var, width=22)
+            e2 = ttk.Entry(pair_rows_frame, textvariable=pos2_var, width=22)
             e_beta = ttk.Entry(pair_rows_frame, textvariable=beta_var, width=14)
             kind_box = ttk.Combobox(
                 pair_rows_frame,
@@ -4392,6 +4610,7 @@ def _launch_gui() -> None:
     do_symmetry_button.configure(command=launch_do_symmetry_tool)
     add_pdb_link_button.configure(command=launch_add_pdb_link_record_tool)
     insert_virtual_resi_button.configure(command=launch_insert_virtual_resi_tool)
+    permute_chain_button.configure(command=launch_permute_chain_tool)
     generate_lattice_button.configure(command=launch_generate_lattice_tool)
     get_phenix_restraints_button.configure(command=launch_get_phenix_restraints_tool)
     render_pair_rows()
@@ -4418,8 +4637,8 @@ def main() -> None:
         formatter_class=argparse.RawTextHelpFormatter,
         description=(
             "Align nucleic-acid helices (or multi-chain helix groups) in a PDB "
-            "based on cross-helix P-atom pairs from a reciprocal-exchange-style "
-            "specification, and then apply the reciprocal exchanges. Use "
+            "based on cross-helix real or virtual atom pairs. Reciprocal exchange "
+            "is then applied only when every endpoint is real. Use "
             "--re_only to apply reciprocal exchanges without alignment."
         )
     )
@@ -4436,6 +4655,8 @@ def main() -> None:
             "  (AB) (CD) 30A 8D d 13B 24C s\n"
             "  (ABMN) 30A 8D d 13B 24C s\n"
             "  30A 8D d 13B 24C s\n"
+            "  (AB) (CD) A(1,2,3) 8D d\n"
+            "  (AB) (CD) (1,2,3)A 8D d\n"
             "  26A 9C 90 d     # fixed beta angle for one single-site helix pair\n"
             "Helix defs like (AB) or (ABMN) mean all chains inside the "
             "parentheses form one helix group that moves as a rigid block. "
@@ -4453,6 +4674,7 @@ def main() -> None:
         help=(
             "Base name for output files (extension optional). "
             "Normal outputs are <base>_aligned.pdb and <base>_aligned_rex.pdb; "
+            "virtual-atom runs write only <base>_aligned.pdb; "
             "RE-only output is <base>_rex.pdb. "
             "Default base: input filename without extension."
         ),
@@ -4585,8 +4807,8 @@ def main() -> None:
         action="store_true",
         help=(
             "Legacy flag: previously controlled whether reciprocal exchanges "
-            "were applied. It is now ignored; exchanges are always applied and "
-            "an *_aligned_rex.pdb file is always written."
+            "were applied. It is now ignored. Reciprocal exchange is automatic "
+            "for real-only endpoints and skipped for virtual-atom runs."
         ),
     )
     parser.add_argument(
@@ -4682,6 +4904,20 @@ def main() -> None:
     except ValueError as exc:
         print(f"Error parsing exchange specifications: {exc}", file=sys.stderr)
         sys.exit(1)
+
+    has_virtual_atoms = exchange_specs_have_virtual_atoms(exchange_specs)
+    if has_virtual_atoms:
+        if args.re_only:
+            print(
+                "Error: --re_only cannot be used with virtual atoms; virtual-atom "
+                "runs require alignment and do not perform reciprocal exchange.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        sys.stderr.write(
+            "[re_helix] Virtual atom endpoint(s) detected. This run is alignment-only; "
+            "exchange kinds d/s/b are ignored and reciprocal exchange will be skipped.\n"
+        )
 
     # Read PDB
     rec_list: List[pdb_atom_record] = []
@@ -4884,16 +5120,23 @@ def main() -> None:
 
     # 2) Write aligned PDB (pre-RE)
     try:
+        if has_virtual_atoms:
+            special_events = [
+                "alignment_only reason=virtual_atom_endpoints reciprocal_exchange_skipped"
+            ]
+        else:
+            special_events = [
+                f"reciprocal_exchange_pending count={len(exchange_specs)} output={pdb_out_aligned_rex}"
+            ]
+        output_stage = "aligned_virtual_atoms" if has_virtual_atoms else "aligned_pre_re"
         pre_re_header = rex.build_re_script_header_lines(
             software_name=SOFTWARE_NAME,
             software_version=SOFTWARE_VERSION,
             developer=SOFTWARE_DEVELOPER,
             command=command_text,
-            output_stage="aligned_pre_re",
+            output_stage=output_stage,
             atom_rec_list=rec_list,
-            extra_special_events=[
-                f"reciprocal_exchange_pending count={len(exchange_specs)} output={pdb_out_aligned_rex}"
-            ],
+            extra_special_events=special_events,
         )
         dependency_line = _rex_dependency_remark_line()
         if dependency_line is not None:
@@ -4907,9 +5150,19 @@ def main() -> None:
         print(f"Error building header for aligned PDB '{pdb_out_aligned}': {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Wrote aligned PDB (pre-RE) to '{pdb_out_aligned}'.")
+    if has_virtual_atoms:
+        print(f"Wrote final aligned PDB to '{pdb_out_aligned}'.")
+    else:
+        print(f"Wrote aligned PDB (pre-RE) to '{pdb_out_aligned}'.")
 
-    # 3) Always apply reciprocal exchanges to generate *_aligned_rex.pdb
+    if has_virtual_atoms:
+        print(
+            "Skipped reciprocal exchange because virtual atom endpoints were used; "
+            "the aligned PDB is the final output."
+        )
+        return
+
+    # 3) Real-only runs apply reciprocal exchanges to generate *_aligned_rex.pdb.
     try:
         write_reciprocal_exchange_output(
             rec_list,
