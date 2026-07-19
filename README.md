@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from real P-atom or chain-associated virtual-atom pairs and then applies reciprocal exchanges when every endpoint is real. It can also run reciprocal exchange only, without alignment.
 
-Current version: V3.23
+Current version: V3.24
 
 ## Contents
 
@@ -309,6 +309,8 @@ Background reading:
 
 Residue tokens can be written as `30A`, `A30`, `A.30`, or `30.A`.
 
+Explicit Helix defs are ordered. The first chain in each parenthesized group defines the positive helical-axis direction by progressing from its smaller to larger residue numbers. Thus `(AB)` follows chain A, whereas `(BA)` follows chain B; for an antiparallel duplex these definitions point in opposite directions. The convention fixes the sign of an optional beta angle for exactly one exchange site under `--axis_parallel n`. Fixed beta definitions are ignored for helix pairs with multiple exchange sites. A matching Axis definition row takes precedence over Helix defs.
+
 Virtual atoms can be written with the chain before or after their coordinates: `A(x,y,z)` or `(x,y,z)A`. The chain ID assigns the virtual point to that helix, and coordinates are in angstroms. Virtual endpoints can be paired with real or other virtual endpoints.
 
 ```bash
@@ -351,7 +353,9 @@ python3 re_helix.py input.pdb '(AB)' '(CD)' 26A 9C 90 d --axis_parallel n -o ang
 - `--re_only` or `--re-only`: apply reciprocal exchange only and write `<base>_rex.pdb`.
 - `--axis_dist 22.0`: target helix-axis distance in angstroms during alignment.
 - `--axis_parallel y|n`: keep axes parallel (`y`) or allow a beta interhelical tilt (`n`). Angle terminology is `tau` = axial twist/spin of the moving helix, `phi` = orbital azimuth around the fixed helix, `beta` = interhelical tilt/bend, and `d` = axial slide.
-- `--axis_range B26-B60,A1-A35` or `--axis_range A,B`: define residue windows or whole chains for helical-axis estimation. Bare chain letters include the whole chain's P atoms in the axis fit. Repeat as needed.
+- Beta handedness: positive beta follows the right-hand rule around `L_beta`, directed from the fixed-axis anchor toward the nearest point on the moving axis. Negative beta is the corresponding left-handed rotation.
+- Helix defs `(AB)` and `(BA)`: define the same rigid chain membership but opposite directional references when A and B are antiparallel; the first chain runs low-to-high along the positive axis.
+- `--axis_range B26-B60,A1-A35` or `--axis_range A,B`: define residue windows or whole chains for helical-axis estimation. Bare chain letters include the whole chain's P atoms in the axis fit. The first listed chain defines the positive axis direction from low-to-high residue number and overrides a conflicting Helix defs direction. Repeat as needed.
 - `--axis_move C,D` or `--axis_move C1-C50,D`: move additional whole chains or residue windows with the corresponding `--axis_range` row. For example, `--axis_range A,B --axis_move C` fits the axis from A/B and moves C with that axis, avoiding triplex stdin prompts.
 - `--user_axis_dir X Y Z --user_axis_point X Y Z`: define a single alignment axis from a direction vector and point. When used, helix-axis estimation from P atoms is skipped and each movable helix is optimized by rotation around that line plus a full XYZ translation.
 - `--fix A`: keep the helix containing chain `A` fixed during alignment.

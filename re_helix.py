@@ -2,6 +2,17 @@
 """
 re_helix.py
 
+V3.24 update (2026-07-19):
+- Give explicit Helix defs a directional meaning: the first chain in each
+  parenthesized group defines the positive helical-axis direction from smaller
+  to larger residue numbers, so (AB) and (BA) have opposite orientation for an
+  antiparallel duplex.
+- Give Axis definition rows the same ordered meaning. The first axis chain
+  defines the positive direction and takes precedence over Helix defs.
+- Preserve the first-chain orientation reference through helix replication and
+  document the direction and signed beta conventions in the GUI help.
+- Bump the re_helix app version to V3.24.
+
 V3.23 update (2026-07-16):
 - Extend Add PDB LINK Record with automatic and manual peptide links between
   N and C atoms, including N-terminal-to-C-terminal peptide cyclization.
@@ -345,10 +356,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.23"
+SOFTWARE_VERSION = "V3.24"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V3.23: AZBMOST Package Module #2 - "
+    "re_helix V3.24: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -474,7 +485,8 @@ ExchangeSpec = Tuple[ExchangeEndpoint, ExchangeEndpoint, str, Optional[float]]
 ANGLE_DEFINITIONS_MESSAGE = (
     "Angle definitions: tau = axial twist/spin of moving helix; "
     "phi = orbital azimuth around fixed helix; "
-    "beta = interhelical tilt/bend; d = axial slide."
+    "beta = interhelical tilt/bend (+ right-handed, - left-handed around "
+    "fixed-to-moving L_beta); d = axial slide."
 )
 _LEGACY_RHO_ALIAS_NOTE_PRINTED = False
 
@@ -710,6 +722,7 @@ _HELIX_AXIS_RANGE_DEFINITIONS: List[ResolvedAxisRange] = []
 _HELIX_AXIS_MOVE_DEFINITIONS: List[MoveSelection] = []
 _HELIX_AXIS_RANGE_OVERRIDES: Dict[HelixID, ResolvedAxisRange] = {}
 _HELIX_MOVE_SELECTIONS: Dict[HelixID, MoveSelection] = {}
+_HELIX_AXIS_DIRECTION_REFS: Dict[HelixID, str] = {}
 
 
 def _canonical_helix_id(chains: Iterable[str]) -> HelixID:
@@ -726,6 +739,32 @@ def reset_helix_axis_overrides() -> None:
     _HELIX_AXIS_MOVE_DEFINITIONS.clear()
     _HELIX_AXIS_RANGE_OVERRIDES.clear()
     _HELIX_MOVE_SELECTIONS.clear()
+    _HELIX_AXIS_DIRECTION_REFS.clear()
+
+
+def get_helix_axis_direction_references() -> Dict[HelixID, str]:
+    return dict(_HELIX_AXIS_DIRECTION_REFS)
+
+
+def set_helix_axis_direction_reference(
+    helix_id: HelixID,
+    reference_chain: str,
+) -> None:
+    key = _canonical_helix_id(helix_id)
+    reference_chain = str(reference_chain)
+    if not key or reference_chain not in key:
+        raise ValueError(
+            f"Axis-direction reference chain '{reference_chain}' is not in "
+            f"helix {_format_chain_group(key)}."
+        )
+    existing = _HELIX_AXIS_DIRECTION_REFS.get(key)
+    if existing is not None and existing != reference_chain:
+        raise ValueError(
+            f"Helix {_format_chain_group(key)} has conflicting direction references "
+            f"'{existing}' and '{reference_chain}'. Do not define the same chain group "
+            "in two different Helix defs orders."
+        )
+    _HELIX_AXIS_DIRECTION_REFS[key] = reference_chain
 
 
 def get_helix_axis_overrides() -> Dict[HelixID, HelixID]:
@@ -791,7 +830,7 @@ def set_helix_axis_range_definitions(
                 lo, hi = hi, lo
             normalized[str(ch)] = (lo, hi)
         if normalized:
-            _HELIX_AXIS_RANGE_DEFINITIONS.append(dict(sorted(normalized.items())))
+            _HELIX_AXIS_RANGE_DEFINITIONS.append(normalized)
 
 
 def get_helix_axis_move_definitions() -> List[MoveSelection]:
@@ -816,7 +855,7 @@ def set_helix_axis_move_definitions(defs: Optional[List[MoveSelection]]) -> None
                 if lo > hi:
                     lo, hi = hi, lo
                 normalized[str(ch)] = (lo, hi)
-        _HELIX_AXIS_MOVE_DEFINITIONS.append(dict(sorted(normalized.items())))
+        _HELIX_AXIS_MOVE_DEFINITIONS.append(normalized)
 
 
 def get_helix_axis_range_overrides() -> Dict[HelixID, ResolvedAxisRange]:
@@ -842,7 +881,7 @@ def set_helix_axis_range_overrides(
                 lo, hi = hi, lo
             normalized[str(ch)] = (lo, hi)
         if key and normalized:
-            _HELIX_AXIS_RANGE_OVERRIDES[key] = dict(sorted(normalized.items()))
+            _HELIX_AXIS_RANGE_OVERRIDES[key] = normalized
 
 
 def get_helix_move_selections() -> Dict[HelixID, MoveSelection]:
@@ -871,7 +910,7 @@ def set_helix_move_selections(
                     lo, hi = hi, lo
                 normalized[str(ch)] = (lo, hi)
         if key and normalized:
-            _HELIX_MOVE_SELECTIONS[key] = dict(sorted(normalized.items()))
+            _HELIX_MOVE_SELECTIONS[key] = normalized
 
 
 def get_axis_chains_for_helix(helix_id: HelixID) -> HelixID:
@@ -961,7 +1000,7 @@ def parse_axis_range_spec(spec: str) -> AxisSelection:
             )
         result[chain] = bounds
 
-    return dict(sorted(result.items()))
+    return result
 
 
 def parse_axis_range_specs(specs: Iterable[str]) -> List[AxisSelection]:
@@ -1033,7 +1072,7 @@ def resolve_axis_range_definitions(
                 if lo > hi:
                     lo, hi = hi, lo
             resolved_spec[actual_chain] = (lo, hi)
-        resolved.append(dict(sorted(resolved_spec.items())))
+        resolved.append(resolved_spec)
 
     return resolved
 
@@ -1068,7 +1107,7 @@ def resolve_axis_move_definitions(
                 if lo > hi:
                     lo, hi = hi, lo
                 resolved_spec[actual_chain] = (lo, hi)
-        resolved.append(dict(sorted(resolved_spec.items())))
+        resolved.append(resolved_spec)
 
     return resolved
 
@@ -1134,15 +1173,14 @@ def translate_axis_range_definitions_for_replication(
                 if lo > hi:
                     lo, hi = hi, lo
                 translated_spec[actual_chain] = (lo, hi)
-        translated.append(dict(sorted(translated_spec.items())))
+        translated.append(translated_spec)
 
     return translated
 
 
 def _format_axis_range_spec(spec: Dict[str, AxisBounds]) -> str:
     parts = []
-    for ch in sorted(spec):
-        bounds = spec[ch]
+    for ch, bounds in spec.items():
         if bounds is None:
             parts.append(f"{ch}")
         else:
@@ -1268,9 +1306,8 @@ def _find_explicit_helix_for_axis(
     if not axis_chains or not explicit_helix_defs:
         return None
     for raw_h in explicit_helix_defs:
-        helix_id = tuple(sorted(raw_h))
-        if axis_chains.issubset(set(helix_id)):
-            return helix_id
+        if axis_chains.issubset(set(raw_h)):
+            return tuple(raw_h)
     return None
 
 
@@ -1297,7 +1334,12 @@ def build_axis_coupled_helix_defs(
         group_chains.update(_selection_chains(move_def))
         if len(group_chains) < 1:
             continue
-        group = tuple(sorted(group_chains))
+        ordered_group = list(axis_def)
+        if explicit_group is not None:
+            ordered_group.extend(ch for ch in explicit_group if ch not in ordered_group)
+        ordered_group.extend(ch for ch in move_def if ch not in ordered_group)
+        ordered_group.extend(ch for ch in sorted(group_chains) if ch not in ordered_group)
+        group = tuple(ordered_group)
         if group not in seen:
             groups.append(group)
             seen.add(group)
@@ -1329,9 +1371,8 @@ def register_axis_coupling_overrides(
         group = tuple(sorted(group_chains))
         if not group:
             continue
-
         axis_overrides[group] = tuple(sorted(axis_chains))
-        axis_range_overrides[group] = dict(sorted(axis_def.items()))
+        axis_range_overrides[group] = dict(axis_def)
 
         selection: MoveSelection = {ch: None for ch in full_move_chains}
         for ch, bounds in move_def.items():
@@ -1342,7 +1383,7 @@ def register_axis_coupling_overrides(
         for ch in group:
             if ch not in selection:
                 selection[ch] = None
-        move_selections[group] = dict(sorted(selection.items()))
+        move_selections[group] = selection
 
     set_helix_axis_overrides(axis_overrides)
     set_helix_axis_range_overrides(axis_range_overrides)
@@ -1397,7 +1438,7 @@ def apply_axis_coupling_to_chain_map(
                 updated[ch] = group
 
         axis_overrides[group] = tuple(sorted(axis_chains))
-        axis_range_overrides[group] = dict(sorted(axis_def.items()))
+        axis_range_overrides[group] = dict(axis_def)
 
         selection: MoveSelection = {ch: None for ch in full_move_chains}
         for ch, bounds in move_def.items():
@@ -1408,7 +1449,7 @@ def apply_axis_coupling_to_chain_map(
         for ch in group:
             if ch not in selection:
                 selection[ch] = None
-        move_selections[group] = dict(sorted(selection.items()))
+        move_selections[group] = selection
 
     set_helix_axis_overrides(axis_overrides)
     set_helix_axis_range_overrides(axis_range_overrides)
@@ -1523,7 +1564,7 @@ def _replicate_axis_range_overrides(
             }
         except KeyError:
             continue
-        remapped_base[base_helix] = dict(sorted(base_spec.items()))
+        remapped_base[base_helix] = base_spec
 
     overrides_repl: Dict[HelixID, ResolvedAxisRange] = {}
     n_base = len(base_index)
@@ -1535,7 +1576,7 @@ def _replicate_axis_range_overrides(
                 letters[offset + base_index[ch]]: bounds
                 for ch, bounds in base_spec.items()
             }
-            overrides_repl[new_helix] = dict(sorted(new_spec.items()))
+            overrides_repl[new_helix] = new_spec
 
     return overrides_repl
 
@@ -1843,8 +1884,12 @@ def build_chain_to_helix_from_defs(
     chain_to_helix: Dict[str, HelixID] = {}
 
     for raw_h in helix_defs:
-        # Sort to canonicalize the group (so (ABMN) and (MNBA) are treated identically)
+        if not raw_h:
+            continue
+        # Membership remains canonical, while raw_h[0] independently defines
+        # the positive axis direction from low to high residue number.
         helix_id: HelixID = tuple(sorted(raw_h))
+        set_helix_axis_direction_reference(helix_id, raw_h[0])
         if len(helix_id) == 3:
             _prompt_for_triplex_axis_override(helix_id, "user-defined helix")
 
@@ -1878,10 +1923,67 @@ def helix_id_str(h: HelixID) -> str:
 # Helix axis estimation
 # ---------------------------------------------------------------------------
 
+def orient_axis_by_chain_residue_order(
+    axis_dir: Tuple[float, float, float],
+    chain_to_P_atoms: Dict[str, List[pdb_atom_record]],
+    reference_chain: str,
+    residue_ranges: Optional[ResolvedAxisRange] = None,
+) -> Tuple[float, float, float]:
+    """Orient an axis so reference-chain residue numbers increase along it."""
+    atoms_by_residue: Dict[int, List[pdb_atom_record]] = defaultdict(list)
+    bounds = residue_ranges.get(reference_chain) if residue_ranges else None
+    for atom in chain_to_P_atoms.get(reference_chain, []):
+        if bounds is not None and not (bounds[0] <= atom.resSeq <= bounds[1]):
+            continue
+        atoms_by_residue[atom.resSeq].append(atom)
+
+    if len(atoms_by_residue) < 2:
+        range_note = " in the selected axis range" if bounds is not None else ""
+        raise ValueError(
+            f"Helix axis direction is defined by chain '{reference_chain}', but fewer "
+            f"than two distinct P-bearing residues{range_note} are available."
+        )
+
+    residue_points: List[Tuple[int, Point3D]] = []
+    for resseq in sorted(atoms_by_residue):
+        atoms = atoms_by_residue[resseq]
+        count = len(atoms)
+        residue_points.append(
+            (
+                resseq,
+                (
+                    sum(atom.x for atom in atoms) / count,
+                    sum(atom.y for atom in atoms) / count,
+                    sum(atom.z for atom in atoms) / count,
+                ),
+            )
+        )
+
+    unit_axis = v_norm(axis_dir)
+    mean_resseq = sum(resseq for resseq, _point in residue_points) / len(residue_points)
+    trend = sum(
+        (resseq - mean_resseq) * v_dot(point, unit_axis)
+        for resseq, point in residue_points
+    )
+    if abs(trend) < 1.0e-10:
+        trend = v_dot(
+            v_sub(residue_points[-1][1], residue_points[0][1]),
+            unit_axis,
+        )
+    if abs(trend) < 1.0e-10:
+        raise ValueError(
+            f"Could not orient the helical axis from residue progression on chain "
+            f"'{reference_chain}'; its P atoms have no resolvable progression along "
+            "the fitted axis."
+        )
+    return unit_axis if trend > 0.0 else v_scale(unit_axis, -1.0)
+
+
 def compute_helix_axis(
     chain_to_P_atoms: Dict[str, List[pdb_atom_record]],
     helix_id: HelixID,
     residue_ranges: Optional[ResolvedAxisRange] = None,
+    direction_reference_chain: Optional[str] = None,
 ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
     """
     Estimate the helical axis of a helix group.
@@ -1890,6 +1992,11 @@ def compute_helix_axis(
     estimate. For triplex helices, a registered axis-chain override is used so
     that only the duplex-forming strands define the axis. If residue_ranges is
     provided, only P atoms inside those chain-specific residue windows are used.
+
+    If direction_reference_chain is supplied, the first residue-range chain is
+    present, or Helix defs registered a reference for this group, the PCA sign
+    is chosen so that chain's residue numbers increase along the positive axis
+    direction. That priority gives Axis definition rows precedence over Helix defs.
 
     Returns (axis_dir (unit), center point).
     """
@@ -1951,6 +2058,18 @@ def compute_helix_axis(
         v = (vx / norm, vy / norm, vz / norm)
 
     axis_dir = v_norm(v)
+    if direction_reference_chain is None:
+        if residue_ranges:
+            direction_reference_chain = next(iter(residue_ranges))
+        else:
+            direction_reference_chain = _HELIX_AXIS_DIRECTION_REFS.get(helix_key)
+    if direction_reference_chain is not None:
+        axis_dir = orient_axis_by_chain_residue_order(
+            axis_dir,
+            chain_to_P_atoms,
+            direction_reference_chain,
+            residue_ranges=residue_ranges,
+        )
     center = (cx, cy, cz)
     return axis_dir, center
 
@@ -1982,6 +2101,7 @@ def align_axes_for_pair(
         are the centers of the (possibly subset-based) axes.
     """
     virtual_atom_list = list(virtual_atoms or ())
+    direction_refs = get_helix_axis_direction_references()
 
     # --- NEW: choose which chains define the axes (subset of the group) ---
     # For registered triplex helices, always use the duplex-forming chains for
@@ -2018,15 +2138,30 @@ def align_axes_for_pair(
     else:
         moving_axis_chains = helix_moving
 
+    # A selected Axis definition row is more specific than Helix defs and its
+    # first entered chain therefore controls the sign for this particular fit.
+    fixed_direction_ref = (
+        next(iter(axis_ranges_fixed))
+        if axis_ranges_fixed
+        else direction_refs.get(_canonical_helix_id(helix_fixed))
+    )
+    moving_direction_ref = (
+        next(iter(axis_ranges_moving))
+        if axis_ranges_moving
+        else direction_refs.get(_canonical_helix_id(helix_moving))
+    )
+
     axis1_dir, center1 = compute_helix_axis(
         chain_to_P_atoms,
         fixed_axis_chains,
         residue_ranges=axis_ranges_fixed,
+        direction_reference_chain=fixed_direction_ref,
     )
     axis2_dir, center2 = compute_helix_axis(
         chain_to_P_atoms,
         moving_axis_chains,
         residue_ranges=axis_ranges_moving,
+        direction_reference_chain=moving_direction_ref,
     )
 
     axis1_dir = v_norm(axis1_dir)
@@ -2063,11 +2198,13 @@ def align_axes_for_pair(
         chain_to_P_atoms,
         fixed_axis_chains,
         residue_ranges=axis_ranges_fixed,
+        direction_reference_chain=fixed_direction_ref,
     )
     axis2_dir, center2 = compute_helix_axis(
         chain_to_P_atoms,
         moving_axis_chains,
         residue_ranges=axis_ranges_moving,
+        direction_reference_chain=moving_direction_ref,
     )
     axis1_dir = v_norm(axis1_dir)
 
@@ -2105,11 +2242,13 @@ def align_axes_for_pair(
         chain_to_P_atoms,
         fixed_axis_chains,
         residue_ranges=axis_ranges_fixed,
+        direction_reference_chain=fixed_direction_ref,
     )
     _, center2 = compute_helix_axis(
         chain_to_P_atoms,
         moving_axis_chains,
         residue_ranges=axis_ranges_moving,
+        direction_reference_chain=moving_direction_ref,
     )
 
     return axis1_dir, center1, center2
@@ -2717,7 +2856,7 @@ def replicate_all_chains(
       alphabetical order of the original chain IDs.
     - Replicate the entire set of chains as many times as needed so that
       all chain IDs appearing in exchange_specs exist as actual chains.
-    - Propagate helix groupings across copies.
+    - Propagate helix groupings and their first-chain axis orientation across copies.
 
     Arguments
     ---------
@@ -2811,7 +2950,7 @@ def replicate_all_chains(
     base_helices_new: List[HelixID] = []
     for h in base_groups_raw:
         try:
-            new_group = tuple(sorted(mapping_upper_to_new[ch.upper()] for ch in h))
+            new_group = tuple(mapping_upper_to_new[ch.upper()] for ch in h)
         except KeyError as e:
             raise ValueError(
                 f"Helix definition {h} refers to chain '{e.args[0]}', "
@@ -3175,7 +3314,18 @@ def align_helices_for_exchanges(
         chain_to_helix = build_chain_to_helix_from_defs(explicit_helices, chain_to_P_atoms)
         sys.stderr.write(
             "[re_helix] Using user-defined helices: "
-            + ", ".join(helix_id_str(tuple(sorted(h))) for h in explicit_helices)
+            + ", ".join(helix_id_str(h) for h in explicit_helices)
+            + "\n"
+        )
+        sys.stderr.write(
+            "[re_helix] Initial helix-axis directions follow each definition's first chain "
+            "from lower to higher residue number: "
+            + ", ".join(
+                f"{helix_id_str(h)} -> chain {h[0]}"
+                for h in explicit_helices
+                if h
+            )
+            + ". Matching Axis definition rows take precedence."
             + "\n"
         )
     else:
@@ -3202,6 +3352,15 @@ def align_helices_for_exchanges(
         sys.stderr.write(
             "[re_helix] Using axis residue-range overrides: "
             + ", ".join(_format_axis_range_spec(spec) for spec in axis_range_defs)
+            + "\n"
+        )
+        sys.stderr.write(
+            "[re_helix] Axis-definition directions follow each row's first chain "
+            "from lower to higher residue number (overriding Helix defs): "
+            + ", ".join(
+                f"{_format_axis_range_spec(spec)} -> chain {next(iter(spec))}"
+                for spec in axis_range_defs
+            )
             + "\n"
         )
     if axis_move_defs:
@@ -3695,11 +3854,22 @@ _GUI_HELP_TEXT: Dict[str, str] = {
 Example:
   TT_helixAB_33.pdb""",
     "helix_defs": """Optional explicit helix-group definitions. Each parenthesized token
-defines one rigid helix group.
+defines one rigid helix group. Chain order also defines the positive helical-axis
+direction: follow the first listed chain from smaller to larger residue numbers.
 
 Examples:
+  (AB): axis follows chain A from low to high residue number
+  (BA): axis follows chain B from low to high residue number
   (AB) (CD)
   (ABMN)
+
+For an antiparallel duplex, (AB) and (BA) therefore define opposite axis
+directions. This sign convention determines the sign of a fixed beta angle for
+exactly one reciprocal-exchange site with axis_parallel=n. Fixed beta is not
+used when the same helix pair has multiple exchange sites.
+
+If a matching Axis definition row is present, its first listed chain overrides
+the direction from Helix defs.
 
 Leave blank to use automatic helix detection.""",
     "output": """Base path for the output files. With real endpoints the script writes:
@@ -3726,7 +3896,11 @@ n: also allow a tilt of helix 2 (beta), so the axes may become non-parallel.
 For --axis_parallel n, a single-site pair may optionally define a fixed beta
 angle in the pair row. That controlled angle is ignored with a warning when
 more than one site connects the same helix pair, or when --axis_parallel y is
-selected.""",
+selected.
+
+Beta uses the right-hand rule about L_beta, whose positive direction runs from
+the fixed-axis anchor toward the nearest point on the moving axis. A positive
+beta is right-handed around L_beta; a negative beta is left-handed.""",
     "fix": """Optional chain ID whose helix group should remain fixed while the other
 connected helices are aligned around it.
 
@@ -3775,6 +3949,8 @@ beta angle: optional fixed beta angle in degrees for --axis_parallel n when
 exactly one reciprocal-exchange site connects that helix pair; leave blank for
 normal behavior. Ignored with a warning for multi-site helix pairs or when
 --axis_parallel y is selected. This helps make controlled interhelical angles.
+Positive beta is a right-handed rotation about L_beta, directed from the fixed
+axis toward the moving axis; negative beta is left-handed.
 Legacy rho-angle wording means the same beta angle.
 kind: d = double, s = single, b = bowtie
 
@@ -3800,6 +3976,11 @@ Units: nt
 Examples:
   A,B
   B26-B60,A1-A35
+
+Order is meaningful: the first listed axis chain defines the positive axis
+direction from its smaller to larger residue numbers. Thus A,B follows chain A,
+while B,A follows chain B. This Axis definition direction takes precedence over
+a conflicting Helix defs direction.
 
 The adjacent "move with axis" field can list additional chains or residue
 windows that should receive the same rigid transform, for example:
@@ -4666,6 +4847,8 @@ def main() -> None:
             "  26A 9C 90 d     # fixed beta angle for one single-site helix pair\n"
             "Helix defs like (AB) or (ABMN) mean all chains inside the "
             "parentheses form one helix group that moves as a rigid block. "
+            "The first chain orients the positive axis from lower to higher "
+            "residue number, so (AB) and (BA) are directionally different. "
             "If any are provided, helices are not auto-detected. "
             "Each exchange can also be written as <pos1> <pos2> <beta_deg> <kind>; "
             "the optional beta angle is used only for exactly one site between a "
@@ -4707,7 +4890,9 @@ def main() -> None:
         help=(
             "Chain/range definition for helical-axis estimation. Repeat this option as needed. "
             "Examples: --axis_range B26-B60,A1-A35 or --axis_range A,B. Whole-chain letters "
-            "use all P atoms on that chain for the axis. If paired with --axis_move, the same "
+            "use all P atoms on that chain for the axis. The first listed chain orients the "
+            "positive axis from lower to higher residue number and overrides the Helix defs "
+            "direction for that group. If paired with --axis_move, the same "
             "row defines an axis-coupled helix group and the listed move payload follows that axis. "
             "In replication mode, base-template axis groups can be propagated to copies, and final "
             "post-replication chain IDs can still be targeted explicitly."
@@ -4769,6 +4954,8 @@ def main() -> None:
             "two helices, an operation can be written as <pos1> <pos2> "
             "<beta_deg> <kind> to hold beta at that angle while optimizing "
             "d/tau/phi. Legacy <rho_deg> examples are accepted as beta. "
+            "Positive beta follows the right-hand rule around the common perpendicular "
+            "directed from the fixed axis toward the moving axis; negative beta is left-handed. "
             "Fixed beta definitions are ignored with a warning for --axis_parallel y "
             "or multi-site helix pairs."
         ),

@@ -1,5 +1,14 @@
 # Changelog
 
+## V3.24 - 2026-07-19
+
+- Bumped `re_helix` to V3.24.
+- Made explicit Helix defs directional: the first chain in each group orients the positive fitted axis from smaller to larger residue numbers.
+- Made `(AB)` and `(BA)` retain identical rigid-group membership while producing opposite axis directions for antiparallel chains, giving fixed single-site beta angles a deterministic sign.
+- Made Axis definition rows directional in their entered chain order, with the first chain taking precedence over a conflicting Helix defs direction.
+- Preserved ordered Helix defs and their first-chain direction references through replication and axis-coupled group construction.
+- Expanded the Helix defs and Axis definitions `?` help plus CLI/README documentation with the direction convention, precedence rule, single-site beta scope, and right-/left-handed beta sign.
+
 ## V3.23 - 2026-07-16
 
 - Bumped `re_helix` to V3.23 and Add PDB LINK Record to V1.2.
