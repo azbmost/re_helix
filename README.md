@@ -309,7 +309,7 @@ Background reading:
 
 Residue tokens can be written as `30A`, `A30`, `A.30`, or `30.A`.
 
-Explicit Helix defs are ordered. The first chain in each parenthesized group defines the positive helical-axis direction by progressing from its smaller to larger residue numbers. Thus `(AB)` follows chain A, whereas `(BA)` follows chain B; for an antiparallel duplex these definitions point in opposite directions. The convention fixes the sign of an optional beta angle for exactly one exchange site under `--axis_parallel n`. Fixed beta definitions are ignored for helix pairs with multiple exchange sites. A matching Axis definition row takes precedence over Helix defs.
+Explicit Helix defs are ordered. The first chain in each parenthesized group defines the positive helical-axis direction by progressing from its smaller to larger residue numbers. Thus `(AB)` follows chain A, whereas `(BA)` follows chain B; for an antiparallel duplex these definitions point in opposite directions. Before beta fitting, the moving helix is physically oriented so its directed axis aligns with the fixed directed axis. Consequently, `(AB) (CD)` and `(AB) (DC)` can differ by an end-for-end turn and produce different structures for the same signed beta angle. The convention applies to an optional beta angle for exactly one exchange site under `--axis_parallel n`; fixed beta definitions are ignored for helix pairs with multiple exchange sites. A matching Axis definition row takes precedence over Helix defs.
 
 Virtual atoms can be written with the chain before or after their coordinates: `A(x,y,z)` or `(x,y,z)A`. The chain ID assigns the virtual point to that helix, and coordinates are in angstroms. Virtual endpoints can be paired with real or other virtual endpoints.
 
@@ -359,7 +359,7 @@ python3 re_helix.py input.pdb '(AB)' '(CD)' 26A 9C 90 d --axis_parallel n -o ang
 - `--axis_move C,D` or `--axis_move C1-C50,D`: move additional whole chains or residue windows with the corresponding `--axis_range` row. For example, `--axis_range A,B --axis_move C` fits the axis from A/B and moves C with that axis, avoiding triplex stdin prompts.
 - `--user_axis_dir X Y Z --user_axis_point X Y Z`: define a single alignment axis from a direction vector and point. When used, helix-axis estimation from P atoms is skipped and each movable helix is optimized by rotation around that line plus a full XYZ translation.
 - `--fix A`: keep the helix containing chain `A` fixed during alignment.
-- `--replicate`: replicate the full input chain set before alignment or RE-only processing.
+- `--replicate`: replicate the full input chain set before alignment or RE-only processing. Helix defs may name future copies: for a two-chain A/B input, `(AB) (CD)` uses A/B as the base template and assigns C/D to the generated copy; `(DC)` reverses only the copied helix's axis-direction reference. Coordinate copying always follows alphabetical base-chain order, so C copies A and D copies B regardless of Helix-def order.
 - `--cir_shift 8`: choose the residue shift used when writing circular reciprocal-exchange strands.
 - `--linker_phosphate_resname X33|NAME|DA`: choose the residue name for phosphate-only 3'-3' bowtie linker residues. `X33` is the default `HETATM` custom residue; any other 1-3 character name is written as `HETATM` by default; `DA`/`dA` writes regular `ATOM DA` while keeping only `P`, `OP1`, and `OP2`.
 - `--linker_phosphate_record ATOM|HETATM`: advanced override for the inserted linker phosphate record type.

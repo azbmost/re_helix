@@ -7,6 +7,8 @@
 - Made `(AB)` and `(BA)` retain identical rigid-group membership while producing opposite axis directions for antiparallel chains, giving fixed single-site beta angles a deterministic sign.
 - Made Axis definition rows directional in their entered chain order, with the first chain taking precedence over a conflicting Helix defs direction.
 - Preserved ordered Helix defs and their first-chain direction references through replication and axis-coupled group construction.
+- Fixed replication with explicit future-copy Helix defs such as `(AB) (CD)`: only input-present groups are treated as templates, while future groups are matched to generated copies and retain their entered direction order. Coordinate copying remains alphabetical and independent of that order, so `(DC)` still copies A to C and B to D.
+- Fixed directed-axis alignment so reversing a moving Helix def, such as `(CD)` to `(DC)`, physically turns the moving helix end-for-end before beta fitting instead of silently discarding the direction difference.
 - Expanded the Helix defs and Axis definitions `?` help plus CLI/README documentation with the direction convention, precedence rule, single-site beta scope, and right-/left-handed beta sign.
 
 ## V3.23 - 2026-07-16

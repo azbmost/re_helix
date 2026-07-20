@@ -11,6 +11,10 @@ V3.24 update (2026-07-19):
   defines the positive direction and takes precedence over Helix defs.
 - Preserve the first-chain orientation reference through helix replication and
   document the direction and signed beta conventions in the GUI help.
+- Allow explicit Helix defs for future replicated copies, such as (CD) when the
+  input contains only A/B, without treating those chains as missing input data.
+- Physically align explicitly directed fixed/moving axes before beta fitting;
+  opposite references such as (CD) versus (DC) now produce distinct structures.
 - Bump the re_helix app version to V3.24.
 
 V3.23 update (2026-07-16):
@@ -2167,15 +2171,34 @@ def align_axes_for_pair(
     axis1_dir = v_norm(axis1_dir)
     axis2_dir = v_norm(axis2_dir)
 
-    # Make them parallel, not anti-parallel
-    if v_dot(axis1_dir, axis2_dir) < 0.0:
+    # Explicit direction references make these true vectors rather than
+    # undirected PCA lines. In that case an anti-parallel moving direction must
+    # be physically turned end-for-end before beta is applied. Automatic axes
+    # retain the legacy shortest line-alignment behavior because their PCA sign
+    # has no user-defined meaning.
+    directed_axes = fixed_direction_ref is not None and moving_direction_ref is not None
+    if not directed_axes and v_dot(axis1_dir, axis2_dir) < 0.0:
         axis2_dir = v_scale(axis2_dir, -1.0)
 
     cross_v = v_cross(axis2_dir, axis1_dir)
     norm_cross = v_length(cross_v)
-    if norm_cross > 1.0e-6 and abs(v_dot(axis1_dir, axis2_dir)) < 1.0 - 1.0e-6:
+    axis_dot = max(min(v_dot(axis2_dir, axis1_dir), 1.0), -1.0)
+    rot_axis: Optional[Tuple[float, float, float]] = None
+    angle = 0.0
+    if norm_cross > 1.0e-6:
         rot_axis = v_scale(cross_v, 1.0 / norm_cross)
-        angle = math.acos(max(min(v_dot(axis2_dir, axis1_dir), 1.0), -1.0))
+        angle = math.acos(axis_dot)
+    elif axis_dot < 0.0:
+        rot_axis = perpendicular_unit_vector(axis2_dir)
+        angle = math.pi
+
+    if rot_axis is not None and angle > 1.0e-10:
+        if directed_axes:
+            sys.stderr.write(
+                "[re_helix]    Aligning directed axes: "
+                f"fixed chain {fixed_direction_ref} and moving chain {moving_direction_ref}; "
+                f"turning the moving helix by {math.degrees(angle):.2f} degrees.\n"
+            )
 
         for atom in rec_list:
             if atom.recordName not in ("ATOM", "HETATM"):
@@ -2857,6 +2880,8 @@ def replicate_all_chains(
     - Replicate the entire set of chains as many times as needed so that
       all chain IDs appearing in exchange_specs exist as actual chains.
     - Propagate helix groupings and their first-chain axis orientation across copies.
+    - Always copy coordinates in alphabetical base-chain order, independent of
+      Helix-def order. For an A/B input, C copies A and D copies B even for (DC).
 
     Arguments
     ---------
@@ -2869,10 +2894,10 @@ def replicate_all_chains(
     exchange_specs:
         List of ((chain1,res1),(chain2,res2),kind).
     explicit_helix_defs:
-        If the user supplied (AB), (ABMN), etc., those definitions
-        BEFORE replication. If provided, we prefer them over base_helices
-        when building helix groupings, because they reflect the user's
-        intended rigid groups.
+        User-supplied groups such as (AB) and (CD). Groups whose chains are
+        present in the input define the replication template; groups using
+        future A-Z chain IDs are matched to generated copies and can override
+        their chain order (and therefore their axis direction).
 
     Returns
     -------
@@ -2884,16 +2909,6 @@ def replicate_all_chains(
         directly in align_helices_for_exchanges.
     """
     letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-
-    # Ensure any triplex helix templates have their axis-strand override registered
-    # before chain IDs are remapped and copied.
-    axis_override_templates = explicit_helix_defs if explicit_helix_defs else base_helices
-    for helix_id in axis_override_templates:
-        if len(tuple(sorted(helix_id))) == 3:
-            _prompt_for_triplex_axis_override(tuple(sorted(helix_id)), "replication template")
-    axis_overrides_old = get_helix_axis_overrides()
-    axis_range_overrides_old = get_helix_axis_range_overrides()
-    move_selections_old = get_helix_move_selections()
 
     # 1) Gather original chain IDs from the PDB (case-insensitive, but keep their actual chars)
     orig_chains: List[str] = sorted(
@@ -2914,6 +2929,32 @@ def replicate_all_chains(
     for i, ch in enumerate(orig_chains):
         new_ch = letters[i]
         mapping_upper_to_new[ch.upper()] = new_ch
+
+    original_chain_keys = set(mapping_upper_to_new)
+    explicit_base_groups: List[HelixID] = []
+    explicit_future_groups: List[HelixID] = []
+    for group in explicit_helix_defs or []:
+        if all(ch.upper() in original_chain_keys for ch in group):
+            explicit_base_groups.append(group)
+        else:
+            normalized_group = tuple(ch.upper() for ch in group)
+            invalid = [ch for ch in normalized_group if ch not in letters]
+            if invalid:
+                raise ValueError(
+                    f"Helix definition {group} contains unsupported future chain ID "
+                    f"'{invalid[0]}'; replication supports A-Z."
+                )
+            explicit_future_groups.append(normalized_group)
+
+    # Ensure triplex templates have their axis-strand override registered before
+    # chain IDs are remapped and copied. Future groups inherit the base template.
+    axis_override_templates = explicit_base_groups if explicit_base_groups else base_helices
+    for helix_id in axis_override_templates:
+        if len(tuple(sorted(helix_id))) == 3:
+            _prompt_for_triplex_axis_override(tuple(sorted(helix_id)), "replication template")
+    axis_overrides_old = get_helix_axis_overrides()
+    axis_range_overrides_old = get_helix_axis_range_overrides()
+    move_selections_old = get_helix_move_selections()
 
     sys.stderr.write(
         "[re_helix] Replication requested: remapping original chains "
@@ -2939,10 +2980,10 @@ def replicate_all_chains(
     n_base = len(base_chains)
     base_index: Dict[str, int] = {ch: i for i, ch in enumerate(base_chains)}
 
-    # 4) Decide which helix groupings to use as the "template".
-    #    If explicit helix defs were given, use those; otherwise use base_helices.
-    if explicit_helix_defs:
-        base_groups_raw = explicit_helix_defs
+    # 4) Decide which input helix groups form the replication template. Explicit
+    #    future groups such as (CD) describe generated copies, not input chains.
+    if explicit_base_groups:
+        base_groups_raw = explicit_base_groups
     else:
         base_groups_raw = base_helices
 
@@ -3009,6 +3050,11 @@ def replicate_all_chains(
         chains_used.add(nc1)
         chains_used.add(nc2)
 
+    # Explicit future groups may request copies beyond those used by exchange
+    # endpoints. Include them when deciding how many complete copies are needed.
+    for group in explicit_future_groups:
+        chains_used.update(group)
+
     # 6) Determine how many copies are needed from the chain letters used
     idx_used = [letters.index(ch) for ch in chains_used]
     max_idx = max(idx_used)
@@ -3033,9 +3079,13 @@ def replicate_all_chains(
     # 8) Create additional copies (copy indices 1..num_copies-1)
     for copy_idx in range(1, num_copies):
         offset = copy_idx * n_base
+        copy_mapping = ", ".join(
+            f"{ch}->{letters[offset + base_index[ch]]}"
+            for ch in base_chains
+        )
         sys.stderr.write(
             f"[re_helix]   Creating copy {copy_idx} "
-            f"(chains {letters[offset]}..{letters[offset + n_base - 1]}).\n"
+            f"(alphabetical coordinate mapping: {copy_mapping}).\n"
         )
         for atom in base_atoms:
             cls = type(atom)
@@ -3060,6 +3110,27 @@ def replicate_all_chains(
                 new_ch = letters[offset + i]
                 new_group.append(new_ch)
             helix_defs_repl.append(tuple(new_group))
+
+    # Preserve explicitly entered ordering for generated groups. This permits
+    # (DC), for example, to reverse the copied helix's direction relative to
+    # the automatically propagated (CD) order.
+    generated_group_indices: Dict[HelixID, int] = {}
+    for idx, group in enumerate(helix_defs_repl):
+        key = _canonical_helix_id(group)
+        if key in generated_group_indices:
+            raise ValueError(
+                f"Replication template generated helix {_format_chain_group(key)} more than once."
+            )
+        generated_group_indices[key] = idx
+
+    for group in explicit_future_groups:
+        key = _canonical_helix_id(group)
+        if key not in generated_group_indices:
+            raise ValueError(
+                f"Future helix definition {helix_id_str(group)} does not match any complete "
+                "helix group generated from the input replication template."
+            )
+        helix_defs_repl[generated_group_indices[key]] = group
 
     sys.stderr.write(
         "[re_helix]  Helix groups after replication: "
@@ -3868,6 +3939,11 @@ directions. This sign convention determines the sign of a fixed beta angle for
 exactly one reciprocal-exchange site with axis_parallel=n. Fixed beta is not
 used when the same helix pair has multiple exchange sites.
 
+Before beta is applied, the moving helix's directed axis is physically aligned
+with the fixed helix's directed axis. Reversing the moving definition, such as
+(CD) to (DC), can therefore add a 180-degree end-for-end turn and produces a
+different structure for the same signed beta angle.
+
 If a matching Axis definition row is present, its first listed chain overrides
 the direction from Helix defs.
 
@@ -3909,6 +3985,11 @@ Example:
     "replicate": """Replicate the full set of input chains when needed. The original chains
 are first renamed to consecutive letters A, B, C, ... and extra full
 copies are added as required by the exchange chain IDs.
+
+Helix defs may name generated copies. For an A/B input, (AB) supplies the base
+template and (CD) or (DC) describes the generated copy; its entered order also
+controls that copy's axis direction. Helix-def order never changes coordinate
+copying: C is a copy of A and D is a copy of B in both cases.
 
 When replication is active, --axis_range definitions are NOT copied
 automatically to every copy; instead you can target final replicated
@@ -3980,7 +4061,9 @@ Examples:
 Order is meaningful: the first listed axis chain defines the positive axis
 direction from its smaller to larger residue numbers. Thus A,B follows chain A,
 while B,A follows chain B. This Axis definition direction takes precedence over
-a conflicting Helix defs direction.
+a conflicting Helix defs direction. When both helices have directed axes, the
+moving helix is physically oriented to align those directions before beta is
+applied; reversing a row can therefore turn that helix end-for-end.
 
 The adjacent "move with axis" field can list additional chains or residue
 windows that should receive the same rigid transform, for example:
@@ -4848,7 +4931,8 @@ def main() -> None:
             "Helix defs like (AB) or (ABMN) mean all chains inside the "
             "parentheses form one helix group that moves as a rigid block. "
             "The first chain orients the positive axis from lower to higher "
-            "residue number, so (AB) and (BA) are directionally different. "
+            "residue number, so (AB) and (BA) are directionally different and may "
+            "require an end-for-end turn before beta is applied. "
             "If any are provided, helices are not auto-detected. "
             "Each exchange can also be written as <pos1> <pos2> <beta_deg> <kind>; "
             "the optional beta angle is used only for exactly one site between a "
@@ -4892,7 +4976,8 @@ def main() -> None:
             "Examples: --axis_range B26-B60,A1-A35 or --axis_range A,B. Whole-chain letters "
             "use all P atoms on that chain for the axis. The first listed chain orients the "
             "positive axis from lower to higher residue number and overrides the Helix defs "
-            "direction for that group. If paired with --axis_move, the same "
+            "direction for that group; directed moving axes are physically aligned before beta. "
+            "If paired with --axis_move, the same "
             "row defines an axis-coupled helix group and the listed move payload follows that axis. "
             "In replication mode, base-template axis groups can be propagated to copies, and final "
             "post-replication chain IDs can still be targeted explicitly."
@@ -4979,6 +5064,10 @@ def main() -> None:
             "chain ID), and then additional full copies of this chain set are "
             "created whenever those chain IDs are needed by the exchange "
             "specifications (e.g. to create copies with chains C/D, E/F, ...). "
+            "Explicit Helix defs may name generated groups, so (AB) (CD) is valid "
+            "for an A/B input; the future group's entered order controls only axis "
+            "direction. Copying remains alphabetical: C copies A and D copies B, "
+            "including when the group is written as (DC). "
             "If the input PDB appears to contain exactly one helix component, "
             "replicate mode is also enabled automatically even without this flag."
         ),
@@ -5204,9 +5293,15 @@ def main() -> None:
             print(f"Error resolving base-template --axis_range / --axis_move definitions: {exc}", file=sys.stderr)
             sys.exit(1)
 
-    # Determine how many helices the input PDB appears to contain
-    if helix_defs:
-        helices0 = sorted({tuple(sorted(h)) for h in helix_defs})
+    # Determine how many helices the input PDB itself contains. Explicit groups
+    # that use future chain IDs describe replicated copies and are excluded here.
+    explicit_input_helices0 = [
+        tuple(sorted(h))
+        for h in helix_defs
+        if all(ch.upper() in original_chain_lookup0 for ch in h)
+    ]
+    if explicit_input_helices0:
+        helices0 = sorted(set(explicit_input_helices0))
     elif axis_coupled_helices0 and set(chain_to_P_atoms0.keys()).issubset(
         set().union(*(set(h) for h in axis_coupled_helices0))
     ):
