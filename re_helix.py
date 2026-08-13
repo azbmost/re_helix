@@ -2,6 +2,13 @@
 """
 re_helix.py
 
+V3.25 update (2026-08-13):
+- Add a compact GUI Axis definitions line below the individual rows. When
+  filled, it replaces the row widgets; semicolons separate rows and an optional
+  vertical bar separates an axis definition from its move-with-axis selection.
+- Add examples and override behavior to the Axis definitions help pop-ups.
+- Bump the re_helix app version to V3.25.
+
 V3.24 update (2026-07-19):
 - Give explicit Helix defs a directional meaning: the first chain in each
   parenthesized group defines the positive helical-axis direction from smaller
@@ -360,10 +367,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.24"
+SOFTWARE_VERSION = "V3.25"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V3.24: AZBMOST Package Module #2 - "
+    "re_helix V3.25: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -1017,7 +1024,9 @@ def parse_axis_range_specs(specs: Iterable[str]) -> List[AxisSelection]:
 def parse_axis_move_specs(specs: Iterable[str]) -> List[MoveSelection]:
     parsed: List[MoveSelection] = []
     for spec in specs:
-        parsed.append(parse_axis_range_spec(spec))
+        # GUI command construction uses '-' to preserve an intentionally blank
+        # move column before a later Axis row that does have a move selection.
+        parsed.append({} if spec.strip() == "-" else parse_axis_range_spec(spec))
     return parsed
 
 
@@ -4058,6 +4067,13 @@ Examples:
   A,B
   B26-B60,A1-A35
 
+For many definitions, use the compact single-line field below the rows. When
+that line is filled, the individual Axis definition rows above it are ignored.
+Separate rows with semicolons; within a row, use | between the axis definition
+and its optional "move with axis" value.
+Example:
+  A,B | C,D; E,F
+
 Order is meaningful: the first listed axis chain defines the positive axis
 direction from its smaller to larger residue numbers. Thus A,B follows chain A,
 while B,A follows chain B. This Axis definition direction takes precedence over
@@ -4075,6 +4091,20 @@ move C. The axis is fit from A/B while C moves together with that axis.
 In replication mode, enter the final post-replication chain IDs you want
 to target, or use a base-template row that covers the input chains before
 replication to propagate it across copies. Blank rows are ignored.""",
+    "axis_line": """Optional compact Axis definitions line.
+
+Use this when many Axis definitions are easier to paste as one line:
+  - Separate Axis rows with a semicolon (;).
+  - Within each row, put the axis definition first.
+  - To add "move with axis", follow the axis definition with | and the move value.
+
+Examples:
+  A,B; C,D; E,F
+  A,B | C,D; E,F
+  B26-B60,A1-A35 | C1-C50,D; E,F
+
+If this field is filled, the individual Axis definition rows above it are
+ignored. Direction + point axis mode ignores both this line and the rows.""",
     "user_axis": """Optional user-defined alignment axis.
 
 Provide a direction vector and one point on the axis. When enabled, re_helix
@@ -4087,6 +4117,31 @@ Direction and point format:
 
 The direction vector is normalized automatically and cannot be zero.""",
 }
+
+
+def _parse_axis_definition_line(text: str) -> List[Tuple[str, str]]:
+    """Parse compact ``axis | move; axis`` GUI syntax into row pairs."""
+    rows: List[Tuple[str, str]] = []
+    for row_number, raw_row in enumerate(text.split(";"), start=1):
+        raw_row = raw_row.strip()
+        if not raw_row:
+            continue
+        columns = raw_row.split("|")
+        if len(columns) > 2:
+            raise ValueError(
+                f"Axis definition {row_number} has more than one '|' separator."
+            )
+        axis_spec = columns[0].strip()
+        move_spec = columns[1].strip() if len(columns) == 2 else ""
+        if not axis_spec:
+            raise ValueError(
+                f"Axis definition {row_number} is missing the axis value before '|'."
+            )
+        rows.append((axis_spec, move_spec))
+
+    if not rows:
+        raise ValueError("Please provide at least one definition in the Axis definitions line.")
+    return rows
 
 
 def _build_equivalent_cli_command(
@@ -4108,6 +4163,7 @@ def _build_equivalent_cli_command(
     re_only: bool,
     cir_shift: str,
     linker_phosphate_resname: str,
+    axis_definition_text: str = "",
 ) -> List[str]:
     cmd = [sys.executable, script_path, pdb_in]
 
@@ -4143,15 +4199,27 @@ def _build_equivalent_cli_command(
             raise ValueError("Please provide at least one complete exchange pair.")
 
     if not use_user_axis:
-        for idx, spec in enumerate(axis_range_rows):
-            spec = spec.strip()
-            move_spec = axis_move_rows[idx].strip() if idx < len(axis_move_rows) else ""
-            if move_spec and not spec:
-                raise ValueError("A move-with-axis entry requires an axis definition in the same row.")
-            if spec:
-                cmd.extend(["--axis_range", spec])
-                if move_spec:
-                    cmd.extend(["--axis_move", move_spec])
+        axis_definition_text = axis_definition_text.strip()
+        if axis_definition_text:
+            axis_definition_rows = _parse_axis_definition_line(axis_definition_text)
+        else:
+            axis_definition_rows = []
+            for idx, spec in enumerate(axis_range_rows):
+                spec = spec.strip()
+                move_spec = axis_move_rows[idx].strip() if idx < len(axis_move_rows) else ""
+                if move_spec and not spec:
+                    raise ValueError("A move-with-axis entry requires an axis definition in the same row.")
+                if spec:
+                    axis_definition_rows.append((spec, move_spec))
+
+        last_move_index = max(
+            (idx for idx, (_spec, move_spec) in enumerate(axis_definition_rows) if move_spec),
+            default=-1,
+        )
+        for idx, (spec, move_spec) in enumerate(axis_definition_rows):
+            cmd.extend(["--axis_range", spec])
+            if idx <= last_move_index:
+                cmd.extend(["--axis_move", move_spec or "-"])
 
     if use_user_axis:
         if len(user_axis_dir) != 3 or len(user_axis_point) != 3:
@@ -4247,6 +4315,7 @@ def _launch_gui() -> None:
     cir_shift_var = tk.StringVar(value="8")
     linker_phosphate_resname_var = tk.StringVar(value="X33")
     pair_args_var = tk.StringVar()
+    axis_definition_line_var = tk.StringVar()
 
     pair_widgets: List[Dict[str, object]] = []
     axis_widgets: List[object] = []
@@ -4540,6 +4609,17 @@ def _launch_gui() -> None:
     ttk.Label(axis_rows_frame, text="axis definition").grid(row=0, column=1, sticky="w", padx=4)
     ttk.Label(axis_rows_frame, text="move with axis").grid(row=0, column=2, sticky="w", padx=4)
 
+    axis_line_frame = ttk.Frame(axis_box)
+    axis_line_frame.pack(fill="x", pady=(8, 0))
+    ttk.Label(axis_line_frame, text="Axis definitions line").pack(side="left")
+    axis_line_entry = ttk.Entry(
+        axis_line_frame,
+        textvariable=axis_definition_line_var,
+        width=100,
+    )
+    axis_line_entry.pack(side="left", fill="x", expand=True, padx=4)
+    make_help_button(axis_line_frame, "Axis definitions line", "axis_line").pack(side="left")
+
     other_tools_box = ttk.LabelFrame(outer, text="Other tools", padding=10, style="Section.TLabelframe")
     other_tools_box.pack(fill="x", padx=2, pady=4)
     bend_helix_button = ttk.Button(other_tools_box, text="Bend Helix")
@@ -4671,6 +4751,7 @@ def _launch_gui() -> None:
             _label, _axis_var, _move_var, axis_entry, move_entry = item
             axis_entry.configure(state=range_entry_state)
             move_entry.configure(state=range_entry_state)
+        axis_line_entry.configure(state=range_entry_state)
         schedule_scrollbar_refresh()
 
     def render_pair_rows() -> None:
@@ -4838,6 +4919,7 @@ def _launch_gui() -> None:
                 bool(re_only_var.get()),
                 cir_shift_var.get(),
                 linker_phosphate_resname_var.get(),
+                axis_definition_text=axis_definition_line_var.get(),
             )
         except Exception as exc:
             append_log(f"[GUI] {exc}\n")

@@ -1,5 +1,11 @@
 # Changelog
 
+## V3.25 - 2026-08-13
+
+- Bumped `re_helix` to V3.25.
+- Added a compact GUI `Axis definitions line` below the individual rows. When filled, it replaces those rows; semicolons separate rows and `|` separates an axis definition from its optional `move with axis` value.
+- Expanded the Axis definitions and new single-line field `?` help with the compact syntax, override behavior, and pasteable examples.
+
 ## V3.24 - 2026-07-19
 
 - Bumped `re_helix` to V3.24.
