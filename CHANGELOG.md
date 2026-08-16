@@ -1,5 +1,25 @@
 # Changelog
 
+## V4.2 - 2026-08-15
+
+- Bumped `re_helix` to V4.2 and the bundled reciprocal-exchange engine to V3.6.
+- Made the user-visible directions of a path's terminal input fragments the primary default orientation rule. Only the consecutive same-chain provenance pair directly exposed at each end establishes that direction; singleton ends and exchange jumps are neutral. This keeps closely related reciprocal-exchange products consistently directed when changing a cut position changes the relative lengths of their internal forward/reverse fragments.
+- Added the default-off `--min_link_records` / `--min-link-records` CLI option and a **Min LINK records** GUI checkbox. When enabled, predicted topology-LINK count becomes the primary orientation criterion and may reverse a whole output strand. Cycles are compared after their exact shift with the requested open or closed output mode.
+- Added parse-friendly orientation-policy metadata and regression coverage for default terminal preservation, explicit LINK minimization, modulo circular shifts, and junction-adjacent zero shifts.
+- Added the topology-aware **Reverse Strand Direction V1.0** helper under GUI **Other tools**. It reverses selected path serializations (or reverses closed cycles around their existing first residue), continuously renumbers complete residue blocks, regenerates supported backbone LINK topology, remaps other LINKs, supports blank chain IDs, and preserves all coordinates and atom identities. Validation is scoped to selected strands so unrelated chains and their LINK records remain untouched.
+
+## V4.1 - 2026-08-15
+
+- Bumped `re_helix` to V4.1 and the bundled reciprocal-exchange engine to V3.5.
+- Fixed RE-only processing of prior re_helix outputs by reading existing `LINK` records and reconstructing inverted P--O3', bowtie O5'--P, and standalone phosphate-bridge topology before applying new exchanges.
+- Detected phosphate-only bridges structurally, so default `HETATM X33`, custom linker residue names, and phosphate-only `ATOM DA` styles remain composable across repeated reciprocal-exchange runs.
+- Regenerated inherited backbone links with their new chain/residue labels, remapped non-backbone links through residue provenance, recomputed identity-symmetry distances while preserving crystallographic-mate distances, and suppressed duplicate atom-pair/symmetry links.
+- Extended `--cir_shift` to accept an optional `c`/`C` suffix: plain integers retain an open serialized break, while values such as `10c` add an explicit closing `LINK` across the `TER` boundary and keep resulting cyclic strands covalently circularized.
+- Preserved directed input residue serialization when choosing path and cycle orientation, using LINK count only as a secondary tie-breaker; this prevents repeated RE from reversing long strands merely to save one LINK record.
+- Used a rotation-independent secondary cycle LINK cost so changing `cir_shift` moves only the break and never flips strand direction; recorded whether each cyclic component's closure LINK was written or omitted.
+- Made `cir_shift` an exact signed rotation modulo cycle length: `0` now performs no strand permutation, rather than being advanced automatically to avoid a junction-adjacent break.
+- Added regression coverage for link-free compatibility, LINK-aware chemical predecessors, repeated reciprocal exchange of generated output, phosphate-bridge preservation, cycle closure, and output endpoint integrity.
+
 ## V3.25 - 2026-08-13
 
 - Bumped `re_helix` to V3.25.

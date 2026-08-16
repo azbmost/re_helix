@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from real P-atom or chain-associated virtual-atom pairs and then applies reciprocal exchanges when every endpoint is real. It can also run reciprocal exchange only, without alignment.
 
-Current version: V3.25
+Current version: V4.2
 
 ## Contents
 
@@ -15,6 +15,7 @@ Current version: V3.25
 - `re_helix_lib/add_pdb_link_record.py`: bundled Add PDB LINK Record tool for nucleic-acid P/O3' and peptide N/C terminal links, manual P/O3' links, and chain-topology rebuilding.
 - `re_helix_lib/insert_virtual_resi.py`: bundled Insert Virtual Resi tool for inserting residue-numbering gaps and updating LINK endpoints.
 - `re_helix_lib/permute_chain.py`: bundled Permute Chain tool for cyclically rearranging and continuously renumbering one or more chains.
+- `re_helix_lib/reverse_strand_direction.py`: bundled topology-aware Reverse Strand Direction tool for reversing selected nucleic-acid chain serializations without moving atoms.
 - `re_helix_lib/generate_lattice.py`: bundled Generate Lattice tool for writing a P1 CRYST1 lattice record from three lattice vectors.
 - `re_helix_lib/get_phenix_restraints.py`: bundled Get Phenix Restraints tool for converting LINK records into Phenix geometry restraints, optional junction movement-selection params, and linker support files.
 - `assets/icon.png`: optional GUI/task-menu icon. The main GUI and bundled helper GUIs use it when present and fall back to the default Tk icon when it is missing.
@@ -33,7 +34,7 @@ Launch the GUI:
 python3 re_helix.py
 ```
 
-In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, `Insert Virtual Resi` opens the residue-numbering-gap helper, `Permute Chain` opens the cyclic chain-rearrangement helper, `Generate Lattice` opens the P1 lattice/CRYST1 helper, and `Get Phenix Restraints` opens the Phenix restraint-generation helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
+In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, `Insert Virtual Resi` opens the residue-numbering-gap helper, `Permute Chain` opens the cyclic chain-rearrangement helper, `Reverse Strand Direction` opens the topology-preserving strand-serialization helper, `Generate Lattice` opens the P1 lattice/CRYST1 helper, and `Get Phenix Restraints` opens the Phenix restraint-generation helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
 
 When the input PDB changes, the GUI updates the default `Output base` automatically unless that field has been changed to a custom value. For large exchange specifications, the `CLI pair args` field below the pair rows can be filled with the same concatenated pair tokens used on the command line; when it is filled, the individual pair rows are ignored. Likewise, `Axis definitions line` accepts a compact value such as `A,B | C,D; E,F`: semicolons separate rows, and `|` separates an axis definition from its optional `move with axis` value. When filled, it replaces the individual Axis definition rows.
 
@@ -219,6 +220,35 @@ Useful Permute Chain arguments:
 - `-o output.pdb`: choose the output file. Without `-o`, the default output inserts `_permuted` before the input extension.
 - `-v` or `--version`: show the bundled tool version.
 
+## Reverse Strand Direction Tool
+
+The bundled Reverse Strand Direction tool reverses the serialized residue order of one or more selected nucleic-acid chains while leaving every atom and coordinate unchanged. Complete residue blocks move together and are relabeled continuously in ascending order from the chain's original minimum residue number. For an open path `A10,A11,A12,A13`, the source blocks become `A13,A12,A11,A10` and are relabeled as `A10,A11,A12,A13`. For a covalently closed cycle, the current first residue remains anchored while the remaining blocks reverse, so direction changes without an unintended circular shift.
+
+This is a PDB serialization edit, not a geometric flip, reverse complement, or chemical rebuilding of each nucleotide. Reversing residue blocks changes which backbone bonds can be represented implicitly, so the tool reconstructs the input nucleic-acid topology and regenerates required P--O3' LINK records. Existing inverted, 5'-5', 3'-3'/standalone-phosphate, cycle-closure, and other LINK topology is preserved and remapped. TER, HET, structured RE_SCRIPT residue references, and chain-inventory remarks are updated; atom serials, atom names, coordinates, ANISOU-like records, and CONECT records remain unchanged.
+
+Launch the GUI directly:
+
+```bash
+python3 re_helix_lib/reverse_strand_direction.py --gui
+```
+
+Reverse chains A and D from the command line:
+
+```bash
+python3 re_helix_lib/reverse_strand_direction.py input.pdb \
+  --strand A --strand D \
+  -o input_strand_reversed.pdb
+```
+
+Useful options:
+
+- `--strand A` or `--reverse A`: select one case-sensitive chain ID; repeat for multiple strands. Use `blank`, `<blank>`, or `_` for a blank PDB chain ID.
+- `-o output.pdb`: choose the output path. Without `-o`, `_strand_reversed` is inserted before the input extension.
+- `--gui`: open the graphical chain selector, which lists detected chains and residue counts.
+- `-v` or `--version`: show Reverse Strand Direction V1.0.
+
+For safety, V1.0 rejects multi-model inputs and, on selected strands, insertion codes, interleaved or TER-split serialization, cross-chain backbone components, and non-nucleic-acid chains whose required P/O3' endpoints cannot be resolved. Unselected chains are not reordered or subjected to strand-topology validation, and their LINK lines remain unchanged unless a selected endpoint must be renumbered. The tool also rejects an opposite P--O3' LINK on a selected two-residue chain, because that PDB representation is ambiguous between an inverted open path and a covalently closed two-residue cycle. The input file is never overwritten in place.
+
 ## Generate Lattice Tool
 
 The bundled Generate Lattice tool writes or replaces the PDB `CRYST1` record for a P1 lattice from three user-provided lattice directions and distances. By default, it also rotates `ATOM`/`HETATM` coordinates and `ANISOU` tensors into the standard PDB crystallographic Cartesian frame, where `a` is along +X, `b` is in the XY plane, and `c` has positive Z. It preserves non-coordinate records, including `REMARK`, `LINK`, `TITLE`, and `SEQRES`, unless an option explicitly changes that behavior.
@@ -350,7 +380,7 @@ python3 re_helix.py input.pdb '(AB)' '(CD)' 26A 9C 90 d --axis_parallel n -o ang
 - `-o, --output`: output base path. A `.pdb` suffix is stripped before output suffixes are added.
 - `--gui`: launch the Tk GUI explicitly.
 - `-v, --version`: show the app version and exit.
-- `--re_only` or `--re-only`: apply reciprocal exchange only and write `<base>_rex.pdb`.
+- `--re_only` or `--re-only`: apply reciprocal exchange only and write `<base>_rex.pdb`. When the input is a prior re_helix reciprocal-exchange output, its P--O3', O5'--P, and standalone-phosphate `LINK` records are used to reconstruct the current backbone topology before new cuts are applied. Non-backbone `LINK` records are remapped through output renumbering. By default, output paths preserve the user-visible directions of the consecutive same-chain fragments directly exposed at their ends; singleton ends and exchange jumps are neutral. Cycles preserve input serialization continuity.
 - `--axis_dist 22.0`: target helix-axis distance in angstroms during alignment.
 - `--axis_parallel y|n`: keep axes parallel (`y`) or allow a beta interhelical tilt (`n`). Angle terminology is `tau` = axial twist/spin of the moving helix, `phi` = orbital azimuth around the fixed helix, `beta` = interhelical tilt/bend, and `d` = axial slide.
 - Beta handedness: positive beta follows the right-hand rule around `L_beta`, directed from the fixed-axis anchor toward the nearest point on the moving axis. Negative beta is the corresponding left-handed rotation.
@@ -360,7 +390,9 @@ python3 re_helix.py input.pdb '(AB)' '(CD)' 26A 9C 90 d --axis_parallel n -o ang
 - `--user_axis_dir X Y Z --user_axis_point X Y Z`: define a single alignment axis from a direction vector and point. When used, helix-axis estimation from P atoms is skipped and each movable helix is optimized by rotation around that line plus a full XYZ translation.
 - `--fix A`: keep the helix containing chain `A` fixed during alignment.
 - `--replicate`: replicate the full input chain set before alignment or RE-only processing. Helix defs may name future copies: for a two-chain A/B input, `(AB) (CD)` uses A/B as the base template and assigns C/D to the generated copy; `(DC)` reverses only the copied helix's axis-direction reference. Coordinate copying always follows alphabetical base-chain order, so C copies A and D copies B regardless of Helix-def order.
-- `--cir_shift 8`: choose the residue shift used when writing circular reciprocal-exchange strands.
+- `--cir_shift 8`: apply an exact signed residue rotation, modulo cycle length, when serializing cyclic reciprocal-exchange strands; the shifted break remains open. `--cir_shift 0` preserves the canonical input-provenance start with no circular permutation.
+- `--cir_shift 8c` or `--cir_shift 8C`: apply the same shift and add an explicit closing `LINK` across the output `TER` boundary, keeping each resulting cyclic strand covalently circularized. The suffix also works with other signed integers, such as `0c` or `-4C`.
+- `--min_link_records` or `--min-link-records`: opt in to choosing each strand direction primarily by the topology `LINK` records that output would contain. This can reverse an entire output strand. Cycles are compared after the exact `cir_shift`, counting the omitted edge of a plain open cycle or the explicit closure of `c`/`C` mode correctly; generated inverted, bowtie, and phosphate-bridge links participate, while preserved non-topology input links do not. The default is off so closely related structures retain consistent terminal strand directions even when different cut positions change their interior fragment lengths.
 - `--linker_phosphate_resname X33|NAME|DA`: choose the residue name for phosphate-only 3'-3' bowtie linker residues. `X33` is the default `HETATM` custom residue; any other 1-3 character name is written as `HETATM` by default; `DA`/`dA` writes regular `ATOM DA` while keeping only `P`, `OP1`, and `OP2`.
 - `--linker_phosphate_record ATOM|HETATM`: advanced override for the inserted linker phosphate record type.
 

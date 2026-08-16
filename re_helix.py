@@ -2,6 +2,34 @@
 """
 re_helix.py
 
+V4.2 update (2026-08-15):
+- Preserve the directions of the terminal input fragments when choosing an
+  output path direction, so closely related reciprocal-exchange products do
+  not flip merely because their cut positions change fragment lengths.
+- Add an opt-in --min_link_records / --min-link-records policy and matching GUI
+  checkbox. When enabled, predicted topology LINK count becomes the primary
+  orientation criterion and may reverse a whole output strand. Cycles are
+  evaluated after their exact shift in the requested open or closed mode.
+- Add a topology-aware Reverse Strand Direction V1.0 helper to Other tools.
+  It reverses selected residue serializations without moving atoms, continuously
+  renumbers them, and regenerates LINK records to preserve covalent topology.
+- Bump the re_helix app version to V4.2 and the reciprocal-exchange engine to
+  V3.6.
+
+V4.1 update (2026-08-15):
+- Reconstruct RE-only input topology from existing P--O3', O5'--P, and
+  phosphate-bridge LINK records so re_helix-generated PDB files can be used as
+  inputs to later reciprocal exchanges without losing their junction bonds.
+- Accept either an integer cir_shift or an integer followed by c/C. The suffix
+  requests an explicit cycle-closing LINK after the shift; a plain integer
+  retains an open serialized break.
+- Preserve the input PDB's directed residue serialization when choosing path
+  and cycle orientation, using LINK count only as a tie-breaker. This prevents
+  repeated RE from reversing long strands merely to save one LINK record.
+- Remap non-backbone input LINK records through output residue renumbering.
+- Bump the re_helix app version to V4.1 and the reciprocal-exchange engine to
+  V3.5.
+
 V3.25 update (2026-08-13):
 - Add a compact GUI Axis definitions line below the individual rows. When
   filled, it replaces the row widgets; semicolons separate rows and an optional
@@ -358,19 +386,19 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple, Iterable, Set, Optional, Union
 
 from re_helix_lib.edit_pdb_atom import (
-    file2rec,
     pdb_atom_record,
 )
+from re_helix_lib.edit_pdb_link import file2rec_link, pdb_link_record
 
 import contextlib
 import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V3.25"
+SOFTWARE_VERSION = "V4.2"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V3.25: AZBMOST Package Module #2 - "
+    "re_helix V4.2: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -2686,9 +2714,11 @@ def apply_user_axis_transform_to_helix(
 def apply_reciprocal_exchanges_in_memory(
     rec_list: List[pdb_atom_record],
     exchange_specs,
-    cir_shift: int,
+    cir_shift: object,
     return_metadata: bool = False,
     linker_phosphate_style=None,
+    input_link_records: Optional[Iterable[pdb_link_record]] = None,
+    min_link_records: bool = False,
 ):
     """Apply reciprocal exchanges to an in-memory PDB record list.
 
@@ -2714,6 +2744,7 @@ def apply_reciprocal_exchanges_in_memory(
         )
 
     linker_phosphate_style = rex.coerce_linker_phosphate_style(linker_phosphate_style)
+    cir_shift_spec = rex.coerce_cir_shift(cir_shift)
 
     # Convert legacy V2/V3.5-style exchange_specs into V3.3 dict specs.
     # Optional beta angles are alignment-only metadata and are ignored by
@@ -2725,8 +2756,10 @@ def apply_reciprocal_exchanges_in_memory(
         c2, r2 = pos2
         specs_v3.append(
             {
-                "pos1": (str(c1).upper(), int(r1)),
-                "pos2": (str(c2).upper(), int(r2)),
+                # Chain IDs are case-sensitive; generated structures can use
+                # lower-case IDs once A-Z have been assigned.
+                "pos1": (str(c1), int(r1)),
+                "pos2": (str(c2), int(r2)),
                 "kind": str(kind).lower(),
             }
         )
@@ -2744,21 +2777,40 @@ def apply_reciprocal_exchanges_in_memory(
     if not nodes:
         raise ValueError("No residues parsed from rec_list for reciprocal exchange.")
 
-    orig_prev, orig_next = rex.build_original_prev_next(nodes)
+    input_topology = rex.build_input_backbone_topology(
+        nodes,
+        label_to_idx,
+        list(input_link_records or []),
+    )
+    orig_prev = input_topology.orig_prev
+    if input_topology.recognized_link_count or input_topology.passthrough_links:
+        sys.stderr.write(
+            "[reciprocal_exchange] Reconstructed input topology from "
+            f"{input_topology.recognized_link_count} backbone LINK record(s), "
+            f"including {input_topology.phosphate_bridge_count} phosphate bridge(s); "
+            f"preserving {len(input_topology.passthrough_links)} other LINK record(s).\n"
+        )
 
     # Store/cut bowtie phosphates (pos2 only). Redirect stdout to stderr so
     # re_helix stdout stays relatively clean.
     with contextlib.redirect_stdout(sys.stderr):
         phos_store = rex.cut_and_store_bowtie_phosphates(nodes, label_to_idx, bowtie_specs)
 
-    # Build original backbone graph and apply exchanges (order-independent).
-    g = rex.build_original_graph(len(nodes), orig_next)
+    # Apply exchanges to the LINK-aware input backbone graph (order-independent).
+    g = input_topology.graph
     junction_nodes, n_double, n_single, n_bowtie = rex.apply_exchanges_to_graph(
         g, nodes, label_to_idx, orig_prev, specs_v3
     )
 
     # Build ordered connected components and apply circular permutation.
-    base_components = rex.build_ordered_components(g, nodes, junction_nodes, cir_shift)
+    base_components = rex.build_ordered_components(
+        g,
+        nodes,
+        junction_nodes,
+        cir_shift_spec.shift,
+        circularize_cycles=cir_shift_spec.circularize,
+        min_link_records=min_link_records,
+    )
 
     # Insert phosphate-only residues for 3'-3' edges.
     used_phos: Set[Tuple[str, int]] = set()
@@ -2772,6 +2824,7 @@ def apply_reciprocal_exchanges_in_memory(
             phos_store,
             used_phos,
             linker_phosphate_style=linker_phosphate_style,
+            is_cycle=bool(comp.get("circularized")),
         )
         final_components.append({**comp, "order": expanded_order})
 
@@ -2780,15 +2833,31 @@ def apply_reciprocal_exchanges_in_memory(
 
     # Generate LINK records.
     link_records, link_counts = rex.build_link_records(final_components, g, nodes, output_atoms)
+    passthrough_links = rex.remap_passthrough_link_records(
+        input_topology.passthrough_links,
+        nodes,
+        label_to_idx,
+        output_atoms,
+    )
+    topology_link_count = len(link_records)
+    link_records = rex.merge_link_records(link_records, passthrough_links)
+    link_counts["other_preserved"] = len(link_records) - topology_link_count
+    link_counts["total"] = len(link_records)
 
     num_cycles = sum(1 for comp in final_components if comp.get("is_cycle"))
     num_paths = len(final_components) - num_cycles
 
     sys.stderr.write(
         f"[reciprocal_exchange] Applied {n_double} double, {n_single} single, {n_bowtie} bowtie exchanges; "
-        f"chains: {len(final_components)} ({num_paths} linear, {num_cycles} circular); "
+        f"chains: {len(final_components)} ({num_paths} linear, {num_cycles} cyclic; "
+        f"cycle_mode={'closed' if cir_shift_spec.circularize else 'open'}); "
         f"LINK: {len(link_records)} (inv_backbone={link_counts.get('backbone_inverted', 0)}, "
-        f"bowtie5to5={link_counts.get('bowtie_5to5', 0)}, bowtie3to3={link_counts.get('bowtie_3to3', 0)}); "
+        f"bowtie5to5={link_counts.get('bowtie_5to5', 0)}, "
+        f"bowtie3to3={link_counts.get('bowtie_3to3', 0)}, "
+        f"cycle_closures={link_counts.get('circular_closure', 0)}, "
+        f"other={link_counts.get('other_preserved', 0)}); "
+        f"cir_shift={cir_shift_spec}; "
+        f"orientation_policy={'min_link_records' if min_link_records else 'preserve_terminal_direction'}; "
         f"3to3_linker={linker_phosphate_style.record_name}:{linker_phosphate_style.resname}.\n"
     )
 
@@ -2805,6 +2874,11 @@ def apply_reciprocal_exchanges_in_memory(
             "n_single": n_single,
             "n_bowtie": n_bowtie,
             "linker_phosphate_style": linker_phosphate_style,
+            "input_link_count": input_topology.recognized_link_count,
+            "input_phosphate_bridge_count": input_topology.phosphate_bridge_count,
+            "input_passthrough_link_count": len(input_topology.passthrough_links),
+            "cir_shift": cir_shift_spec,
+            "min_link_records": bool(min_link_records),
         }
         return output_atoms, link_records, metadata
 
@@ -2825,11 +2899,13 @@ def _rex_dependency_remark_line() -> Optional[str]:
 def write_reciprocal_exchange_output(
     rec_list: List[pdb_atom_record],
     exchange_specs,
-    cir_shift: int,
+    cir_shift: object,
     command_text: str,
     output_path: str,
     output_stage: str,
     linker_phosphate_style=None,
+    input_link_records: Optional[Iterable[pdb_link_record]] = None,
+    min_link_records: bool = False,
 ) -> None:
     linker_phosphate_style = rex.coerce_linker_phosphate_style(linker_phosphate_style)
     rec_list_rex, link_rec_list, rex_metadata = apply_reciprocal_exchanges_in_memory(
@@ -2838,6 +2914,8 @@ def write_reciprocal_exchange_output(
         cir_shift=cir_shift,
         return_metadata=True,
         linker_phosphate_style=linker_phosphate_style,
+        input_link_records=input_link_records,
+        min_link_records=min_link_records,
     )
 
     rex_header = rex.build_re_script_header_lines(
@@ -2854,6 +2932,11 @@ def write_reciprocal_exchange_output(
         phos_new_label=rex_metadata.get("phos_new_label"),
         component_orders=rex_metadata.get("final_components"),
         link_counts=rex_metadata.get("link_counts"),
+        extra_special_events=[
+            "orientation_policy "
+            f"mode={'min_link_records' if min_link_records else 'preserve_terminal_direction'} "
+            f"min_link_records={1 if min_link_records else 0}"
+        ],
         linker_phosphate_style=linker_phosphate_style,
     )
 
@@ -2879,6 +2962,7 @@ def replicate_all_chains(
     base_helices: List[HelixID],
     exchange_specs,
     explicit_helix_defs: Optional[List[HelixID]] = None,
+    link_rec_list: Optional[List[pdb_link_record]] = None,
 ) -> Tuple[List[ExchangeSpec], List[HelixID]]:
     """
     General replication logic:
@@ -2907,6 +2991,9 @@ def replicate_all_chains(
         present in the input define the replication template; groups using
         future A-Z chain IDs are matched to generated copies and can override
         their chain order (and therefore their axis direction).
+    link_rec_list:
+        Optional input LINK records. When supplied, their chain IDs are
+        remapped and each record is replicated alongside its coordinate copy.
 
     Returns
     -------
@@ -2925,6 +3012,8 @@ def replicate_all_chains(
     )
     if not orig_chains:
         raise ValueError("No ATOM/HETATM records with chain IDs found for replication.")
+
+    link_templates = [pdb_link_record(link.string) for link in (link_rec_list or [])]
 
     if len(orig_chains) > len(letters):
         raise ValueError(
@@ -3074,6 +3163,26 @@ def replicate_all_chains(
             f"Need {num_copies} copies of {n_base} chains (= {num_copies * n_base} chains), "
             f"but only {len(letters)} chain IDs A-Z are available."
         )
+
+    if link_rec_list is not None:
+        replicated_links: List[pdb_link_record] = []
+        for copy_idx in range(num_copies):
+            offset = copy_idx * n_base
+            for template in link_templates:
+                old_chain1 = template.chainID1.upper()
+                old_chain2 = template.chainID2.upper()
+                if old_chain1 not in mapping_upper_to_new or old_chain2 not in mapping_upper_to_new:
+                    raise ValueError(
+                        "Cannot replicate LINK record with an endpoint outside the base chain set: "
+                        f"{template.string.strip()}"
+                    )
+                base_chain1 = mapping_upper_to_new[old_chain1]
+                base_chain2 = mapping_upper_to_new[old_chain2]
+                clone = pdb_link_record(template.string)
+                clone.update_chainID1(letters[offset + base_index[base_chain1]])
+                clone.update_chainID2(letters[offset + base_index[base_chain2]])
+                replicated_links.append(clone)
+        link_rec_list[:] = replicated_links
 
     sys.stderr.write(
         f"[re_helix]  Replicating {n_base} base chains into {num_copies} "
@@ -4009,11 +4118,29 @@ without running helix alignment first.
 The output is <base>_rex.pdb. Explicit helix definitions and beta-angle values
 may be left in the rows, but only the residue pairs and exchange kinds are
 used for reciprocal exchange.""",
-    "cir_shift": """Shift applied when writing circular strands after reciprocal exchange,
-so the output nick is moved away from junction residues when possible.
+    "cir_shift": """Exact circular shift applied when writing cyclic strands after
+reciprocal exchange. A value of 0 preserves the canonical input-provenance
+start without strand permutation. Signed values rotate by exactly that many
+residues modulo the cycle length.
+
+Enter a plain integer such as 10 to leave that shifted break open. Append c or
+C, such as 10c, to add a closing LINK across the break and keep each resulting
+cyclic strand covalently circularized.
 
 Units: nt
 Default: 8""",
+    "min_link_records": """Choose output strand direction primarily to minimize
+the number of topology LINK records written for that orientation.
+
+This option can reverse an entire output strand. Cycles are scored after the
+exact cir_shift, so the omitted edge of a plain open cycle or the explicit
+closure of c/C mode is included correctly. Generated inverted, bowtie, and
+phosphate-bridge LINKs are counted; preserved non-topology input LINKs are not.
+Use the c/C suffix when every cycle edge must remain explicitly connected.
+Leave this option off to preserve the user-visible directions of terminal
+input fragments.
+
+Default: off""",
     "linker_phosphate_resname": """Residue name used for phosphate-only residues inserted at bowtie 3'-3' linkages.
 
 Options:
@@ -4164,6 +4291,7 @@ def _build_equivalent_cli_command(
     cir_shift: str,
     linker_phosphate_resname: str,
     axis_definition_text: str = "",
+    min_link_records: bool = False,
 ) -> List[str]:
     cmd = [sys.executable, script_path, pdb_in]
 
@@ -4260,6 +4388,9 @@ def _build_equivalent_cli_command(
     if cir_shift.strip():
         cmd.extend(["--cir_shift", cir_shift.strip()])
 
+    if min_link_records:
+        cmd.append("--min_link_records")
+
     linker_phosphate_resname = linker_phosphate_resname.strip()
     if linker_phosphate_resname and linker_phosphate_resname.upper() != "X33":
         cmd.extend(["--linker_phosphate_resname", linker_phosphate_resname])
@@ -4313,6 +4444,7 @@ def _launch_gui() -> None:
     replicate_var = tk.BooleanVar(value=False)
     re_only_var = tk.BooleanVar(value=False)
     cir_shift_var = tk.StringVar(value="8")
+    min_link_records_var = tk.BooleanVar(value=False)
     linker_phosphate_resname_var = tk.StringVar(value="X33")
     pair_args_var = tk.StringVar()
     axis_definition_line_var = tk.StringVar()
@@ -4503,7 +4635,7 @@ def _launch_gui() -> None:
     )
     make_help_button(options, "RE only", "re_only").grid(row=0, column=12, sticky="w")
 
-    ttk.Label(options, text="cir_shift (nt)").grid(row=0, column=13, sticky="w", padx=(12, 0))
+    ttk.Label(options, text="cir_shift (nt; c=close)").grid(row=0, column=13, sticky="w", padx=(12, 0))
     ttk.Entry(options, textvariable=cir_shift_var, width=8).grid(row=0, column=14, sticky="w", padx=4)
     make_help_button(options, "cir_shift", "cir_shift").grid(row=0, column=15, sticky="w")
 
@@ -4518,6 +4650,18 @@ def _launch_gui() -> None:
     make_help_button(options, "3'-3' P resname", "linker_phosphate_resname").grid(
         row=1,
         column=2,
+        sticky="w",
+        pady=(6, 0),
+    )
+
+    ttk.Checkbutton(
+        options,
+        text="Min LINK records",
+        variable=min_link_records_var,
+    ).grid(row=1, column=3, sticky="w", padx=(12, 0), pady=(6, 0))
+    make_help_button(options, "Min LINK records", "min_link_records").grid(
+        row=1,
+        column=4,
         sticky="w",
         pady=(6, 0),
     )
@@ -4622,20 +4766,29 @@ def _launch_gui() -> None:
 
     other_tools_box = ttk.LabelFrame(outer, text="Other tools", padding=10, style="Section.TLabelframe")
     other_tools_box.pack(fill="x", padx=2, pady=4)
-    bend_helix_button = ttk.Button(other_tools_box, text="Bend Helix")
+    other_tools_row1 = ttk.Frame(other_tools_box)
+    other_tools_row1.pack(fill="x")
+    other_tools_row2 = ttk.Frame(other_tools_box)
+    other_tools_row2.pack(fill="x", pady=(6, 0))
+    bend_helix_button = ttk.Button(other_tools_row1, text="Bend Helix")
     bend_helix_button.pack(side="left")
-    do_symmetry_button = ttk.Button(other_tools_box, text="Do Symmetry")
+    do_symmetry_button = ttk.Button(other_tools_row1, text="Do Symmetry")
     do_symmetry_button.pack(side="left", padx=(6, 0))
-    add_pdb_link_button = ttk.Button(other_tools_box, text="Add PDB LINK Record")
+    add_pdb_link_button = ttk.Button(other_tools_row1, text="Add PDB LINK Record")
     add_pdb_link_button.pack(side="left", padx=(6, 0))
-    insert_virtual_resi_button = ttk.Button(other_tools_box, text="Insert Virtual Resi")
+    insert_virtual_resi_button = ttk.Button(other_tools_row1, text="Insert Virtual Resi")
     insert_virtual_resi_button.pack(side="left", padx=(6, 0))
-    permute_chain_button = ttk.Button(other_tools_box, text="Permute Chain")
+    permute_chain_button = ttk.Button(other_tools_row1, text="Permute Chain")
     permute_chain_button.pack(side="left", padx=(6, 0))
-    generate_lattice_button = ttk.Button(other_tools_box, text="Generate Lattice")
+    generate_lattice_button = ttk.Button(other_tools_row1, text="Generate Lattice")
     generate_lattice_button.pack(side="left", padx=(6, 0))
-    get_phenix_restraints_button = ttk.Button(other_tools_box, text="Get Phenix Restraints")
+    get_phenix_restraints_button = ttk.Button(other_tools_row1, text="Get Phenix Restraints")
     get_phenix_restraints_button.pack(side="left", padx=(6, 0))
+    reverse_strand_direction_button = ttk.Button(
+        other_tools_row2,
+        text="Reverse Strand Direction",
+    )
+    reverse_strand_direction_button.pack(side="left")
 
     buttons = ttk.Frame(outer)
     buttons.pack(fill="x", padx=2, pady=4)
@@ -4720,6 +4873,15 @@ def _launch_gui() -> None:
         current_pdb = pdb_var.get().strip()
         extra_args = [current_pdb] if current_pdb else []
         launch_bundled_gui_tool("Permute Chain", "permute_chain.py", extra_args)
+
+    def launch_reverse_strand_direction_tool() -> None:
+        current_pdb = pdb_var.get().strip()
+        extra_args = [current_pdb] if current_pdb else []
+        launch_bundled_gui_tool(
+            "Reverse Strand Direction",
+            "reverse_strand_direction.py",
+            extra_args,
+        )
 
     def launch_generate_lattice_tool() -> None:
         current_pdb = pdb_var.get().strip()
@@ -4920,6 +5082,7 @@ def _launch_gui() -> None:
                 cir_shift_var.get(),
                 linker_phosphate_resname_var.get(),
                 axis_definition_text=axis_definition_line_var.get(),
+                min_link_records=bool(min_link_records_var.get()),
             )
         except Exception as exc:
             append_log(f"[GUI] {exc}\n")
@@ -4963,6 +5126,7 @@ def _launch_gui() -> None:
     add_pdb_link_button.configure(command=launch_add_pdb_link_record_tool)
     insert_virtual_resi_button.configure(command=launch_insert_virtual_resi_tool)
     permute_chain_button.configure(command=launch_permute_chain_tool)
+    reverse_strand_direction_button.configure(command=launch_reverse_strand_direction_tool)
     generate_lattice_button.configure(command=launch_generate_lattice_tool)
     get_phenix_restraints_button.configure(command=launch_get_phenix_restraints_tool)
     render_pair_rows()
@@ -5163,7 +5327,9 @@ def main() -> None:
             "Apply reciprocal exchanges directly to the input PDB without "
             "running helix alignment. Writes <base>_rex.pdb. If --replicate is "
             "also supplied, replication is performed first; otherwise RE-only "
-            "mode behaves like reciprocal_exchange_pdb on the input structure."
+            "mode behaves like reciprocal_exchange_pdb on the input structure. "
+            "Existing re_helix backbone LINK records are used to reconstruct "
+            "the current topology before new exchange edges are cut."
         ),
     )
     parser.add_argument(
@@ -5177,11 +5343,26 @@ def main() -> None:
     )
     parser.add_argument(
         "--cir_shift",
-        type=int,
-        default=8,
+        type=rex.parse_cir_shift,
+        default=rex.CirShiftSpec(),
         help=(
-            "Residue shift for circular strands when applying reciprocal "
-            "exchanges (default: 8)."
+            "Exact residue shift for cyclic strands when applying reciprocal "
+            "exchanges. Append c/C, for example 10c, to add a closing LINK "
+            "after the shift and keep each strand covalently circularized. "
+            "Zero performs no circular permutation; signed shifts are applied "
+            "modulo strand length. A plain number leaves the serialized break "
+            "open (default: 8)."
+        ),
+    )
+    parser.add_argument(
+        "--min_link_records",
+        "--min-link-records",
+        action="store_true",
+        help=(
+            "Choose output strand direction primarily to minimize topology "
+            "LINK records after any exact cycle shift and open/closed choice. "
+            "This may reverse whole strands. "
+            "Default: off; preserve terminal input-fragment direction."
         ),
     )
     parser.add_argument(
@@ -5285,10 +5466,11 @@ def main() -> None:
 
     # Read PDB
     rec_list: List[pdb_atom_record] = []
+    input_link_records: List[pdb_link_record] = []
     try:
         with open(args.pdb_in, "r") as fin:
-            file2rec(fin, rec_list)
-    except OSError as exc:
+            file2rec_link(fin, rec_list, input_link_records)
+    except (OSError, ValueError) as exc:
         print(f"Error reading PDB file '{args.pdb_in}': {exc}", file=sys.stderr)
         sys.exit(1)
 
@@ -5318,6 +5500,8 @@ def main() -> None:
                 output_path=pdb_out_rex_only,
                 output_stage="reciprocal_exchange_only",
                 linker_phosphate_style=linker_phosphate_style,
+                input_link_records=input_link_records,
+                min_link_records=args.min_link_records,
             )
         except OSError as exc:
             print(f"Error writing RE-only PDB '{pdb_out_rex_only}': {exc}", file=sys.stderr)
@@ -5404,6 +5588,7 @@ def main() -> None:
                 helices0,
                 exchange_specs,
                 helix_defs if helix_defs else (axis_coupled_helices0 if axis_coupled_helices0 else None),
+                link_rec_list=input_link_records,
             )
         except Exception as exc:
             print(f"Error during helix replication: {exc}", file=sys.stderr)
@@ -5422,6 +5607,8 @@ def main() -> None:
                 output_path=pdb_out_rex_only,
                 output_stage="reciprocal_exchange_only",
                 linker_phosphate_style=linker_phosphate_style,
+                input_link_records=input_link_records,
+                min_link_records=args.min_link_records,
             )
         except OSError as exc:
             print(f"Error writing RE-only PDB '{pdb_out_rex_only}': {exc}", file=sys.stderr)
@@ -5511,8 +5698,24 @@ def main() -> None:
         dependency_line = _rex_dependency_remark_line()
         if dependency_line is not None:
             pre_re_header.append(dependency_line)
+        # Raw ASU coordinates do not include crystallographic symmetry
+        # transforms. Recompute only ordinary identity-symmetry LINK lengths;
+        # retain declared distances for links to symmetry mates.
+        identity_symmetry_links = [
+            link
+            for link in input_link_records
+            if (link.sym1.strip() or "1555") == "1555"
+            and (link.sym2.strip() or "1555") == "1555"
+        ]
+        rex.edit_pdb_link.update_link_distances_from_atoms(identity_symmetry_links, rec_list)
         with open(pdb_out_aligned, "w") as fout:
-            rex.write_pdb_with_header(rec_list, [], fout, header_lines=pre_re_header, reorder_serial=True)
+            rex.write_pdb_with_header(
+                rec_list,
+                input_link_records,
+                fout,
+                header_lines=pre_re_header,
+                reorder_serial=True,
+            )
     except OSError as exc:
         print(f"Error writing aligned PDB '{pdb_out_aligned}': {exc}", file=sys.stderr)
         sys.exit(1)
@@ -5542,6 +5745,8 @@ def main() -> None:
             output_path=pdb_out_aligned_rex,
             output_stage="aligned_rex",
             linker_phosphate_style=linker_phosphate_style,
+            input_link_records=input_link_records,
+            min_link_records=args.min_link_records,
         )
     except OSError as exc:
         print(f"Error writing aligned+RE PDB '{pdb_out_aligned_rex}': {exc}", file=sys.stderr)
