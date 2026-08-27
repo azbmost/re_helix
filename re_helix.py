@@ -2,6 +2,27 @@
 """
 re_helix.py
 
+V4.5 update (2026-08-27):
+- Allow the restrained translation direction and restrained rotation axis
+  vector to be defined as the normal to two supplied XYZ vectors.
+- Use vector 1 cross vector 2, normalize the result, and reject zero or
+  parallel vector pairs.
+
+V4.4 update (2026-08-27):
+- Add a Restrained rotation alignment mode. It rotates each unfixed helix only
+  about a user-defined point-and-vector axis, with no translation.
+- Allow the axis point to be supplied as XYZ or a PDB atom, and the vector as
+  a direct vector, two XYZ points, or two PDB atoms.
+- Add conditional GUI controls and preserve move-with-axis payload selection.
+
+V4.3 update (2026-08-27):
+- Add a Restrained translation alignment mode. It moves each unfixed helix
+  without rotation, using the least-squares translation constrained to a
+  user-supplied direction.
+- Allow the translation direction to be supplied as a vector, two XYZ points,
+  or two atoms from the input PDB.
+- Add the matching GUI fields between Axis definitions and Other tools.
+
 V4.2 update (2026-08-15):
 - Preserve the directions of the terminal input fragments when choosing an
   output path direction, so closely related reciprocal-exchange products do
@@ -377,6 +398,7 @@ import argparse
 import importlib
 import math
 import queue
+import re
 import shlex
 import subprocess
 import sys
@@ -395,10 +417,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V4.2"
+SOFTWARE_VERSION = "V4.5"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V4.2: AZBMOST Package Module #2 - "
+    "re_helix V4.5: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -749,6 +771,8 @@ def parse_exchange_specs(
 
 
 UserAxisDefinition = Tuple[Point3D, Point3D]  # (axis_dir, axis_point)
+RestrainedTranslationDirection = Point3D
+RestrainedRotationAxis = UserAxisDefinition
 HelixID = Tuple[str, ...]  # can be 2 or more chains, e.g. ('A', 'B', 'M', 'N')
 AxisBounds = Optional[Tuple[int, int]]
 AxisSelection = Dict[str, AxisBounds]
@@ -1719,6 +1743,166 @@ def normalize_user_axis_definition(
     return normalized_dir, point_tuple  # type: ignore[return-value]
 
 
+def normalize_point3d(point: Iterable[float], label: str = "Point") -> Point3D:
+    """Return a finite three-coordinate point."""
+    values = tuple(float(value) for value in point)
+    if len(values) != 3:
+        raise ValueError(f"{label} must have exactly three numeric values.")
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError(f"{label} values must be finite numbers.")
+    return values  # type: ignore[return-value]
+
+
+def normalize_restrained_translation_direction(
+    direction: Iterable[float],
+) -> RestrainedTranslationDirection:
+    """Return a finite, unit-length direction for restrained translation."""
+    values = tuple(float(value) for value in direction)
+    if len(values) != 3:
+        raise ValueError(
+            "Restrained-translation direction must have exactly three numeric values."
+        )
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError(
+            "Restrained-translation direction values must be finite numbers."
+        )
+    normalized = v_norm(values)  # type: ignore[arg-type]
+    if v_length(normalized) < 1.0e-12:
+        raise ValueError("Restrained-translation direction cannot be zero.")
+    return normalized
+
+
+def restrained_translation_direction_from_points(
+    point1: Iterable[float],
+    point2: Iterable[float],
+) -> RestrainedTranslationDirection:
+    """Return the normalized direction from point 1 toward point 2."""
+    p1 = tuple(float(value) for value in point1)
+    p2 = tuple(float(value) for value in point2)
+    if len(p1) != 3 or len(p2) != 3:
+        raise ValueError(
+            "Each restrained-translation point must have exactly three numeric values."
+        )
+    if not all(math.isfinite(value) for value in p1 + p2):
+        raise ValueError("Restrained-translation point values must be finite numbers.")
+    return normalize_restrained_translation_direction(v_sub(p2, p1))  # type: ignore[arg-type]
+
+
+def direction_normal_to_vectors(
+    vector1: Iterable[float],
+    vector2: Iterable[float],
+) -> Point3D:
+    """Return the normalized right-hand normal ``vector1 × vector2``."""
+    first = tuple(float(value) for value in vector1)
+    second = tuple(float(value) for value in vector2)
+    if len(first) != 3 or len(second) != 3:
+        raise ValueError("Each normal-defining vector must have exactly three values.")
+    if not all(math.isfinite(value) for value in first + second):
+        raise ValueError("Normal-defining vector values must be finite numbers.")
+    normal = v_cross(first, second)  # type: ignore[arg-type]
+    if v_length(normal) < 1.0e-12:
+        raise ValueError(
+            "The two normal-defining vectors cannot be zero or parallel."
+        )
+    return v_norm(normal)
+
+
+def _normalized_pdb_atom_name(name: str) -> str:
+    """Normalize atom-name spelling for input selection only."""
+    return name.strip().upper().replace("*", "'")
+
+
+def resolve_pdb_atom_selector(
+    rec_list: Iterable[pdb_atom_record],
+    selector: str,
+) -> pdb_atom_record:
+    """Resolve ``#serial`` or ``chain:residue:atom`` against input records.
+
+    Compact residue forms such as ``A30:P`` and ``30A:P`` are also accepted.
+    An underscore selects a blank chain ID. Atom-name matching is
+    case-insensitive and treats ``*`` as the legacy equivalent of ``'``.
+    """
+    text = selector.strip()
+    if not text:
+        raise ValueError("PDB atom selector cannot be blank.")
+
+    atom_records = [
+        atom for atom in rec_list if atom.recordName in ("ATOM", "HETATM")
+    ]
+    serial_match = re.fullmatch(r"(?:#|serial:)(\d+)", text, flags=re.IGNORECASE)
+    if serial_match:
+        serial = int(serial_match.group(1))
+        matches = [atom for atom in atom_records if atom.serial == serial]
+        selector_description = f"serial {serial}"
+    else:
+        chain_id: Optional[str] = None
+        residue_number: Optional[int] = None
+        atom_name: Optional[str] = None
+
+        separated = text.replace("/", ":").split(":")
+        if len(separated) == 3:
+            chain_text, residue_text, atom_name = (part.strip() for part in separated)
+            if len(chain_text) == 1 and re.fullmatch(r"-?\d+", residue_text):
+                chain_id = " " if chain_text == "_" else chain_text
+                residue_number = int(residue_text)
+        elif len(separated) == 2:
+            residue_selector, atom_name = (part.strip() for part in separated)
+            compact_match = re.fullmatch(
+                r"(?:([A-Za-z_])(-?\d+)|(-?\d+)([A-Za-z_]))",
+                residue_selector,
+            )
+            if compact_match:
+                if compact_match.group(1) is not None:
+                    chain_text = compact_match.group(1)
+                    residue_number = int(compact_match.group(2))
+                else:
+                    chain_text = compact_match.group(4)
+                    residue_number = int(compact_match.group(3))
+                chain_id = " " if chain_text == "_" else chain_text
+
+        if chain_id is None or residue_number is None or not atom_name:
+            raise ValueError(
+                f"Invalid PDB atom selector '{selector}'. Use #123, "
+                "A:30:P, A30:P, or 30A:P."
+            )
+
+        normalized_name = _normalized_pdb_atom_name(atom_name)
+        matches = [
+            atom
+            for atom in atom_records
+            if atom.chainID == chain_id
+            and atom.resSeq == residue_number
+            and _normalized_pdb_atom_name(atom.name) == normalized_name
+        ]
+        display_chain = "_" if chain_id == " " else chain_id
+        selector_description = f"{display_chain}:{residue_number}:{atom_name}"
+
+    if not matches:
+        raise ValueError(f"PDB atom selector '{selector_description}' did not match any atom.")
+    if len(matches) > 1:
+        serials = ", ".join(str(atom.serial) for atom in matches)
+        raise ValueError(
+            f"PDB atom selector '{selector_description}' matched multiple atoms "
+            f"(serials {serials}); use a #serial selector instead."
+        )
+    return matches[0]
+
+
+def restrained_translation_direction_from_atoms(
+    rec_list: Iterable[pdb_atom_record],
+    atom1_selector: str,
+    atom2_selector: str,
+) -> RestrainedTranslationDirection:
+    """Return the normalized direction from selected input atom 1 to atom 2."""
+    atom_records = list(rec_list)
+    atom1 = resolve_pdb_atom_selector(atom_records, atom1_selector)
+    atom2 = resolve_pdb_atom_selector(atom_records, atom2_selector)
+    return restrained_translation_direction_from_points(
+        (atom1.x, atom1.y, atom1.z),
+        (atom2.x, atom2.y, atom2.z),
+    )
+
+
 def rotate_around_line(
     point: Tuple[float, float, float],
     axis_point: Tuple[float, float, float],
@@ -2552,6 +2736,97 @@ def build_user_axis_transform_objective(
     return objective, p1_list, p2_list, translation_for_angle
 
 
+def calculate_restrained_translation(
+    pairs: Iterable[Tuple[ExchangeEndpoint, ExchangeEndpoint]],
+    residue_to_P_atom: Dict[RealAtomPosition, pdb_atom_record],
+    direction: Iterable[float],
+) -> Tuple[Point3D, float, float]:
+    """Return the optimal translation constrained to ``direction``.
+
+    The returned tuple is ``(translation_vector, signed_distance, sum_sq)``.
+    For fixed points ``a_i``, moving points ``b_i``, and unit direction ``u``,
+    the least-squares scalar is the mean of ``dot(a_i - b_i, u)``.
+    """
+    unit_direction = normalize_restrained_translation_direction(direction)
+    fixed_points: List[Point3D] = []
+    moving_points: List[Point3D] = []
+    for fixed_endpoint, moving_endpoint in pairs:
+        fixed_point = endpoint_point(fixed_endpoint, residue_to_P_atom)
+        moving_point = endpoint_point(moving_endpoint, residue_to_P_atom)
+        if fixed_point is None:
+            raise ValueError(
+                f"No P atom found for endpoint {endpoint_label(fixed_endpoint)} "
+                "(fixed helix)."
+            )
+        if moving_point is None:
+            raise ValueError(
+                f"No P atom found for endpoint {endpoint_label(moving_endpoint)} "
+                "(moving helix)."
+            )
+        fixed_points.append(fixed_point)
+        moving_points.append(moving_point)
+
+    if not fixed_points:
+        raise ValueError("Restrained translation requires at least one usable alignment pair.")
+
+    signed_distance = sum(
+        v_dot(v_sub(fixed_point, moving_point), unit_direction)
+        for fixed_point, moving_point in zip(fixed_points, moving_points)
+    ) / len(fixed_points)
+    translation = v_scale(unit_direction, signed_distance)
+
+    sum_sq = 0.0
+    for fixed_point, moving_point in zip(fixed_points, moving_points):
+        translated = v_add(moving_point, translation)
+        delta = v_sub(fixed_point, translated)
+        sum_sq += v_dot(delta, delta)
+    return translation, signed_distance, sum_sq
+
+
+def build_restrained_rotation_objective(
+    pairs: Iterable[Tuple[ExchangeEndpoint, ExchangeEndpoint]],
+    residue_to_P_atom: Dict[RealAtomPosition, pdb_atom_record],
+    axis_dir: Iterable[float],
+    axis_point: Iterable[float],
+):
+    """Build a one-angle objective for rotation about a fixed user axis."""
+    direction = normalize_restrained_translation_direction(axis_dir)
+    point = normalize_point3d(axis_point, "Restrained-rotation axis point")
+    fixed_points: List[Point3D] = []
+    moving_points: List[Point3D] = []
+    for fixed_endpoint, moving_endpoint in pairs:
+        fixed_point = endpoint_point(fixed_endpoint, residue_to_P_atom)
+        moving_point = endpoint_point(moving_endpoint, residue_to_P_atom)
+        if fixed_point is None:
+            raise ValueError(
+                f"No P atom found for endpoint {endpoint_label(fixed_endpoint)} "
+                "(fixed helix)."
+            )
+        if moving_point is None:
+            raise ValueError(
+                f"No P atom found for endpoint {endpoint_label(moving_endpoint)} "
+                "(moving helix)."
+            )
+        fixed_points.append(fixed_point)
+        moving_points.append(moving_point)
+
+    if not fixed_points:
+        raise ValueError("Restrained rotation requires at least one usable alignment pair.")
+
+    def objective(params: List[float]) -> float:
+        if len(params) != 1:
+            raise ValueError("Expected 1 param [angle] for restrained rotation.")
+        angle = params[0]
+        total = 0.0
+        for fixed_point, moving_point in zip(fixed_points, moving_points):
+            rotated = rotate_around_line(moving_point, point, direction, angle)
+            delta = v_sub(fixed_point, rotated)
+            total += v_dot(delta, delta)
+        return total
+
+    return objective, fixed_points, moving_points
+
+
 def coordinate_descent(
     objective,
     initial_params: List[float],
@@ -2705,6 +2980,48 @@ def apply_user_axis_transform_to_helix(
     for virtual_atom in virtual_atoms or ():
         p = rotate_around_line(virtual_atom.point, axis_point, axis_dir, angle)
         virtual_atom.update_xyz(*v_add(p, translation))
+
+
+def apply_translation_to_helix(
+    rec_list: Iterable[pdb_atom_record],
+    helix_moving: HelixID,
+    translation: Point3D,
+    virtual_atoms: Optional[Iterable[VirtualAtom]] = None,
+) -> None:
+    """Translate a movable helix group without applying any rotation."""
+    for atom in rec_list:
+        if atom.recordName not in ("ATOM", "HETATM"):
+            continue
+        if not atom_moves_with_helix(atom, helix_moving):
+            continue
+        atom.update_xyz(*v_add((atom.x, atom.y, atom.z), translation))
+    for virtual_atom in virtual_atoms or ():
+        virtual_atom.update_xyz(*v_add(virtual_atom.point, translation))
+
+
+def apply_rotation_to_helix(
+    rec_list: Iterable[pdb_atom_record],
+    helix_moving: HelixID,
+    axis_dir: Point3D,
+    axis_point: Point3D,
+    angle: float,
+    virtual_atoms: Optional[Iterable[VirtualAtom]] = None,
+) -> None:
+    """Rotate a movable helix about a fixed line without translating it."""
+    direction = normalize_restrained_translation_direction(axis_dir)
+    point = normalize_point3d(axis_point, "Restrained-rotation axis point")
+    for atom in rec_list:
+        if atom.recordName not in ("ATOM", "HETATM"):
+            continue
+        if not atom_moves_with_helix(atom, helix_moving):
+            continue
+        atom.update_xyz(
+            *rotate_around_line((atom.x, atom.y, atom.z), point, direction, angle)
+        )
+    for virtual_atom in virtual_atoms or ():
+        virtual_atom.update_xyz(
+            *rotate_around_line(virtual_atom.point, point, direction, angle)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3471,6 +3788,10 @@ def align_helices_for_exchanges(
     explicit_helices: Optional[List[HelixID]] = None,
     fix_chain: Optional[str] = None,
     user_axis: Optional[UserAxisDefinition] = None,
+    restrained_translation_direction: Optional[
+        RestrainedTranslationDirection
+    ] = None,
+    restrained_rotation_axis: Optional[RestrainedRotationAxis] = None,
 ) -> None:
     """
     Align helices (or multi-chain helix groups) in-place according to
@@ -3487,7 +3808,48 @@ def align_helices_for_exchanges(
     if not chain_to_P_atoms:
         raise ValueError("No P atoms found in input PDB; alignment cannot proceed.")
 
-    write_angle_definitions_once()
+    alignment_mode_count = sum(
+        option is not None
+        for option in (
+            user_axis,
+            restrained_translation_direction,
+            restrained_rotation_axis,
+        )
+    )
+    if alignment_mode_count > 1:
+        raise ValueError(
+            "User-defined-axis, Restrained translation, and Restrained rotation "
+            "alignment modes are mutually exclusive."
+        )
+
+    if restrained_rotation_axis is not None:
+        rotation_axis_dir, rotation_axis_point = normalize_user_axis_definition(
+            restrained_rotation_axis[0],
+            restrained_rotation_axis[1],
+        )
+        sys.stderr.write(
+            "[re_helix] Using Restrained rotation alignment mode: "
+            f"point=({rotation_axis_point[0]:.3f}, {rotation_axis_point[1]:.3f}, "
+            f"{rotation_axis_point[2]:.3f}), direction=({rotation_axis_dir[0]:.6f}, "
+            f"{rotation_axis_dir[1]:.6f}, {rotation_axis_dir[2]:.6f}). Each movable "
+            "helix is rotated only about this line; translation, helix-axis estimation, "
+            "axis_dist, and axis_parallel are skipped. Axis-definition move-with-axis "
+            "selections are still honored.\n"
+        )
+    elif restrained_translation_direction is not None:
+        direction = normalize_restrained_translation_direction(
+            restrained_translation_direction
+        )
+        sys.stderr.write(
+            "[re_helix] Using Restrained translation alignment mode: "
+            f"direction=({direction[0]:.6f}, {direction[1]:.6f}, {direction[2]:.6f}). "
+            "Each movable helix is translated only along this direction; rotation, "
+            "helix-axis estimation, axis_dist, and axis_parallel are skipped. "
+            "Axis-definition move-with-axis selections are still honored.\n"
+        )
+    else:
+        write_angle_definitions_once()
+
     if user_axis is not None:
         user_axis_dir, user_axis_point = user_axis
         sys.stderr.write(
@@ -3506,17 +3868,21 @@ def align_helices_for_exchanges(
             + ", ".join(helix_id_str(h) for h in explicit_helices)
             + "\n"
         )
-        sys.stderr.write(
-            "[re_helix] Initial helix-axis directions follow each definition's first chain "
-            "from lower to higher residue number: "
-            + ", ".join(
-                f"{helix_id_str(h)} -> chain {h[0]}"
-                for h in explicit_helices
-                if h
+        if (
+            restrained_translation_direction is None
+            and restrained_rotation_axis is None
+        ):
+            sys.stderr.write(
+                "[re_helix] Initial helix-axis directions follow each definition's first chain "
+                "from lower to higher residue number: "
+                + ", ".join(
+                    f"{helix_id_str(h)} -> chain {h[0]}"
+                    for h in explicit_helices
+                    if h
+                )
+                + ". Matching Axis definition rows take precedence."
+                + "\n"
             )
-            + ". Matching Axis definition rows take precedence."
-            + "\n"
-        )
     else:
         chain_to_helix = compute_chain_partner_map(chain_to_P_atoms)
         seen_helices = sorted({chain_to_helix[ch] for ch in chain_to_helix})
@@ -3538,20 +3904,36 @@ def align_helices_for_exchanges(
         )
     if axis_range_defs:
         validate_axis_range_definitions(axis_range_defs, chain_to_P_atoms, chain_to_helix)
-        sys.stderr.write(
-            "[re_helix] Using axis residue-range overrides: "
-            + ", ".join(_format_axis_range_spec(spec) for spec in axis_range_defs)
-            + "\n"
-        )
-        sys.stderr.write(
-            "[re_helix] Axis-definition directions follow each row's first chain "
-            "from lower to higher residue number (overriding Helix defs): "
-            + ", ".join(
-                f"{_format_axis_range_spec(spec)} -> chain {next(iter(spec))}"
-                for spec in axis_range_defs
+        if (
+            restrained_translation_direction is not None
+            or restrained_rotation_axis is not None
+        ):
+            restrained_mode_name = (
+                "Restrained rotation"
+                if restrained_rotation_axis is not None
+                else "Restrained translation"
             )
-            + "\n"
-        )
+            sys.stderr.write(
+                "[re_helix] Using Axis definitions for helix grouping and "
+                f"move-with-axis selections in {restrained_mode_name} mode: "
+                + ", ".join(_format_axis_range_spec(spec) for spec in axis_range_defs)
+                + ". These ranges do not change the supplied transform axis.\n"
+            )
+        else:
+            sys.stderr.write(
+                "[re_helix] Using axis residue-range overrides: "
+                + ", ".join(_format_axis_range_spec(spec) for spec in axis_range_defs)
+                + "\n"
+            )
+            sys.stderr.write(
+                "[re_helix] Axis-definition directions follow each row's first chain "
+                "from lower to higher residue number (overriding Helix defs): "
+                + ", ".join(
+                    f"{_format_axis_range_spec(spec)} -> chain {next(iter(spec))}"
+                    for spec in axis_range_defs
+                )
+                + "\n"
+            )
     if axis_move_defs:
         sys.stderr.write(
             "[re_helix] Using axis-coupled move selections: "
@@ -3653,7 +4035,21 @@ def align_helices_for_exchanges(
                 defined_beta_angles = [angle for angle in beta_angles_fixed_moving if angle is not None]
                 if defined_beta_angles:
                     angle_list = ", ".join(f"{angle:.3g}°" for angle in defined_beta_angles)
-                    if user_axis is not None:
+                    if restrained_rotation_axis is not None:
+                        sys.stderr.write(
+                            f"[re_helix]   Warning: fixed beta-angle definition(s) "
+                            f"({angle_list}) for helix pair "
+                            f"{helix_id_str(fixed)}/{helix_id_str(neighbour)} ignored because "
+                            "Restrained rotation mode uses only rotation about the supplied axis.\n"
+                        )
+                    elif restrained_translation_direction is not None:
+                        sys.stderr.write(
+                            f"[re_helix]   Warning: fixed beta-angle definition(s) "
+                            f"({angle_list}) for helix pair "
+                            f"{helix_id_str(fixed)}/{helix_id_str(neighbour)} ignored because "
+                            "Restrained translation mode does not rotate helices.\n"
+                        )
+                    elif user_axis is not None:
                         sys.stderr.write(
                             f"[re_helix]   Warning: fixed beta-angle definition(s) "
                             f"({angle_list}) for helix pair "
@@ -3689,6 +4085,112 @@ def align_helices_for_exchanges(
                             f"[re_helix]    Using fixed single-site beta angle: "
                             f"{fixed_beta_deg:.2f}°.\n"
                         )
+
+                if (
+                    restrained_translation_direction is not None
+                    or restrained_rotation_axis is not None
+                ):
+                    restrained_action = (
+                        "rotation"
+                        if restrained_rotation_axis is not None
+                        else "translation"
+                    )
+                    effective_pairs: List[
+                        Tuple[ExchangeEndpoint, ExchangeEndpoint]
+                    ] = []
+                    for fixed_endpoint, moving_endpoint in pairs_fixed_moving:
+                        fixed_point = endpoint_point(fixed_endpoint, residue_to_P_atom)
+                        moving_point = endpoint_point(moving_endpoint, residue_to_P_atom)
+                        if fixed_point is None or moving_point is None:
+                            sys.stderr.write(
+                                f"[re_helix]   Warning: skipping pair "
+                                f"{endpoint_label(fixed_endpoint)}-"
+                                f"{endpoint_label(moving_endpoint)} due to missing real "
+                                "P atom(s).\n"
+                            )
+                            continue
+                        effective_pairs.append((fixed_endpoint, moving_endpoint))
+
+                    if not effective_pairs:
+                        sys.stderr.write(
+                            f"[re_helix]   Warning: no usable alignment pairs for helix "
+                            f"pair {helix_id_str(fixed)}/{helix_id_str(neighbour)}; "
+                            f"skipping restrained {restrained_action}.\n"
+                        )
+                        visited.add(neighbour)
+                        queue.append(neighbour)
+                        continue
+
+                    pair_strs = [
+                        f"{endpoint_label(endpoint1)}-{endpoint_label(endpoint2)}"
+                        for endpoint1, endpoint2 in effective_pairs
+                    ]
+                    sys.stderr.write(
+                        f"[re_helix]    Using all usable pairs for restrained "
+                        f"{restrained_action}: "
+                        + ", ".join(pair_strs)
+                        + "\n"
+                    )
+
+                    if restrained_rotation_axis is not None:
+                        axis_dir, axis_point = restrained_rotation_axis
+                        objective, _p1_list, _p2_list = (
+                            build_restrained_rotation_objective(
+                                effective_pairs,
+                                residue_to_P_atom,
+                                axis_dir,
+                                axis_point,
+                            )
+                        )
+                        best_params, best_val = coordinate_descent(
+                            objective,
+                            [0.0],
+                            [math.pi / 2.0],
+                            angle_indices={0},
+                        )
+                        angle_opt = best_params[0]
+                        angle_deg = angle_opt * 180.0 / math.pi
+                        sys.stderr.write(
+                            "[re_helix]   Optimised restrained rotation: "
+                            f"angle = {angle_deg:.2f} deg; "
+                            f"sum(dist^2) = {best_val:.3f}.\n"
+                        )
+                        apply_rotation_to_helix(
+                            rec_list,
+                            neighbour,
+                            axis_dir,
+                            axis_point,
+                            angle_opt,
+                            virtual_atoms=virtual_atoms_for_helix(
+                                exchange_specs, neighbour
+                            ),
+                        )
+                    else:
+                        assert restrained_translation_direction is not None
+                        translation, signed_distance, best_val = (
+                            calculate_restrained_translation(
+                                effective_pairs,
+                                residue_to_P_atom,
+                                restrained_translation_direction,
+                            )
+                        )
+                        sys.stderr.write(
+                            "[re_helix]   Optimised restrained translation: "
+                            f"signed distance = {signed_distance:.3f} A; vector = "
+                            f"({translation[0]:.3f}, {translation[1]:.3f}, "
+                            f"{translation[2]:.3f}) A; sum(dist^2) = {best_val:.3f}.\n"
+                        )
+                        apply_translation_to_helix(
+                            rec_list,
+                            neighbour,
+                            translation,
+                            virtual_atoms=virtual_atoms_for_helix(
+                                exchange_specs, neighbour
+                            ),
+                        )
+                    visited.add(neighbour)
+                    queue.append(neighbour)
+                    continue
 
                 # Identify which chains within each helix group actually
                 # participate in these P-pairs; use them to define the axes.
@@ -4217,7 +4719,12 @@ This can define a triplex-like group without stdin prompts: use axis A,B and
 move C. The axis is fit from A/B while C moves together with that axis.
 In replication mode, enter the final post-replication chain IDs you want
 to target, or use a base-template row that covers the input chains before
-replication to propagate it across copies. Blank rows are ignored.""",
+replication to propagate it across copies. Blank rows are ignored.
+
+In Restrained translation and Restrained rotation modes, Axis definitions remain
+available for helix grouping and the adjacent move-with-axis selection. Their
+fitted axis direction is not used; the transform remains constrained to the
+direction or rotation axis supplied in the Alignment mode section.""",
     "axis_line": """Optional compact Axis definitions line.
 
 Use this when many Axis definitions are easier to paste as one line:
@@ -4243,6 +4750,76 @@ Direction and point format:
   x y z
 
 The direction vector is normalized automatically and cannot be zero.""",
+    "alignment_mode": """Choose the transform used to align each movable helix.
+
+Standard:
+  Use the existing helix-axis alignment and fine optimization controls.
+
+Restrained translation:
+  Apply only a translation along the supplied direction; do not rotate.
+
+Restrained rotation:
+  Apply only a rotation about the supplied point-and-vector axis; do not
+  translate.
+
+Axis definitions and move-with-axis payload selections remain available in both
+restrained modes.""",
+    "alignment_direction": """Choose how to define a direction or axis vector.
+
+Vector:
+  Enter x, y, and z directly.
+
+Two XYZ points:
+  Use the direction from point 1 toward point 2.
+
+Two PDB atoms:
+  Use the direction from atom 1 toward atom 2 in the input PDB.
+
+Normal to two vectors:
+  Enter two XYZ vectors. The direction is their right-hand normal,
+  vector 1 cross vector 2.
+
+PDB atom selectors accept #serial, A:30:P, A30:P, or 30A:P. The resulting
+vector is normalized automatically and cannot be zero.""",
+    "restrained_translation": """Restrained translation alignment mode.
+
+This mode keeps the fixed helix unchanged and moves each unfixed helix without
+rotation. The translation is constrained to the supplied direction, and its
+signed distance is chosen to minimize the summed squared distances between all
+usable alignment-pair endpoints.
+
+Choose one direction source:
+  Vector: enter direction x, y, z.
+  Two XYZ points: direction runs from point 1 toward point 2.
+  Two PDB atoms: direction runs from atom 1 toward atom 2 in the input PDB.
+  Normal to two vectors: direction is vector 1 cross vector 2.
+
+PDB atom selectors may use #serial, A:30:P, A30:P, or 30A:P. Use _ for a
+blank chain, for example _:30:P. Atom names are case-insensitive, and * may be
+used instead of an apostrophe.
+
+The direction is normalized automatically and cannot be zero. Axis definitions
+remain available so their move-with-axis payload follows the translated helix,
+but they do not fit or replace the supplied translation direction. Direction +
+point axis, axis_dist, axis_parallel, and beta angles are not used in this
+mode.""",
+    "restrained_rotation": """Restrained rotation alignment mode.
+
+This mode keeps the fixed helix unchanged and rotates each unfixed helix only
+about one supplied line. The rotation angle is optimized against all usable
+alignment-pair endpoints. No translation is applied.
+
+Define the line with:
+  Point: either an XYZ point or one atom in the input PDB.
+  Vector: a direct vector, two XYZ points, two input-PDB atoms, or the normal
+  to two supplied XYZ vectors.
+
+PDB atom selectors accept #serial, A:30:P, A30:P, or 30A:P. Use _ for a blank
+chain. The vector is normalized automatically and cannot be zero.
+
+Axis definitions remain available so their move-with-axis payload rotates with
+the helix, but they do not replace the supplied rotation axis. Direction + point
+axis, axis_dist, axis_parallel, and beta angles are not used in this mode.""",
 }
 
 
@@ -4292,6 +4869,20 @@ def _build_equivalent_cli_command(
     linker_phosphate_resname: str,
     axis_definition_text: str = "",
     min_link_records: bool = False,
+    alignment_mode: str = "standard",
+    restrained_translation_source: str = "vector",
+    restrained_translation_vector: Optional[List[str]] = None,
+    restrained_translation_points: Optional[List[str]] = None,
+    restrained_translation_atoms: Optional[List[str]] = None,
+    restrained_translation_normal_vectors: Optional[List[str]] = None,
+    restrained_rotation_point_source: str = "xyz_point",
+    restrained_rotation_point: Optional[List[str]] = None,
+    restrained_rotation_point_atom: str = "",
+    restrained_rotation_vector_source: str = "vector",
+    restrained_rotation_vector: Optional[List[str]] = None,
+    restrained_rotation_vector_points: Optional[List[str]] = None,
+    restrained_rotation_vector_atoms: Optional[List[str]] = None,
+    restrained_rotation_normal_vectors: Optional[List[str]] = None,
 ) -> List[str]:
     cmd = [sys.executable, script_path, pdb_in]
 
@@ -4325,6 +4916,34 @@ def _build_equivalent_cli_command(
 
         if n_pairs == 0:
             raise ValueError("Please provide at least one complete exchange pair.")
+
+    normalized_alignment_mode = (
+        alignment_mode.strip().lower().replace(" ", "_").replace("-", "_")
+    )
+    if normalized_alignment_mode in ("normal", "standard"):
+        normalized_alignment_mode = "standard"
+    elif normalized_alignment_mode in ("restrained", "restrained_translation"):
+        normalized_alignment_mode = "restrained_translation"
+    elif normalized_alignment_mode in ("rotation", "restrained_rotation"):
+        normalized_alignment_mode = "restrained_rotation"
+    else:
+        raise ValueError(
+            "Alignment mode must be Standard, Restrained translation, or "
+            "Restrained rotation."
+        )
+
+    use_restrained_translation = normalized_alignment_mode == "restrained_translation"
+    use_restrained_rotation = normalized_alignment_mode == "restrained_rotation"
+    use_restrained_mode = use_restrained_translation or use_restrained_rotation
+    if use_restrained_mode and use_user_axis:
+        raise ValueError(
+            "Restrained translation/rotation cannot be combined with "
+            "Direction + point axis mode."
+        )
+    if use_restrained_mode and re_only:
+        raise ValueError(
+            "Restrained translation/rotation cannot be combined with RE-only mode."
+        )
 
     if not use_user_axis:
         axis_definition_text = axis_definition_text.strip()
@@ -4366,14 +4985,193 @@ def _build_equivalent_cli_command(
         cmd.extend(["--user_axis_dir", *dir_values])
         cmd.extend(["--user_axis_point", *point_values])
 
+    if use_restrained_translation:
+        cmd.extend(["--alignment_mode", "restrained_translation"])
+        normalized_source = (
+            restrained_translation_source.strip().lower().replace(" ", "_")
+        )
+        if normalized_source == "vector":
+            values = [value.strip() for value in (restrained_translation_vector or [])]
+            if len(values) != 3 or not all(values):
+                raise ValueError(
+                    "Restrained translation vector requires x, y, and z values."
+                )
+            try:
+                normalize_restrained_translation_direction(float(value) for value in values)
+            except ValueError as exc:
+                raise ValueError(f"Invalid restrained-translation vector: {exc}") from exc
+            cmd.extend(["--translation_vector", *values])
+        elif normalized_source in ("two_xyz_points", "xyz_points", "points"):
+            values = [value.strip() for value in (restrained_translation_points or [])]
+            if len(values) != 6 or not all(values):
+                raise ValueError(
+                    "Restrained translation by two XYZ points requires all six coordinates."
+                )
+            try:
+                numeric_values = [float(value) for value in values]
+                restrained_translation_direction_from_points(
+                    numeric_values[:3], numeric_values[3:]
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid restrained-translation XYZ points: {exc}"
+                ) from exc
+            cmd.extend(["--translation_points", *values])
+        elif normalized_source in ("two_pdb_atoms", "pdb_atoms", "atoms"):
+            values = [value.strip() for value in (restrained_translation_atoms or [])]
+            if len(values) != 2 or not all(values):
+                raise ValueError(
+                    "Restrained translation by PDB atoms requires atom 1 and atom 2 selectors."
+                )
+            cmd.extend(["--translation_atoms", *values])
+        elif normalized_source in (
+            "normal_to_two_vectors",
+            "normal_vectors",
+            "normal",
+        ):
+            values = [
+                value.strip()
+                for value in (restrained_translation_normal_vectors or [])
+            ]
+            if len(values) != 6 or not all(values):
+                raise ValueError(
+                    "Normal-to-two-vectors translation requires all six vector components."
+                )
+            try:
+                numeric_values = [float(value) for value in values]
+                direction_normal_to_vectors(
+                    numeric_values[:3], numeric_values[3:]
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid restrained-translation normal vectors: {exc}"
+                ) from exc
+            cmd.extend(["--translation_normal_vectors", *values])
+        else:
+            raise ValueError(
+                "Restrained translation direction source must be Vector, "
+                "Two XYZ points, Two PDB atoms, or Normal to two vectors."
+            )
+
+    if use_restrained_rotation:
+        cmd.extend(["--alignment_mode", "restrained_rotation"])
+        normalized_point_source = (
+            restrained_rotation_point_source.strip().lower().replace(" ", "_")
+        )
+        if normalized_point_source in ("xyz", "xyz_point", "point"):
+            point_values = [
+                value.strip() for value in (restrained_rotation_point or [])
+            ]
+            if len(point_values) != 3 or not all(point_values):
+                raise ValueError(
+                    "Restrained rotation XYZ axis point requires x, y, and z values."
+                )
+            try:
+                normalize_point3d(
+                    (float(value) for value in point_values),
+                    "Restrained-rotation axis point",
+                )
+            except ValueError as exc:
+                raise ValueError(f"Invalid restrained-rotation point: {exc}") from exc
+            cmd.extend(["--rotation_axis_point", *point_values])
+        elif normalized_point_source in ("pdb_atom", "atom"):
+            point_atom = restrained_rotation_point_atom.strip()
+            if not point_atom:
+                raise ValueError(
+                    "Restrained rotation by a PDB-atom point requires an atom selector."
+                )
+            cmd.extend(["--rotation_axis_point_atom", point_atom])
+        else:
+            raise ValueError(
+                "Restrained rotation point source must be XYZ point or PDB atom."
+            )
+
+        normalized_vector_source = (
+            restrained_rotation_vector_source.strip().lower().replace(" ", "_")
+        )
+        if normalized_vector_source == "vector":
+            vector_values = [
+                value.strip() for value in (restrained_rotation_vector or [])
+            ]
+            if len(vector_values) != 3 or not all(vector_values):
+                raise ValueError(
+                    "Restrained rotation axis vector requires x, y, and z values."
+                )
+            try:
+                normalize_restrained_translation_direction(
+                    float(value) for value in vector_values
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid restrained-rotation axis vector: {exc}"
+                ) from exc
+            cmd.extend(["--rotation_axis_vector", *vector_values])
+        elif normalized_vector_source in ("two_xyz_points", "xyz_points", "points"):
+            vector_values = [
+                value.strip()
+                for value in (restrained_rotation_vector_points or [])
+            ]
+            if len(vector_values) != 6 or not all(vector_values):
+                raise ValueError(
+                    "Restrained rotation vector by two XYZ points requires all six coordinates."
+                )
+            try:
+                numeric_values = [float(value) for value in vector_values]
+                restrained_translation_direction_from_points(
+                    numeric_values[:3], numeric_values[3:]
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid restrained-rotation vector points: {exc}"
+                ) from exc
+            cmd.extend(["--rotation_axis_vector_points", *vector_values])
+        elif normalized_vector_source in ("two_pdb_atoms", "pdb_atoms", "atoms"):
+            vector_atoms = [
+                value.strip()
+                for value in (restrained_rotation_vector_atoms or [])
+            ]
+            if len(vector_atoms) != 2 or not all(vector_atoms):
+                raise ValueError(
+                    "Restrained rotation vector by PDB atoms requires atom 1 and atom 2 selectors."
+                )
+            cmd.extend(["--rotation_axis_vector_atoms", *vector_atoms])
+        elif normalized_vector_source in (
+            "normal_to_two_vectors",
+            "normal_vectors",
+            "normal",
+        ):
+            vector_values = [
+                value.strip()
+                for value in (restrained_rotation_normal_vectors or [])
+            ]
+            if len(vector_values) != 6 or not all(vector_values):
+                raise ValueError(
+                    "Normal-to-two-vectors rotation axis requires all six vector components."
+                )
+            try:
+                numeric_values = [float(value) for value in vector_values]
+                direction_normal_to_vectors(
+                    numeric_values[:3], numeric_values[3:]
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid restrained-rotation normal vectors: {exc}"
+                ) from exc
+            cmd.extend(["--rotation_axis_normal_vectors", *vector_values])
+        else:
+            raise ValueError(
+                "Restrained rotation vector source must be Vector, "
+                "Two XYZ points, Two PDB atoms, or Normal to two vectors."
+            )
+
     if output_base.strip():
         cmd.extend(["-o", output_base.strip()])
 
-    if axis_dist.strip():
+    if axis_dist.strip() and not use_restrained_mode:
         cmd.extend(["--axis_dist", axis_dist.strip()])
 
     axis_parallel = axis_parallel.strip().lower()
-    if axis_parallel in ("y", "n"):
+    if axis_parallel in ("y", "n") and not use_restrained_mode:
         cmd.extend(["--axis_parallel", axis_parallel])
 
     if fix_chain.strip():
@@ -4448,6 +5246,25 @@ def _launch_gui() -> None:
     linker_phosphate_resname_var = tk.StringVar(value="X33")
     pair_args_var = tk.StringVar()
     axis_definition_line_var = tk.StringVar()
+    alignment_mode_var = tk.StringVar(value="Standard")
+    restrained_translation_source_var = tk.StringVar(value="Vector")
+    restrained_translation_vector_vars = [
+        tk.StringVar(value=value) for value in ("0", "0", "1")
+    ]
+    restrained_translation_point_vars = [
+        tk.StringVar(value=value)
+        for value in ("0", "0", "0", "0", "0", "1")
+    ]
+    restrained_translation_atom_vars = [tk.StringVar(), tk.StringVar()]
+    restrained_normal_vector_vars = [
+        tk.StringVar(value=value)
+        for value in ("1", "0", "0", "0", "1", "0")
+    ]
+    restrained_rotation_point_source_var = tk.StringVar(value="XYZ point")
+    restrained_rotation_point_vars = [
+        tk.StringVar(value=value) for value in ("0", "0", "0")
+    ]
+    restrained_rotation_point_atom_var = tk.StringVar()
 
     pair_widgets: List[Dict[str, object]] = []
     axis_widgets: List[object] = []
@@ -4764,6 +5581,190 @@ def _launch_gui() -> None:
     axis_line_entry.pack(side="left", fill="x", expand=True, padx=4)
     make_help_button(axis_line_frame, "Axis definitions line", "axis_line").pack(side="left")
 
+    alignment_mode_box = ttk.LabelFrame(
+        outer,
+        text="Alignment mode",
+        padding=10,
+        style="Section.TLabelframe",
+    )
+    alignment_mode_box.pack(fill="x", padx=2, pady=4)
+
+    restrained_header = ttk.Frame(alignment_mode_box)
+    restrained_header.pack(fill="x")
+    ttk.Label(restrained_header, text="Mode").pack(side="left")
+    alignment_mode_combo = ttk.Combobox(
+        restrained_header,
+        textvariable=alignment_mode_var,
+        values=("Standard", "Restrained translation", "Restrained rotation"),
+        width=24,
+        state="readonly",
+    )
+    alignment_mode_combo.pack(side="left", padx=(4, 12))
+    alignment_mode_combo.bind(
+        "<<ComboboxSelected>>",
+        lambda _event: refresh_alignment_mode_state(),
+    )
+    make_help_button(
+        restrained_header,
+        "Alignment mode",
+        "alignment_mode",
+    ).pack(side="left")
+
+    restrained_rotation_point_header = ttk.Frame(alignment_mode_box)
+    ttk.Label(restrained_rotation_point_header, text="Axis point source").pack(
+        side="left"
+    )
+    restrained_rotation_point_source_combo = ttk.Combobox(
+        restrained_rotation_point_header,
+        textvariable=restrained_rotation_point_source_var,
+        values=("XYZ point", "PDB atom"),
+        width=20,
+        state="readonly",
+    )
+    restrained_rotation_point_source_combo.pack(side="left", padx=4)
+    restrained_rotation_point_source_combo.bind(
+        "<<ComboboxSelected>>",
+        lambda _event: refresh_alignment_mode_state(),
+    )
+    make_help_button(
+        restrained_rotation_point_header,
+        "Restrained rotation",
+        "restrained_rotation",
+    ).pack(side="left")
+
+    restrained_rotation_xyz_point_frame = ttk.Frame(alignment_mode_box)
+    ttk.Label(restrained_rotation_xyz_point_frame, text="Axis point").pack(
+        side="left"
+    )
+    for idx, label_text in enumerate(("x", "y", "z")):
+        ttk.Label(restrained_rotation_xyz_point_frame, text=label_text).pack(
+            side="left", padx=(8 if idx == 0 else 4, 0)
+        )
+        ttk.Entry(
+            restrained_rotation_xyz_point_frame,
+            textvariable=restrained_rotation_point_vars[idx],
+            width=10,
+        ).pack(side="left", padx=(2, 0))
+
+    restrained_rotation_atom_point_frame = ttk.Frame(alignment_mode_box)
+    ttk.Label(restrained_rotation_atom_point_frame, text="Axis point atom").pack(
+        side="left"
+    )
+    ttk.Entry(
+        restrained_rotation_atom_point_frame,
+        textvariable=restrained_rotation_point_atom_var,
+        width=24,
+    ).pack(side="left", padx=4)
+    ttk.Label(
+        restrained_rotation_atom_point_frame,
+        text="selector: #123, A:30:P, A30:P, or 30A:P",
+    ).pack(side="left", padx=(8, 0))
+    restrained_rotation_point_frames = {
+        "xyz_point": restrained_rotation_xyz_point_frame,
+        "pdb_atom": restrained_rotation_atom_point_frame,
+    }
+
+    restrained_direction_header = ttk.Frame(alignment_mode_box)
+    restrained_direction_label = ttk.Label(
+        restrained_direction_header,
+        text="Direction source",
+    )
+    restrained_direction_label.pack(side="left")
+    restrained_translation_source_combo = ttk.Combobox(
+        restrained_direction_header,
+        textvariable=restrained_translation_source_var,
+        values=(
+            "Vector",
+            "Two XYZ points",
+            "Two PDB atoms",
+            "Normal to two vectors",
+        ),
+        width=20,
+        state="readonly",
+    )
+    restrained_translation_source_combo.pack(side="left", padx=4)
+    restrained_translation_source_combo.bind(
+        "<<ComboboxSelected>>",
+        lambda _event: refresh_alignment_mode_state(),
+    )
+    make_help_button(
+        restrained_direction_header,
+        "Direction/vector source",
+        "alignment_direction",
+    ).pack(side="left")
+
+    vector_frame = ttk.Frame(alignment_mode_box)
+    ttk.Label(vector_frame, text="Vector").pack(side="left")
+    for idx, label_text in enumerate(("x", "y", "z")):
+        ttk.Label(vector_frame, text=label_text).pack(
+            side="left", padx=(8 if idx == 0 else 4, 0)
+        )
+        entry = ttk.Entry(
+            vector_frame,
+            textvariable=restrained_translation_vector_vars[idx],
+            width=10,
+        )
+        entry.pack(side="left", padx=(2, 0))
+
+    points_frame = ttk.Frame(alignment_mode_box)
+    point_var_index = 0
+    for point_number in (1, 2):
+        ttk.Label(points_frame, text=f"Point {point_number}").pack(
+            side="left", padx=(0 if point_number == 1 else 14, 0)
+        )
+        for label_text in ("x", "y", "z"):
+            ttk.Label(points_frame, text=label_text).pack(side="left", padx=(4, 0))
+            entry = ttk.Entry(
+                points_frame,
+                textvariable=restrained_translation_point_vars[point_var_index],
+                width=10,
+            )
+            entry.pack(side="left", padx=(2, 0))
+            point_var_index += 1
+
+    atoms_frame = ttk.Frame(alignment_mode_box)
+    for atom_index in range(2):
+        ttk.Label(atoms_frame, text=f"Atom {atom_index + 1}").pack(
+            side="left", padx=(0 if atom_index == 0 else 14, 0)
+        )
+        entry = ttk.Entry(
+            atoms_frame,
+            textvariable=restrained_translation_atom_vars[atom_index],
+            width=24,
+        )
+        entry.pack(side="left", padx=4)
+    ttk.Label(
+        atoms_frame,
+        text="selectors: #123, A:30:P, A30:P, or 30A:P",
+    ).pack(side="left", padx=(8, 0))
+
+    normal_vectors_frame = ttk.Frame(alignment_mode_box)
+    normal_vector_index = 0
+    for vector_number in (1, 2):
+        ttk.Label(normal_vectors_frame, text=f"Vector {vector_number}").pack(
+            side="left", padx=(0 if vector_number == 1 else 14, 0)
+        )
+        for label_text in ("x", "y", "z"):
+            ttk.Label(normal_vectors_frame, text=label_text).pack(
+                side="left", padx=(4, 0)
+            )
+            ttk.Entry(
+                normal_vectors_frame,
+                textvariable=restrained_normal_vector_vars[normal_vector_index],
+                width=10,
+            ).pack(side="left", padx=(2, 0))
+            normal_vector_index += 1
+    ttk.Label(
+        normal_vectors_frame,
+        text="normal = vector 1 × vector 2",
+    ).pack(side="left", padx=(12, 0))
+    restrained_translation_frames = {
+        "vector": vector_frame,
+        "two_xyz_points": points_frame,
+        "two_pdb_atoms": atoms_frame,
+        "normal_to_two_vectors": normal_vectors_frame,
+    }
+
     other_tools_box = ttk.LabelFrame(outer, text="Other tools", padding=10, style="Section.TLabelframe")
     other_tools_box.pack(fill="x", padx=2, pady=4)
     other_tools_row1 = ttk.Frame(other_tools_box)
@@ -4902,10 +5903,23 @@ def _launch_gui() -> None:
     def current_axis_target() -> int:
         return int(row_targets["axis"])
 
-    def refresh_user_axis_state() -> None:
-        use_user_axis = bool(user_axis_var.get())
+    def refresh_alignment_mode_state() -> None:
+        use_restrained_translation = (
+            alignment_mode_var.get().strip().lower() == "restrained translation"
+        )
+        use_restrained_rotation = (
+            alignment_mode_var.get().strip().lower() == "restrained rotation"
+        )
+        use_restrained_mode = use_restrained_translation or use_restrained_rotation
+        if use_restrained_mode and user_axis_var.get():
+            user_axis_var.set(False)
+
+        use_user_axis = bool(user_axis_var.get()) and not use_restrained_mode
         user_entry_state = "normal" if use_user_axis else "disabled"
         range_entry_state = "disabled" if use_user_axis else "normal"
+        user_axis_check.configure(
+            state="disabled" if use_restrained_mode else "normal"
+        )
         axis_count_spinbox.configure(state=range_entry_state)
         for widget in user_axis_input_widgets:
             widget.configure(state=user_entry_state)
@@ -4914,7 +5928,45 @@ def _launch_gui() -> None:
             axis_entry.configure(state=range_entry_state)
             move_entry.configure(state=range_entry_state)
         axis_line_entry.configure(state=range_entry_state)
+
+        restrained_direction_header.pack_forget()
+        restrained_rotation_point_header.pack_forget()
+        for frame in restrained_rotation_point_frames.values():
+            frame.pack_forget()
+        for frame in restrained_translation_frames.values():
+            frame.pack_forget()
+
+        selected_source = (
+            restrained_translation_source_var.get().strip().lower().replace(" ", "_")
+        )
+        if use_restrained_rotation:
+            restrained_rotation_point_header.pack(fill="x", pady=(8, 0))
+            selected_point_source = (
+                restrained_rotation_point_source_var.get()
+                .strip()
+                .lower()
+                .replace(" ", "_")
+            )
+            selected_point_frame = restrained_rotation_point_frames.get(
+                selected_point_source
+            )
+            if selected_point_frame is not None:
+                selected_point_frame.pack(fill="x", pady=(6, 0))
+            restrained_direction_label.configure(text="Axis vector source")
+            restrained_direction_header.pack(fill="x", pady=(8, 0))
+            selected_frame = restrained_translation_frames.get(selected_source)
+            if selected_frame is not None:
+                selected_frame.pack(fill="x", pady=(6, 0))
+        elif use_restrained_translation:
+            restrained_direction_label.configure(text="Direction source")
+            restrained_direction_header.pack(fill="x", pady=(8, 0))
+            selected_frame = restrained_translation_frames.get(selected_source)
+            if selected_frame is not None:
+                selected_frame.pack(fill="x", pady=(6, 0))
         schedule_scrollbar_refresh()
+
+    def refresh_user_axis_state() -> None:
+        refresh_alignment_mode_state()
 
     def render_pair_rows() -> None:
         target_opt = _coerce_gui_count(pair_count_var.get(), 1, 30)
@@ -5083,6 +6135,44 @@ def _launch_gui() -> None:
                 linker_phosphate_resname_var.get(),
                 axis_definition_text=axis_definition_line_var.get(),
                 min_link_records=bool(min_link_records_var.get()),
+                alignment_mode=alignment_mode_var.get(),
+                restrained_translation_source=restrained_translation_source_var.get(),
+                restrained_translation_vector=[
+                    var.get() for var in restrained_translation_vector_vars
+                ],
+                restrained_translation_points=[
+                    var.get() for var in restrained_translation_point_vars
+                ],
+                restrained_translation_atoms=[
+                    var.get() for var in restrained_translation_atom_vars
+                ],
+                restrained_translation_normal_vectors=[
+                    var.get() for var in restrained_normal_vector_vars
+                ],
+                restrained_rotation_point_source=(
+                    restrained_rotation_point_source_var.get()
+                ),
+                restrained_rotation_point=[
+                    var.get() for var in restrained_rotation_point_vars
+                ],
+                restrained_rotation_point_atom=(
+                    restrained_rotation_point_atom_var.get()
+                ),
+                restrained_rotation_vector_source=(
+                    restrained_translation_source_var.get()
+                ),
+                restrained_rotation_vector=[
+                    var.get() for var in restrained_translation_vector_vars
+                ],
+                restrained_rotation_vector_points=[
+                    var.get() for var in restrained_translation_point_vars
+                ],
+                restrained_rotation_vector_atoms=[
+                    var.get() for var in restrained_translation_atom_vars
+                ],
+                restrained_rotation_normal_vectors=[
+                    var.get() for var in restrained_normal_vector_vars
+                ],
             )
         except Exception as exc:
             append_log(f"[GUI] {exc}\n")
@@ -5226,7 +6316,9 @@ def main() -> None:
             "If paired with --axis_move, the same "
             "row defines an axis-coupled helix group and the listed move payload follows that axis. "
             "In replication mode, base-template axis groups can be propagated to copies, and final "
-            "post-replication chain IDs can still be targeted explicitly."
+            "post-replication chain IDs can still be targeted explicitly. In Restrained translation "
+            "or Restrained rotation mode, the row still defines grouping for --axis_move, but its "
+            "fitted direction is unused."
         ),
     )
     parser.add_argument(
@@ -5236,7 +6328,8 @@ def main() -> None:
         help=(
             "Additional chains or residue windows to move with the corresponding --axis_range row. "
             "Examples: --axis_move C,D or --axis_move C1-C50,D. This avoids triplex stdin prompts "
-            "by letting an axis row such as --axis_range A,B move payload chain C with that axis."
+            "by letting an axis row such as --axis_range A,B move payload chain C with that axis. "
+            "The selected payload also follows the helix in either restrained mode."
         ),
     )
     parser.add_argument(
@@ -5263,6 +6356,139 @@ def main() -> None:
         help=(
             "Point on the user-defined alignment axis. Must be supplied together "
             "with --user_axis_dir."
+        ),
+    )
+    parser.add_argument(
+        "--alignment_mode",
+        "--alignment-mode",
+        choices=[
+            "standard",
+            "restrained_translation",
+            "restrained-translation",
+            "restrained_rotation",
+            "restrained-rotation",
+        ],
+        default="standard",
+        help=(
+            "Alignment transform to use. 'standard' uses the existing helix-axis "
+            "alignment. 'restrained_translation' keeps each fixed helix unchanged "
+            "and translates each movable helix without rotation, only along the "
+            "direction provided by exactly one of --translation_vector, "
+            "--translation_points, --translation_atoms, or "
+            "--translation_normal_vectors. 'restrained_rotation' "
+            "rotates without translation about an axis supplied by one point "
+            "option and one vector option."
+        ),
+    )
+    parser.add_argument(
+        "--translation_vector",
+        "--translation-vector",
+        nargs=3,
+        type=float,
+        metavar=("X", "Y", "Z"),
+        default=None,
+        help=(
+            "Restrained-translation direction vector. Used only with "
+            "--alignment_mode restrained_translation."
+        ),
+    )
+    parser.add_argument(
+        "--translation_points",
+        "--translation-points",
+        nargs=6,
+        type=float,
+        metavar=("X1", "Y1", "Z1", "X2", "Y2", "Z2"),
+        default=None,
+        help=(
+            "Two XYZ points defining the restrained-translation direction from "
+            "point 1 toward point 2."
+        ),
+    )
+    parser.add_argument(
+        "--translation_atoms",
+        "--translation-atoms",
+        nargs=2,
+        metavar=("ATOM1", "ATOM2"),
+        default=None,
+        help=(
+            "Two input-PDB atoms defining the restrained-translation direction "
+            "from atom 1 toward atom 2. Selectors accept #serial, A:30:P, "
+            "A30:P, or 30A:P; use _ for a blank chain."
+        ),
+    )
+    parser.add_argument(
+        "--translation_normal_vectors",
+        "--translation-normal-vectors",
+        nargs=6,
+        type=float,
+        metavar=("U1", "U2", "U3", "V1", "V2", "V3"),
+        default=None,
+        help=(
+            "Define the restrained-translation direction as the normalized "
+            "right-hand normal U cross V. The vectors cannot be zero or parallel."
+        ),
+    )
+    parser.add_argument(
+        "--rotation_axis_point",
+        "--rotation-axis-point",
+        nargs=3,
+        type=float,
+        metavar=("X", "Y", "Z"),
+        default=None,
+        help="XYZ point on the restrained-rotation axis.",
+    )
+    parser.add_argument(
+        "--rotation_axis_point_atom",
+        "--rotation-axis-point-atom",
+        metavar="ATOM",
+        default=None,
+        help=(
+            "Input-PDB atom used as the point on the restrained-rotation axis. "
+            "Selectors accept #serial, A:30:P, A30:P, or 30A:P."
+        ),
+    )
+    parser.add_argument(
+        "--rotation_axis_vector",
+        "--rotation-axis-vector",
+        nargs=3,
+        type=float,
+        metavar=("X", "Y", "Z"),
+        default=None,
+        help="Direct vector for the restrained-rotation axis.",
+    )
+    parser.add_argument(
+        "--rotation_axis_vector_points",
+        "--rotation-axis-vector-points",
+        nargs=6,
+        type=float,
+        metavar=("X1", "Y1", "Z1", "X2", "Y2", "Z2"),
+        default=None,
+        help=(
+            "Two XYZ points defining the restrained-rotation axis vector from "
+            "point 1 toward point 2."
+        ),
+    )
+    parser.add_argument(
+        "--rotation_axis_vector_atoms",
+        "--rotation-axis-vector-atoms",
+        nargs=2,
+        metavar=("ATOM1", "ATOM2"),
+        default=None,
+        help=(
+            "Two input-PDB atoms defining the restrained-rotation axis vector "
+            "from atom 1 toward atom 2."
+        ),
+    )
+    parser.add_argument(
+        "--rotation_axis_normal_vectors",
+        "--rotation-axis-normal-vectors",
+        nargs=6,
+        type=float,
+        metavar=("U1", "U2", "U3", "V1", "V2", "V3"),
+        default=None,
+        help=(
+            "Define the restrained-rotation axis vector as the normalized "
+            "right-hand normal U cross V. The vectors cannot be zero or parallel."
         ),
     )
     parser.add_argument(
@@ -5407,6 +6633,140 @@ def main() -> None:
         except ValueError as exc:
             parser.error(str(exc))
 
+    alignment_mode = args.alignment_mode.replace("-", "_")
+    translation_option_count = sum(
+        option is not None
+        for option in (
+            args.translation_vector,
+            args.translation_points,
+            args.translation_atoms,
+            args.translation_normal_vectors,
+        )
+    )
+    rotation_point_option_count = sum(
+        option is not None
+        for option in (
+            args.rotation_axis_point,
+            args.rotation_axis_point_atom,
+        )
+    )
+    rotation_vector_option_count = sum(
+        option is not None
+        for option in (
+            args.rotation_axis_vector,
+            args.rotation_axis_vector_points,
+            args.rotation_axis_vector_atoms,
+            args.rotation_axis_normal_vectors,
+        )
+    )
+    restrained_translation_direction: Optional[
+        RestrainedTranslationDirection
+    ] = None
+    restrained_rotation_point: Optional[Point3D] = None
+    restrained_rotation_direction: Optional[Point3D] = None
+    restrained_rotation_axis: Optional[RestrainedRotationAxis] = None
+
+    if alignment_mode == "standard":
+        if (
+            translation_option_count
+            or rotation_point_option_count
+            or rotation_vector_option_count
+        ):
+            parser.error(
+                "Restrained translation/rotation axis options require the matching "
+                "--alignment_mode."
+            )
+    elif alignment_mode == "restrained_translation":
+        if translation_option_count != 1:
+            parser.error(
+                "Restrained translation requires exactly one of --translation_vector, "
+                "--translation_points, --translation_atoms, or "
+                "--translation_normal_vectors."
+            )
+        if rotation_point_option_count or rotation_vector_option_count:
+            parser.error(
+                "Restrained-rotation point/vector options cannot be used in "
+                "Restrained translation mode."
+            )
+        if user_axis is not None:
+            parser.error(
+                "Restrained translation cannot be combined with "
+                "--user_axis_dir/--user_axis_point."
+            )
+        if args.re_only:
+            parser.error("Restrained translation cannot be combined with --re_only.")
+        try:
+            if args.translation_vector is not None:
+                restrained_translation_direction = (
+                    normalize_restrained_translation_direction(
+                        args.translation_vector
+                    )
+                )
+            elif args.translation_points is not None:
+                restrained_translation_direction = (
+                    restrained_translation_direction_from_points(
+                        args.translation_points[:3],
+                        args.translation_points[3:],
+                    )
+                )
+            elif args.translation_normal_vectors is not None:
+                restrained_translation_direction = direction_normal_to_vectors(
+                    args.translation_normal_vectors[:3],
+                    args.translation_normal_vectors[3:],
+                )
+        except ValueError as exc:
+            parser.error(str(exc))
+    elif alignment_mode == "restrained_rotation":
+        if translation_option_count:
+            parser.error(
+                "Restrained-translation direction options cannot be used in "
+                "Restrained rotation mode."
+            )
+        if rotation_point_option_count != 1:
+            parser.error(
+                "Restrained rotation requires exactly one of --rotation_axis_point "
+                "or --rotation_axis_point_atom."
+            )
+        if rotation_vector_option_count != 1:
+            parser.error(
+                "Restrained rotation requires exactly one of --rotation_axis_vector, "
+                "--rotation_axis_vector_points, --rotation_axis_vector_atoms, or "
+                "--rotation_axis_normal_vectors."
+            )
+        if user_axis is not None:
+            parser.error(
+                "Restrained rotation cannot be combined with "
+                "--user_axis_dir/--user_axis_point."
+            )
+        if args.re_only:
+            parser.error("Restrained rotation cannot be combined with --re_only.")
+        try:
+            if args.rotation_axis_point is not None:
+                restrained_rotation_point = normalize_point3d(
+                    args.rotation_axis_point,
+                    "Restrained-rotation axis point",
+                )
+            if args.rotation_axis_vector is not None:
+                restrained_rotation_direction = (
+                    normalize_restrained_translation_direction(
+                        args.rotation_axis_vector
+                    )
+                )
+            elif args.rotation_axis_vector_points is not None:
+                restrained_rotation_direction = (
+                    restrained_translation_direction_from_points(
+                        args.rotation_axis_vector_points[:3],
+                        args.rotation_axis_vector_points[3:],
+                    )
+                )
+            elif args.rotation_axis_normal_vectors is not None:
+                restrained_rotation_direction = direction_normal_to_vectors(
+                    args.rotation_axis_normal_vectors[:3],
+                    args.rotation_axis_normal_vectors[3:],
+                )
+        except ValueError as exc:
+            parser.error(str(exc))
+
     if args.re_only or user_axis is not None:
         axis_range_defs_input = []
         axis_move_defs_input = []
@@ -5477,6 +6837,50 @@ def main() -> None:
     if not rec_list:
         print("No ATOM/HETATM/TER records found in input PDB.", file=sys.stderr)
         sys.exit(1)
+
+    if alignment_mode == "restrained_translation" and args.translation_atoms is not None:
+        try:
+            restrained_translation_direction = restrained_translation_direction_from_atoms(
+                rec_list,
+                args.translation_atoms[0],
+                args.translation_atoms[1],
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+
+    if alignment_mode == "restrained_rotation":
+        try:
+            if args.rotation_axis_point_atom is not None:
+                point_atom = resolve_pdb_atom_selector(
+                    rec_list,
+                    args.rotation_axis_point_atom,
+                )
+                restrained_rotation_point = (
+                    point_atom.x,
+                    point_atom.y,
+                    point_atom.z,
+                )
+            if args.rotation_axis_vector_atoms is not None:
+                restrained_rotation_direction = (
+                    restrained_translation_direction_from_atoms(
+                        rec_list,
+                        args.rotation_axis_vector_atoms[0],
+                        args.rotation_axis_vector_atoms[1],
+                    )
+                )
+            if (
+                restrained_rotation_point is None
+                or restrained_rotation_direction is None
+            ):
+                raise ValueError(
+                    "Restrained-rotation axis point or vector could not be resolved."
+                )
+            restrained_rotation_axis = normalize_user_axis_definition(
+                restrained_rotation_direction,
+                restrained_rotation_point,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
 
     command_text = " ".join(shlex.quote(arg) for arg in [sys.executable] + sys.argv)
 
@@ -5668,6 +7072,8 @@ def main() -> None:
             explicit_helices=helix_defs_for_align,
             fix_chain=args.fix_chain,
             user_axis=user_axis,
+            restrained_translation_direction=restrained_translation_direction,
+            restrained_rotation_axis=restrained_rotation_axis,
         )
     except Exception as exc:
         print(f"Error during helix alignment: {exc}", file=sys.stderr)

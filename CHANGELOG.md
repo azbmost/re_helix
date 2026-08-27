@@ -1,5 +1,30 @@
 # Changelog
 
+## V4.5 - 2026-08-27
+
+- Bumped `re_helix` to V4.5.
+- Added **Normal to two vectors** as a fourth vector source for both Restrained translation and Restrained rotation.
+- Defined the normal using the normalized right-hand cross product `vector 1 × vector 2`, with validation that rejects non-finite, zero, or parallel vector pairs.
+- Added conditional GUI fields, CLI options, help text, documentation, and regression coverage for both restrained modes.
+
+## V4.4 - 2026-08-27
+
+- Bumped `re_helix` to V4.4.
+- Added the **Restrained rotation** alignment mode. It leaves the fixed helix unchanged, applies no translation, and optimizes only one rotation angle about a supplied point-and-vector axis using all usable alignment pairs.
+- Allowed the rotation-axis point to come from XYZ coordinates or one input-PDB atom.
+- Allowed the rotation-axis vector to come from a direct vector, two XYZ points, or two input-PDB atoms.
+- Added conditional GUI fields for the rotation point and vector sources while retaining Axis definition grouping and `move with axis` payload behavior.
+- Added CLI validation, run-log reporting, documentation, and regression coverage confirming rotation without translation.
+
+## V4.3 - 2026-08-27
+
+- Bumped `re_helix` to V4.3.
+- Added the **Restrained translation** alignment mode. It leaves the fixed helix unchanged, applies no rotation to an unfixed helix, and chooses the least-squares translation constrained to the supplied direction using all usable alignment pairs.
+- Added direction input by a vector, two XYZ points, or two atoms in the input PDB. Atom selectors accept serial syntax such as `#123` and chain/residue/name syntax such as `A:30:P`, `A30:P`, or `30A:P`.
+- Added the alignment-mode and direction-source fields between **Axis definitions** and **Other tools** in the GUI, with conditional display of only the fields applicable to the selected mode and direction source, plus equivalent CLI generation.
+- Kept Axis definition rows active in Restrained translation mode so `move with axis` chains or residue windows receive the same constrained translation; the fitted axis itself remains unused in this mode.
+- Added CLI validation, help text, run-log reporting, and regression coverage for the new transform and all direction sources.
+
 ## V4.2 - 2026-08-15
 
 - Bumped `re_helix` to V4.2 and the bundled reciprocal-exchange engine to V3.6.

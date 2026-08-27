@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from real P-atom or chain-associated virtual-atom pairs and then applies reciprocal exchanges when every endpoint is real. It can also run reciprocal exchange only, without alignment.
 
-Current version: V4.2
+Current version: V4.5
 
 ## Contents
 
@@ -36,7 +36,7 @@ python3 re_helix.py
 
 In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, `Insert Virtual Resi` opens the residue-numbering-gap helper, `Permute Chain` opens the cyclic chain-rearrangement helper, `Reverse Strand Direction` opens the topology-preserving strand-serialization helper, `Generate Lattice` opens the P1 lattice/CRYST1 helper, and `Get Phenix Restraints` opens the Phenix restraint-generation helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
 
-When the input PDB changes, the GUI updates the default `Output base` automatically unless that field has been changed to a custom value. For large exchange specifications, the `CLI pair args` field below the pair rows can be filled with the same concatenated pair tokens used on the command line; when it is filled, the individual pair rows are ignored. Likewise, `Axis definitions line` accepts a compact value such as `A,B | C,D; E,F`: semicolons separate rows, and `|` separates an axis definition from its optional `move with axis` value. When filled, it replaces the individual Axis definition rows.
+When the input PDB changes, the GUI updates the default `Output base` automatically unless that field has been changed to a custom value. For large exchange specifications, the `CLI pair args` field below the pair rows can be filled with the same concatenated pair tokens used on the command line; when it is filled, the individual pair rows are ignored. Likewise, `Axis definitions line` accepts a compact value such as `A,B | C,D; E,F`: semicolons separate rows, and `|` separates an axis definition from its optional `move with axis` value. When filled, it replaces the individual Axis definition rows. The **Alignment mode** area between **Axis definitions** and **Other tools** selects **Standard**, **Restrained translation**, or **Restrained rotation**. Standard mode hides the restrained controls. Each restrained mode displays only its applicable point, direction, and vector-source fields.
 
 The main `re_helix` run log also mirrors stdout/stderr from bundled tools launched through `Other tools`, so equivalent CLI commands, selected LINK summaries, completion messages, and errors remain visible in the main window even when the helper window has no log box.
 
@@ -50,6 +50,51 @@ This writes:
 
 - `model_aligned.pdb`: aligned structure before reciprocal exchange.
 - `model_aligned_rex.pdb`: aligned structure after reciprocal exchange.
+
+Run restrained-translation alignment along a vector:
+
+```bash
+python3 re_helix.py input.pdb '(AB)' '(CD)' 30A 8D d 13B 24C s \
+  --fix A --alignment_mode restrained_translation \
+  --translation_vector 1 0 0 -o translated_model
+```
+
+This leaves the fixed helix unchanged and translates each unfixed helix without rotation. The signed distance along the direction is the least-squares value for all usable alignment pairs. The direction can instead be defined by two XYZ points or two input-PDB atoms:
+
+```bash
+--translation_points 0 0 0 1 1 0
+--translation_atoms A:10:P "C:20:C4'"
+```
+
+PDB atom selectors also accept compact forms such as `A10:P` and `10A:P`, or a quoted serial such as `'#123'`. Use `_` as the chain ID for a blank-chain atom.
+
+The direction can also be the normal to two XYZ vectors:
+
+```bash
+--translation_normal_vectors 1 0 0 0 1 0
+```
+
+This uses the normalized right-hand cross product `vector 1 × vector 2`. The vectors cannot be zero or parallel.
+
+Run restrained-rotation alignment about the Z-axis through an XYZ point:
+
+```bash
+python3 re_helix.py input.pdb '(AB)' '(CD)' 30A 8D d 13B 24C s \
+  --fix A --alignment_mode restrained_rotation \
+  --rotation_axis_point 0 0 0 \
+  --rotation_axis_vector 0 0 1 -o rotated_model
+```
+
+This leaves the fixed helix unchanged and optimizes only the rotation angle of each unfixed helix around the supplied line. It never translates the helix. The point may instead be selected from the input PDB, and the vector may use two XYZ points or two PDB atoms:
+
+```bash
+--rotation_axis_point_atom A:10:P
+--rotation_axis_vector_points 0 0 0 0 0 1
+--rotation_axis_vector_atoms A:10:P "A:20:C4'"
+--rotation_axis_normal_vectors 1 0 0 0 1 0
+```
+
+Choose exactly one point option and exactly one vector option.
 
 Run reciprocal exchange only, with no alignment:
 
@@ -385,9 +430,20 @@ python3 re_helix.py input.pdb '(AB)' '(CD)' 26A 9C 90 d --axis_parallel n -o ang
 - `--axis_parallel y|n`: keep axes parallel (`y`) or allow a beta interhelical tilt (`n`). Angle terminology is `tau` = axial twist/spin of the moving helix, `phi` = orbital azimuth around the fixed helix, `beta` = interhelical tilt/bend, and `d` = axial slide.
 - Beta handedness: positive beta follows the right-hand rule around `L_beta`, directed from the fixed-axis anchor toward the nearest point on the moving axis. Negative beta is the corresponding left-handed rotation.
 - Helix defs `(AB)` and `(BA)`: define the same rigid chain membership but opposite directional references when A and B are antiparallel; the first chain runs low-to-high along the positive axis.
-- `--axis_range B26-B60,A1-A35` or `--axis_range A,B`: define residue windows or whole chains for helical-axis estimation. Bare chain letters include the whole chain's P atoms in the axis fit. The first listed chain defines the positive axis direction from low-to-high residue number and overrides a conflicting Helix defs direction. Repeat as needed.
-- `--axis_move C,D` or `--axis_move C1-C50,D`: move additional whole chains or residue windows with the corresponding `--axis_range` row. For example, `--axis_range A,B --axis_move C` fits the axis from A/B and moves C with that axis, avoiding triplex stdin prompts.
+- `--axis_range B26-B60,A1-A35` or `--axis_range A,B`: define residue windows or whole chains for helical-axis estimation. Bare chain letters include the whole chain's P atoms in the axis fit. The first listed chain defines the positive axis direction from low-to-high residue number and overrides a conflicting Helix defs direction. Repeat as needed. In either restrained mode, the row remains available for grouping with `--axis_move`, but its fitted direction is not used.
+- `--axis_move C,D` or `--axis_move C1-C50,D`: move additional whole chains or residue windows with the corresponding `--axis_range` row. For example, `--axis_range A,B --axis_move C` fits the axis from A/B and moves C with that axis, avoiding triplex stdin prompts. Move selections are also honored in both restrained modes, where the selected payload receives the same constrained transform.
 - `--user_axis_dir X Y Z --user_axis_point X Y Z`: define a single alignment axis from a direction vector and point. When used, helix-axis estimation from P atoms is skipped and each movable helix is optimized by rotation around that line plus a full XYZ translation.
+- `--alignment_mode restrained_translation`: translate each unfixed helix without rotation, constrained to exactly one direction source. Axis definitions can still group a `--axis_move` payload with the helix, but they do not determine the translation direction. The direction-plus-point axis, `axis_dist`, `axis_parallel`, and beta angles are not used in this mode.
+- `--translation_vector X Y Z`: provide the restrained-translation direction directly.
+- `--translation_points X1 Y1 Z1 X2 Y2 Z2`: define the direction from point 1 toward point 2.
+- `--translation_atoms ATOM1 ATOM2`: define the direction from two input-PDB atoms. Selectors accept `A:30:P`, `A30:P`, `30A:P`, or a quoted serial such as `'#123'`.
+- `--translation_normal_vectors U1 U2 U3 V1 V2 V3`: define the translation direction as the normalized right-hand normal `U × V`.
+- `--alignment_mode restrained_rotation`: rotate each unfixed helix without translation, optimizing only its angle about the supplied point-and-vector axis.
+- `--rotation_axis_point X Y Z` or `--rotation_axis_point_atom ATOM`: define the point on the restrained-rotation axis using XYZ coordinates or one input-PDB atom.
+- `--rotation_axis_vector X Y Z`: provide the restrained-rotation axis vector directly.
+- `--rotation_axis_vector_points X1 Y1 Z1 X2 Y2 Z2`: define the rotation-axis vector from point 1 toward point 2.
+- `--rotation_axis_vector_atoms ATOM1 ATOM2`: define the rotation-axis vector from atom 1 toward atom 2 in the input PDB.
+- `--rotation_axis_normal_vectors U1 U2 U3 V1 V2 V3`: define the rotation-axis vector as the normalized right-hand normal `U × V`.
 - `--fix A`: keep the helix containing chain `A` fixed during alignment.
 - `--replicate`: replicate the full input chain set before alignment or RE-only processing. Helix defs may name future copies: for a two-chain A/B input, `(AB) (CD)` uses A/B as the base template and assigns C/D to the generated copy; `(DC)` reverses only the copied helix's axis-direction reference. Coordinate copying always follows alphabetical base-chain order, so C copies A and D copies B regardless of Helix-def order.
 - `--cir_shift 8`: apply an exact signed residue rotation, modulo cycle length, when serializing cyclic reciprocal-exchange strands; the shifted break remains open. `--cir_shift 0` preserves the canonical input-provenance start with no circular permutation.
