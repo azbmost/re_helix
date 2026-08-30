@@ -1425,6 +1425,17 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             "Phi chooses the hinge direction around the local helix axis. phi = 0 uses the "
             "tangent through the selected pivot P position; nonzero phi rotates that point "
             "around the helix axis before building the hinge.\n\n"
+            "Positive phi follows the right-hand rule about the positive local helix axis: "
+            "point your right thumb along +axis, and your curled fingers show the direction "
+            "of increasing phi. Viewed from the +axis end looking toward the -axis end, "
+            "positive phi is counterclockwise.\n\n"
+            "For the automatic axis, +axis points toward increasing residue numbers on the "
+            "first P-containing chain encountered in the PDB (file order, not alphabetical "
+            "order). The pivot chain does not change this axis direction. For example, if "
+            "chain A is encountered before chain B, increasing A residue numbers define "
+            "+axis even when the pivot is on chain B; the B-chain pivot changes only the "
+            "phi = 0 radial starting direction. With --axis_range, the start-to-end order "
+            "of the first range sets +axis.\n\n"
             "Examples: 0, 90, -45"
         ),
         "beta": (
