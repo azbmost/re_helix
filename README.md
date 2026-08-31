@@ -108,7 +108,7 @@ This writes:
 
 ## Bend Helix Tool
 
-The bundled Bend Helix tool bends a straight two-chain nucleic-acid helix at a selected phosphorus residue. It treats the helix as two rigid pieces: piece #1 stays fixed, while piece #2 is moved by a beta bend and optional tau twist.
+The bundled Bend Helix V2.5 tool bends a straight two-chain nucleic-acid helix at a selected phosphorus residue. It treats the helix as two rigid pieces: piece #1 stays fixed, while piece #2 is moved by a beta bend and optional tau twist.
 
 Open its GUI directly:
 
@@ -131,6 +131,25 @@ Useful Bend Helix options:
 - `--axis_range A1-A35,B60-B26`: optional local-axis range for already-bent inputs.
 - `--sep y`: give movable piece #2 new chain IDs in the output.
 - `--origin y`: also write an origin-overlay PDB for comparing the original and transformed helix.
+
+### Angle screening in the GUI
+
+Each phi, beta, and tau field has a **Screen** checkbox. Check exactly one or two angles, then click **Screening to achieve...** to define the target and the candidate grid. An unchecked angle is held at the value in its main-window field. For each checked angle, provide **From**, **To**, and **Step** values, all in degrees: the From and To values are included in the coarse search, and Step must be positive. The default coarse ranges are phi −90° to 90°, beta −180° to 180°, and tau −180° to 180°; Step defaults to 6°. With two checked angles, Bend Helix evaluates their Cartesian-product coarse grid. A live preview beneath the fields shows each calculated coarse-grid value (compacted for long grids), the value count for each angle, and the total number of coarse candidates.
+
+After the coarse pass, Bend Helix efficiently searches between steps around as many as eight of the strongest coarse candidates. It adjusts one or both screened angles with an adaptive pattern search, halves the refinement spacing when no improvement is found, and stops at 0.001-degree precision. Thus, From = 0, To = 10, Step = 4 starts with 0, 4, 8, and 10 degrees but can select an in-between result such as 6.35 degrees. This avoids constructing an extremely dense full grid while still improving the best coarse result.
+
+Every argument or source choice in the screening popup has a light-blue **?** button that opens a focused explanation and example.
+
+The screening window provides two target modes:
+
+- **Screening for distance** minimizes the absolute difference from a requested distance in angstroms. Define the two endpoints as either two atoms or one atom plus one XYZ point.
+- **Screening for rotation** minimizes the circular difference from a requested signed angle in degrees around a defined axis. Define the endpoints as two atoms, one atom plus one XYZ point, or one atom plus the phi-corrected pivot P position. The latter is the pivot P position after applying the candidate phi correction, so it is recalculated for every candidate.
+
+Atom selectors refer to the origin-overlay PDB, not to the chain IDs in the input PDB. Use `CHAIN:RESIDUE:ATOM` syntax, for example `A:36:P` or `C:36:O5'`. For a standard two-chain origin overlay, A and B identify the original model, while C and D identify the fully transformed model. Residue numbers and atom names remain those of the corresponding overlay atoms.
+
+For rotation screening, the axis can be supplied geometrically with the same source choices used by the main tool's restrained-rotation mode: an XYZ point or overlay atom for the axis point, together with a direct vector, two XYZ points, two overlay atoms, or the right-hand normal to two vectors for its direction. Alternatively, choose **Local axis range(s)** to use the local helix axis selected by the Bend Helix range definitions.
+
+The measured rotation is signed from endpoint 1 toward endpoint 2 by the right-hand rule about the positive axis direction. Angular differences wrap across -180/180 degrees, so equivalent directions near the wrap boundary compare correctly. Bend Helix keeps the coarse or refined candidate closest to the requested distance or rotation; an exact target is not required. Automatic screening output names retain the selected P/B/T angle values and add `_scr`, for example `model_P0B30T0_scr.pdb` or `model_P0B30T0_scr_sep.pdb`; an explicit **Save as** path is honored without automatically adding `_scr`. A screening run automatically writes the winning model's origin-overlay PDB even when origin-overlay output was not otherwise selected, so its name inherits `_scr` as well (for example, `model_P0B30T0_scr-ori.pdb`).
 
 ## Do Symmetry Tool
 

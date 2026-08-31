@@ -1,5 +1,18 @@
 # Changelog
 
+## Bend Helix V2.5 - 2026-08-30
+
+- Bumped the bundled Bend Helix tool to V2.5 while keeping the main `re_helix` application at V4.5.
+- Added a **Screen** checkbox beside each phi, beta, and tau field. A screening run may vary exactly one or two of these angles over inclusive **From**/**To** coarse grids with a positive **Step**, all in degrees, while keeping every unchecked angle fixed at its entered value.
+- Added the **Screening to achieve...** window with distance and signed-rotation objectives. Distance screening supports two overlay atoms or one overlay atom and one XYZ point; rotation screening also supports an overlay atom and the phi-corrected pivot P position.
+- Added rotation-axis definitions using the same geometric point/vector sources as restrained rotation in `re_helix`, or the Bend Helix **Local axis range(s)** definition.
+- Made screening atom selectors use the origin-overlay namespace and `CHAIN:RESIDUE:ATOM` syntax. In the standard two-chain overlay, chains A/B are the original model and C/D are the fully transformed model.
+- Evaluated every one- or two-angle coarse-grid candidate, then efficiently searched between steps around up to eight of the strongest results with adaptive refinement down to 0.001-degree precision. The closest coarse or refined candidate is retained even when the exact target is unavailable, and screening automatically writes its origin-overlay PDB.
+- Added light-blue contextual **?** buttons with explanations and examples for every argument and source choice in the screening popup.
+- Changed the default coarse screening step from 5° to 6° and added a live calculated-grid preview with per-angle values/counts and the total Cartesian-product candidate count.
+- Set the default screening range to −90° through 90° for phi; beta and tau use −180° through 180°.
+- Added `_scr` to automatic screening output names after the selected P/B/T angle values, for example `model_P0B30T0_scr.pdb` or `model_P0B30T0_scr_sep.pdb`.
+
 ## V4.5 - 2026-08-27
 
 - Bumped `re_helix` to V4.5.
