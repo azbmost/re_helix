@@ -368,6 +368,68 @@ class BendHelixScreeningTests(unittest.TestCase):
         self.assertAlmostEqual(result.tau_deg, target_tau, delta=0.001)
         self.assertLess(result.error, 1.0e-5)
 
+    def test_multiple_solution_branches_are_refined_reported_and_sorted(self):
+        target_distance = 2.0 * math.sin(math.radians(15.0))
+        result = bend.screen_bend_angles(
+            self.context(),
+            {"phi": 0.0, "beta": 0.0},
+            [bend.ScreenAngleRange("tau", -90.0, 90.0, 45.0)],
+            bend.ScreeningRequest(
+                mode="distance",
+                target=target_distance,
+                point1=self.atom("A:1:P"),
+                point2=self.atom("C:1:P"),
+            ),
+            align_mode="n",
+            solution_tolerance=0.001,
+        )
+
+        self.assertTrue(result.target_tolerance_met)
+        self.assertEqual(result.refinement_region_count, 2)
+        self.assertEqual(result.solution_count, 2)
+        self.assertEqual(result.solutions[0].angles, result.angles)
+        self.assertAlmostEqual(result.solutions[0].tau_deg, -30.0, delta=0.001)
+        self.assertAlmostEqual(result.solutions[1].tau_deg, 30.0, delta=0.001)
+        self.assertTrue(all(solution.error <= 0.001 for solution in result.solutions))
+        table = bend.format_screening_solution_table(result, "A")
+        self.assertIn("2 distinct solution(s) within tolerance", table)
+        self.assertIn("phi (deg)", table)
+        self.assertIn("residual", table)
+
+    def test_solution_tolerance_falls_back_to_best_when_none_qualify(self):
+        request = bend.ScreeningRequest(
+            mode="distance",
+            target=2.0 * math.sin(math.radians(15.0)),
+            point1=self.atom("A:1:P"),
+            point2=self.atom("C:1:P"),
+        )
+        result = bend.screen_bend_angles(
+            self.context(),
+            {"phi": 0.0, "beta": 0.0},
+            [bend.ScreenAngleRange("tau", -90.0, 90.0, 45.0)],
+            request,
+            align_mode="n",
+            solution_tolerance=1.0e-12,
+        )
+
+        self.assertFalse(result.target_tolerance_met)
+        self.assertEqual(result.solution_count, 1)
+        self.assertEqual(result.solutions[0].angles, result.angles)
+        self.assertIn(
+            "no solution met tolerance; closest fallback shown",
+            bend.format_screening_solution_table(result, "A"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "tolerance.*nonnegative"):
+            bend.screen_bend_angles(
+                self.context(),
+                {"phi": 0.0, "beta": 0.0},
+                [bend.ScreenAngleRange("tau", -90.0, 90.0, 45.0)],
+                request,
+                align_mode="n",
+                solution_tolerance=-0.1,
+            )
+
     def test_adaptive_refinement_adjusts_two_angles_between_coarse_steps(self):
         result = bend.screen_bend_angles(
             self.context(),
@@ -393,6 +455,7 @@ class BendHelixScreeningTests(unittest.TestCase):
 
     def test_grid_preview_shows_values_counts_degrees_and_default_step(self):
         self.assertEqual(bend.DEFAULT_SCREEN_STEP_DEG, 6.0)
+        self.assertEqual(bend.DEFAULT_SCREEN_SOLUTION_TOLERANCE, 0.001)
         self.assertEqual(
             bend.DEFAULT_SCREEN_RANGES,
             {
@@ -419,6 +482,8 @@ class BendHelixScreeningTests(unittest.TestCase):
             "grid_step",
             "mode",
             "target",
+            "solution_tolerance",
+            "write_all_solutions",
             "endpoint1_atom",
             "endpoint2_source",
             "endpoint2_atom",
@@ -443,6 +508,8 @@ class BendHelixScreeningTests(unittest.TestCase):
         self.assertIn('"From (deg)"', launch_gui_source)
         self.assertIn('"To (deg)"', launch_gui_source)
         self.assertIn('"Step (deg)"', launch_gui_source)
+        self.assertIn("screen_solution_tolerance_var", launch_gui_source)
+        self.assertIn("screen_write_all_solutions_var", launch_gui_source)
         step_help = bend.SCREENING_GUI_HELP["grid_step"]
         self.assertIn("searches between nearby grid values", step_help)
         self.assertIn("0.001 degree", step_help)
@@ -540,7 +607,7 @@ class BendHelixScreeningTests(unittest.TestCase):
             completed.stdout.strip(),
             f"{bend.TOOL_NAME} {bend.VERSION}",
         )
-        self.assertEqual(bend.VERSION, "V2.5")
+        self.assertEqual(bend.VERSION, "V2.6")
 
     def test_screening_automatic_names_append_scr_before_optional_sep(self):
         self.assertEqual(
@@ -564,6 +631,29 @@ class BendHelixScreeningTests(unittest.TestCase):
                 screen_mode=True,
             ),
             "model_P0B30T0_scr_sep.pdb",
+        )
+
+        solution = bend.ScreeningSolution(10.0, -20.0, 30.0, 5.0, 0.0)
+        self.assertEqual(
+            bend.make_screen_solution_output_name(
+                "model.pdb", solution, solution_index=2
+            ),
+            "model_P10Bm20T30_scr_sol002.pdb",
+        )
+        self.assertEqual(
+            bend.make_screen_solution_output_name(
+                "model.pdb", solution, solution_index=2, sep_mode="y"
+            ),
+            "model_P10Bm20T30_scr_sol002_sep.pdb",
+        )
+        self.assertEqual(
+            bend.make_screen_solution_output_name(
+                "model.pdb",
+                solution,
+                solution_index=2,
+                explicit_primary_output="custom.pdb",
+            ),
+            "custom_sol002.pdb",
         )
 
     def test_screening_winner_writes_scr_output_and_origin_overlay(self):
@@ -609,6 +699,55 @@ class BendHelixScreeningTests(unittest.TestCase):
             if line.startswith(("ATOM  ", "HETATM"))
         }
         self.assertEqual(overlay_chains, {"A", "B", "C", "D"})
+
+    def test_write_all_reported_solutions_writes_numbered_models_and_overlays(self):
+        result = bend.screen_bend_angles(
+            self.context(),
+            {"phi": 0.0, "beta": 0.0},
+            [bend.ScreenAngleRange("tau", -90.0, 90.0, 45.0)],
+            bend.ScreeningRequest(
+                mode="distance",
+                target=2.0 * math.sin(math.radians(15.0)),
+                point1=self.atom("A:1:P"),
+                point2=self.atom("C:1:P"),
+            ),
+            align_mode="n",
+            solution_tolerance=0.001,
+        )
+        primary_path = bend.make_output_name(
+            str(self.input_path),
+            result.phi_deg,
+            result.beta_deg,
+            result.tau_deg,
+            screen_mode=True,
+        )
+        bend.run_bending(
+            input_pdb=str(self.input_path),
+            pivot_residue="X2",
+            phi_deg=result.phi_deg,
+            beta_deg=result.beta_deg,
+            tau_deg=result.tau_deg,
+            align_mode="n",
+            origin_mode="y",
+            output_pdb=primary_path,
+        )
+
+        additional = bend.write_additional_screening_solution_outputs(
+            result=result,
+            input_pdb=str(self.input_path),
+            pivot_residue="X2",
+            sep_mode="n",
+            align_mode="n",
+        )
+
+        self.assertEqual(len(additional), 1)
+        additional_path, origin_path = additional[0]
+        self.assertTrue(additional_path.endswith("_scr_sol002.pdb"))
+        self.assertEqual(origin_path, bend.make_origin_output_name(additional_path))
+        self.assertTrue(Path(primary_path).is_file())
+        self.assertTrue(Path(bend.make_origin_output_name(primary_path)).is_file())
+        self.assertTrue(Path(additional_path).is_file())
+        self.assertTrue(Path(origin_path).is_file())
 
 
 if __name__ == "__main__":

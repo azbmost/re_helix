@@ -1,5 +1,12 @@
 # Changelog
 
+## Bend Helix V2.6 - 2026-08-30
+
+- Bumped the bundled Bend Helix tool to V2.6 while keeping the main `re_helix` application at V4.5.
+- Replaced the single-winner screening report with a deterministic table of every distinct coarse or refined solution within a configurable target tolerance; when no candidate qualifies, the closest result is reported as an explicit fallback.
+- Refined every promising local coarse region independently so separate solution branches can be discovered, while retaining the adaptive 0.001-degree search precision and the selected `--align y` or `--align n` geometry.
+- Added **Solution tolerance** and **Write all reported solutions** controls with light-blue contextual help. Additional models use numbered `_solNNN` names and each receives its own origin-overlay PDB.
+
 ## Bend Helix V2.5 - 2026-08-30
 
 - Bumped the bundled Bend Helix tool to V2.5 while keeping the main `re_helix` application at V4.5.

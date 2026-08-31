@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-bend_helixV2_5.py
+bend_helixV2_6.py
 
 Bend a two-chain nucleic-acid helix at a user-selected phosphorus site.
 
 Usage modes
 -----------
 1) Positional CLI arguments (backward-compatible):
-       bend_helixV2_5.py input.pdb A36 0 30
+       bend_helixV2_6.py input.pdb A36 0 30
        # tau defaults to 0 degrees in positional mode.
        # align defaults to y unless you set --align n.
 
 2) Named CLI arguments:
-       bend_helixV2_5.py --input A60-heli.pdb --pivot A36 --phi 0 --beta 30 --tau 10 --align y --origin y
-       bend_helixV2_5.py --input A60-heli.pdb --pivot A36 --phi 0 --beta 30 --axis_range A1-A35,B60-B26 -o bent.pdb
+       bend_helixV2_6.py --input A60-heli.pdb --pivot A36 --phi 0 --beta 30 --tau 10 --align y --origin y
+       bend_helixV2_6.py --input A60-heli.pdb --pivot A36 --phi 0 --beta 30 --axis_range A1-A35,B60-B26 -o bent.pdb
 
 3) GUI mode:
-       bend_helixV2_5.py
-       bend_helixV2_5.py --gui
+       bend_helixV2_6.py
+       bend_helixV2_6.py --gui
 
 Geometry implemented here
 -------------------------
@@ -79,12 +79,12 @@ EPS = 1.0e-8
 CHAIN_ID_CANDIDATES = string.ascii_uppercase + string.ascii_lowercase + string.digits
 Point3D = Tuple[float, float, float]
 TOOL_NAME = "Bend Helix"
-VERSION = "V2.5"
+VERSION = "V2.6"
 APP_TITLE = f"{TOOL_NAME} {VERSION}"
 SCREEN_REFINEMENT_TOLERANCE_DEG = 1.0e-3
-SCREEN_REFINEMENT_SEED_LIMIT = 8
 SCREEN_REFINEMENT_MAX_ROUNDS = 80
 DEFAULT_SCREEN_STEP_DEG = 6.0
+DEFAULT_SCREEN_SOLUTION_TOLERANCE = 1.0e-3
 DEFAULT_SCREEN_RANGES: Mapping[str, Tuple[float, float]] = {
     "phi": (-90.0, 90.0),
     "beta": (-180.0, 180.0),
@@ -107,8 +107,8 @@ SCREENING_GUI_HELP: Mapping[str, str] = {
     "grid_step": (
         "Step (degrees)\n\n"
         "A positive coarse-grid spacing in degrees. Bend Helix first tests the inclusive "
-        "grid, then efficiently searches between nearby grid values around the strongest "
-        "coarse candidates. The adaptive refinement halves its spacing until it reaches "
+        "grid, then efficiently searches between nearby grid values around every promising "
+        "local coarse region. The adaptive refinement halves its spacing until it reaches "
         "0.001 degree. The default coarse Step is 6 degrees. With two screened angles, "
         "the coarse search uses their Cartesian "
         "product and refinement adjusts both angles.\n\n"
@@ -127,6 +127,21 @@ SCREENING_GUI_HELP: Mapping[str, str] = {
         "enter a signed angle in degrees. The target need not be achievable: Bend Helix "
         "keeps the tested coarse or refined candidate with the smallest error.\n\n"
         "Examples: 12.5 angstroms; -45 degrees."
+    ),
+    "solution_tolerance": (
+        "Solution tolerance\n\n"
+        "The largest target residual that counts as a reported solution. Its unit follows "
+        "the screening mode: angstroms for distance and degrees for rotation. Distinct "
+        "solutions are sorted by residual and de-duplicated at the 0.001-degree angle "
+        "refinement precision. The default tolerance is 0.001. If no solution meets this "
+        "tolerance, only the closest fallback is reported.\n\n"
+        "Example: 0.01 reports distances within 0.01 angstrom or rotations within 0.01 degree."
+    ),
+    "write_all_solutions": (
+        "Write all reported solutions\n\n"
+        "Off: write only the best solution and its origin-overlay PDB. On: also write every "
+        "additional distinct solution that meets the target tolerance, with numbered "
+        "_solNNN filenames. Each additional solution also receives an origin-overlay PDB."
     ),
     "endpoint1_atom": (
         "Endpoint 1 overlay atom\n\n"
@@ -430,8 +445,27 @@ class ScreeningContext:
 
 
 @dataclass(frozen=True)
+class ScreeningSolution:
+    """One distinct coarse/refined angle solution and its target metric."""
+
+    phi_deg: float
+    beta_deg: float
+    tau_deg: float
+    achieved_value: float
+    error: float
+
+    @property
+    def angles(self) -> Dict[str, float]:
+        return {
+            "phi": self.phi_deg,
+            "beta": self.beta_deg,
+            "tau": self.tau_deg,
+        }
+
+
+@dataclass(frozen=True)
 class ScreeningResult:
-    """Best coarse-to-fine candidate and its achieved target metric."""
+    """Best candidate plus all distinct solutions within the target tolerance."""
 
     phi_deg: float
     beta_deg: float
@@ -440,6 +474,10 @@ class ScreeningResult:
     error: float
     candidate_count: int
     refinement_candidate_count: int = 0
+    solutions: Tuple[ScreeningSolution, ...] = ()
+    solution_tolerance: float = DEFAULT_SCREEN_SOLUTION_TOLERANCE
+    target_tolerance_met: bool = False
+    refinement_region_count: int = 0
 
     @property
     def angles(self) -> Dict[str, float]:
@@ -462,6 +500,10 @@ class ScreeningResult:
     def evaluated_candidate_count(self) -> int:
         """Total unique coarse and refinement candidates evaluated."""
         return self.candidate_count + self.refinement_candidate_count
+
+    @property
+    def solution_count(self) -> int:
+        return len(self.solutions)
 
 
 # ---------------------------------------------------------------------------
@@ -959,7 +1001,7 @@ def build_equivalent_cli_command(
     output_pdb: Optional[str] = None,
     axis_range_specs: Optional[Iterable[str]] = None,
 ) -> str:
-    script_name = os.path.basename(__file__) if "__file__" in globals() else "bend_helixV2_5.py"
+    script_name = os.path.basename(__file__) if "__file__" in globals() else "bend_helixV2_6.py"
     parts = [
         "python",
         script_name,
@@ -1017,6 +1059,39 @@ def make_origin_output_name(main_out_path: str) -> str:
     if not ext:
         ext = ".pdb"
     return f"{stem}-ori{ext}"
+
+
+def make_screen_solution_output_name(
+    input_pdb: str,
+    solution: ScreeningSolution,
+    solution_index: int,
+    sep_mode: str = "n",
+    explicit_primary_output: Optional[str] = None,
+) -> str:
+    """Name one additional reported screening solution deterministically."""
+    if solution_index < 2:
+        raise ValueError("Additional screening solution indexes must start at 2.")
+    if explicit_primary_output is not None:
+        primary = normalize_output_path(explicit_primary_output)
+        if primary is None:
+            raise ValueError("Explicit primary screening output cannot be blank.")
+        stem, ext = os.path.splitext(primary)
+        return f"{stem}_sol{solution_index:03d}{ext}"
+
+    generated = make_output_name(
+        input_pdb,
+        solution.phi_deg,
+        solution.beta_deg,
+        solution.tau_deg,
+        sep_mode=sep_mode,
+        screen_mode=True,
+    )
+    stem, ext = os.path.splitext(generated)
+    if stem.endswith("_sep"):
+        stem = stem[:-4] + f"_sol{solution_index:03d}_sep"
+    else:
+        stem += f"_sol{solution_index:03d}"
+    return stem + ext
 
 
 def normalize_output_path(output_pdb: Optional[str]) -> Optional[str]:
@@ -1915,6 +1990,38 @@ def format_screening_grid_preview(
     return "\n".join(lines)
 
 
+def format_screening_solution_table(
+    result: ScreeningResult,
+    unit: str,
+) -> str:
+    """Format all reported screening solutions in deterministic result order."""
+    status = (
+        f"{result.solution_count} distinct solution(s) within tolerance"
+        if result.target_tolerance_met
+        else "no solution met tolerance; closest fallback shown"
+    )
+    lines = [
+        (
+            f"Reported solutions ({status}; tolerance "
+            f"{result.solution_tolerance:.9g} {unit}):"
+        ),
+        (
+            "  #  phi (deg)       beta (deg)      tau (deg)       "
+            f"achieved ({unit})     residual ({unit})"
+        ),
+    ]
+    for index, solution in enumerate(result.solutions, start=1):
+        lines.append(
+            f"  {index:<3d}"
+            f"{format_float_for_cli(solution.phi_deg):<16}"
+            f"{format_float_for_cli(solution.beta_deg):<16}"
+            f"{format_float_for_cli(solution.tau_deg):<16}"
+            f"{solution.achieved_value:<17.9g}"
+            f"{solution.error:.9g}"
+        )
+    return "\n".join(lines)
+
+
 def prepare_screening_context_from_records(
     input_pdb: str,
     records: Iterable[object],
@@ -1985,8 +2092,9 @@ def screen_bend_angles(
     request: ScreeningRequest,
     align_mode: str = "y",
     candidate_cap: int = 250000,
+    solution_tolerance: float = DEFAULT_SCREEN_SOLUTION_TOLERANCE,
 ) -> ScreeningResult:
-    """Screen a coarse grid, then adaptively refine its best local candidates."""
+    """Refine every promising coarse region and report distinct target matches."""
     if not isinstance(context, ScreeningContext):
         raise ValueError("Angle screening requires a ScreeningContext.")
     if not isinstance(request, ScreeningRequest):
@@ -1998,6 +2106,9 @@ def screen_bend_angles(
     target = float(request.target)
     if not math.isfinite(target):
         raise ValueError("Screening target must be finite.")
+    solution_tolerance = float(solution_tolerance)
+    if not math.isfinite(solution_tolerance) or solution_tolerance < 0.0:
+        raise ValueError("Screening solution tolerance must be finite and nonnegative.")
 
     screened_names = {angle_range.name for angle_range in normalized_ranges}
     normalized_fixed: Dict[str, float] = {}
@@ -2070,21 +2181,18 @@ def screen_bend_angles(
             best_evaluation = evaluation
         return evaluation
 
-    strongest_coarse_candidates = []
-    for candidate_values in itertools.product(*grid_values):
+    coarse_evaluations = {}
+    grid_index_ranges = tuple(range(len(values)) for values in grid_values)
+    for candidate_indices in itertools.product(*grid_index_ranges):
+        candidate_values = tuple(
+            grid_values[index][candidate_index]
+            for index, candidate_index in enumerate(candidate_indices)
+        )
         angles = dict(normalized_fixed)
         for angle_range, value in zip(normalized_ranges, candidate_values):
             angles[angle_range.name] = value
         evaluation = evaluate_angles(angles)
-        if evaluation is None:
-            continue
-        if (
-            len(strongest_coarse_candidates) < SCREEN_REFINEMENT_SEED_LIMIT
-            or evaluation[0] < strongest_coarse_candidates[-1][0]
-        ):
-            strongest_coarse_candidates.append(evaluation)
-            strongest_coarse_candidates.sort(key=lambda item: item[0])
-            del strongest_coarse_candidates[SCREEN_REFINEMENT_SEED_LIMIT:]
+        coarse_evaluations[candidate_indices] = evaluation
 
     if best_evaluation is None:
         detail = (
@@ -2112,7 +2220,36 @@ def screen_bend_angles(
         for angle_range in normalized_ranges
     }
     screened_order = tuple(angle_range.name for angle_range in normalized_ranges)
-    for seed_evaluation in strongest_coarse_candidates:
+    neighbor_offsets = tuple(
+        offsets
+        for offsets in itertools.product((-1, 0, 1), repeat=len(screened_order))
+        if any(offset != 0 for offset in offsets)
+    )
+    promising_coarse_candidates = []
+    for candidate_indices, evaluation in coarse_evaluations.items():
+        if evaluation is None:
+            continue
+        has_better_neighbor = False
+        for offsets in neighbor_offsets:
+            neighbor_indices = tuple(
+                index + offset
+                for index, offset in zip(candidate_indices, offsets)
+            )
+            if any(
+                index < 0 or index >= len(grid_values[dimension])
+                for dimension, index in enumerate(neighbor_indices)
+            ):
+                continue
+            neighbor = coarse_evaluations.get(neighbor_indices)
+            if neighbor is not None and neighbor[0] < evaluation[0]:
+                has_better_neighbor = True
+                break
+        if not has_better_neighbor:
+            promising_coarse_candidates.append(evaluation)
+    promising_coarse_candidates.sort(key=lambda item: item[0])
+
+    refinement_endpoints = []
+    for seed_evaluation in promising_coarse_candidates:
         current_evaluation = seed_evaluation
         refinement_steps = dict(initial_refinement_steps)
         for _round_index in range(SCREEN_REFINEMENT_MAX_ROUNDS):
@@ -2157,8 +2294,59 @@ def screen_bend_angles(
                     name: step / 2.0 for name, step in refinement_steps.items()
                 }
 
+        refinement_endpoints.append(current_evaluation)
+
     best_key, best_angles, best_achieved = best_evaluation
     refinement_candidate_count = max(0, len(evaluation_cache) - candidate_count)
+    reportable_evaluations = [
+        evaluation
+        for evaluation in coarse_evaluations.values()
+        if evaluation is not None and evaluation[0][0] <= solution_tolerance
+    ]
+    reportable_evaluations.extend(
+        evaluation
+        for evaluation in refinement_endpoints
+        if evaluation[0][0] <= solution_tolerance
+    )
+    target_tolerance_met = bool(reportable_evaluations)
+    if not target_tolerance_met:
+        reportable_evaluations = [best_evaluation]
+
+    distinct_solutions = []
+    solution_buckets = {}
+    for evaluation in sorted(reportable_evaluations, key=lambda item: item[0]):
+        key, angles, achieved = evaluation
+        cell = tuple(
+            math.floor(angles[name] / SCREEN_REFINEMENT_TOLERANCE_DEG)
+            for name in ("phi", "beta", "tau")
+        )
+        duplicate = False
+        for offsets in itertools.product((-1, 0, 1), repeat=3):
+            neighbor_cell = tuple(
+                index + offset for index, offset in zip(cell, offsets)
+            )
+            for existing in solution_buckets.get(neighbor_cell, ()):
+                if all(
+                    abs(angles[name] - existing.angles[name])
+                    <= SCREEN_REFINEMENT_TOLERANCE_DEG
+                    for name in ("phi", "beta", "tau")
+                ):
+                    duplicate = True
+                    break
+            if duplicate:
+                break
+        if duplicate:
+            continue
+        solution = ScreeningSolution(
+            phi_deg=angles["phi"],
+            beta_deg=angles["beta"],
+            tau_deg=angles["tau"],
+            achieved_value=achieved,
+            error=key[0],
+        )
+        distinct_solutions.append(solution)
+        solution_buckets.setdefault(cell, []).append(solution)
+
     return ScreeningResult(
         phi_deg=best_angles["phi"],
         beta_deg=best_angles["beta"],
@@ -2167,6 +2355,10 @@ def screen_bend_angles(
         error=best_key[0],
         candidate_count=candidate_count,
         refinement_candidate_count=refinement_candidate_count,
+        solutions=tuple(distinct_solutions),
+        solution_tolerance=solution_tolerance,
+        target_tolerance_met=target_tolerance_met,
+        refinement_region_count=len(promising_coarse_candidates),
     )
 
 
@@ -2375,6 +2567,41 @@ def run_bending(
     return out_path, info
 
 
+def write_additional_screening_solution_outputs(
+    result: ScreeningResult,
+    input_pdb: str,
+    pivot_residue: str,
+    sep_mode: str,
+    align_mode: str,
+    axis_range_specs: Optional[Iterable[str]] = None,
+    explicit_primary_output: Optional[str] = None,
+) -> Tuple[Tuple[str, Optional[str]], ...]:
+    """Write every reported solution after the primary/best one, including overlays."""
+    written = []
+    for solution_index, solution in enumerate(result.solutions[1:], start=2):
+        solution_out_path = make_screen_solution_output_name(
+            input_pdb=input_pdb,
+            solution=solution,
+            solution_index=solution_index,
+            sep_mode=sep_mode,
+            explicit_primary_output=explicit_primary_output,
+        )
+        written_path, solution_info = run_bending(
+            input_pdb=input_pdb,
+            pivot_residue=pivot_residue,
+            phi_deg=solution.phi_deg,
+            beta_deg=solution.beta_deg,
+            tau_deg=solution.tau_deg,
+            sep_mode=sep_mode,
+            align_mode=align_mode,
+            origin_mode="y",
+            output_pdb=solution_out_path,
+            axis_range_specs=axis_range_specs,
+        )
+        written.append((written_path, solution_info.get("origin_out_path")))
+    return tuple(written)
+
+
 def format_run_summary(out_path: str, info: Dict[str, object]) -> str:
     pair_a, pair_b = info["pair"]
     axis_dir = info["axis_dir"]
@@ -2546,6 +2773,10 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
     }
     screen_mode_var = tk.StringVar(value="Screening for distance")
     screen_target_var = tk.StringVar()
+    screen_solution_tolerance_var = tk.StringVar(
+        value=format_float_for_cli(DEFAULT_SCREEN_SOLUTION_TOLERANCE)
+    )
+    screen_write_all_solutions_var = tk.BooleanVar(value=False)
     screen_point1_atom_var = tk.StringVar()
     screen_point2_source_var = tk.StringVar(value="Overlay atom")
     screen_point2_atom_var = tk.StringVar()
@@ -2621,11 +2852,12 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             "Screening to achieve... window; unchecked angles stay fixed at their entered "
             "values.\n\n"
             "From, To, and Step are all in degrees. After testing the coarse grid, Bend "
-            "Helix efficiently refines between steps around the strongest candidates down "
+            "Helix efficiently refines between steps around every promising local region down "
             "to 0.001 degree.\n\n"
             "Each candidate is evaluated against an origin-overlay distance or signed-rotation "
-            "target. The closest candidate is used even when the exact target is unavailable, "
-            "and the winning origin-overlay PDB is written automatically."
+            "target. Every distinct solution within the configured target tolerance is "
+            "reported; if none qualifies, the closest fallback is shown. The best origin-overlay "
+            "PDB is written automatically, and the popup can optionally write every solution."
         ),
         "axis_range": (
             "Local helix-axis residue range(s)\n\n"
@@ -2966,6 +3198,14 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             axis=axis,
         )
 
+    def screening_options_from_gui() -> Tuple[float, bool]:
+        tolerance = gui_finite_float(
+            screen_solution_tolerance_var.get(), "solution tolerance"
+        )
+        if tolerance < 0.0:
+            raise ValueError("Solution tolerance cannot be negative.")
+        return tolerance, bool(screen_write_all_solutions_var.get())
+
     def overlay_mapping_summary() -> str:
         input_pdb = input_var.get().strip()
         if not input_pdb:
@@ -3041,6 +3281,8 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         persisted_screen_vars = [
             screen_mode_var,
             screen_target_var,
+            screen_solution_tolerance_var,
+            screen_write_all_solutions_var,
             screen_point1_atom_var,
             screen_point2_source_var,
             screen_point2_atom_var,
@@ -3062,8 +3304,8 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         ]
         dialog.title(f"{APP_TITLE} - Screening to achieve...")
         apply_optional_icon(dialog, __file__)
-        dialog.geometry("980x760")
-        dialog.minsize(900, 650)
+        dialog.geometry("1000x820")
+        dialog.minsize(920, 700)
         dialog.transient(root)
         dialog.grab_set()
         dialog.columnconfigure(0, weight=1)
@@ -3137,7 +3379,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         ttk.Label(
             ranges_box,
             text="From, To, and Step are degrees. Both endpoints are tested; Step is a "
-            "positive magnitude. The strongest coarse results are adaptively refined "
+            "positive magnitude. Every promising local coarse region is adaptively refined "
             "between steps to 0.001°. Descending ranges are allowed. Maximum coarse grid: "
             "250,000 candidates.",
             wraplength=840,
@@ -3202,22 +3444,45 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             row=1, column=2, sticky="w", padx=6, pady=2
         )
 
+        solution_tolerance_label = ttk.Label(
+            target_box, text="Solution tolerance (angstroms)"
+        )
+        solution_tolerance_label.grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Entry(
+            target_box, textvariable=screen_solution_tolerance_var, width=18
+        ).grid(row=2, column=1, sticky="w", padx=6, pady=2)
+        screening_help_button(target_box, "solution_tolerance").grid(
+            row=2, column=2, sticky="w", padx=6, pady=2
+        )
+
+        ttk.Label(target_box, text="Additional solution files").grid(
+            row=3, column=0, sticky="w", pady=2
+        )
+        ttk.Checkbutton(
+            target_box,
+            text="Write all reported solutions",
+            variable=screen_write_all_solutions_var,
+        ).grid(row=3, column=1, sticky="w", padx=6, pady=2)
+        screening_help_button(target_box, "write_all_solutions").grid(
+            row=3, column=2, sticky="w", padx=6, pady=2
+        )
+
         ttk.Label(target_box, text="Endpoint 1 overlay atom").grid(
-            row=2, column=0, sticky="w", pady=2
+            row=4, column=0, sticky="w", pady=2
         )
         ttk.Entry(target_box, textvariable=screen_point1_atom_var, width=34).grid(
-            row=2, column=1, sticky="w", padx=6, pady=2
+            row=4, column=1, sticky="w", padx=6, pady=2
         )
         ttk.Label(
             target_box,
             text="Use origin-overlay identity CHAIN:RESIDUE:ATOM, e.g. A:36:P or C:36:O5'.",
-        ).grid(row=2, column=2, sticky="w", padx=6, pady=2)
+        ).grid(row=4, column=2, sticky="w", padx=6, pady=2)
         screening_help_button(target_box, "endpoint1_atom").grid(
-            row=2, column=3, sticky="w", padx=6, pady=2
+            row=4, column=3, sticky="w", padx=6, pady=2
         )
 
         ttk.Label(target_box, text="Endpoint 2 source").grid(
-            row=3, column=0, sticky="w", pady=2
+            row=5, column=0, sticky="w", pady=2
         )
         point2_source_combo = ttk.Combobox(
             target_box,
@@ -3225,13 +3490,13 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             state="readonly",
             width=28,
         )
-        point2_source_combo.grid(row=3, column=1, sticky="w", padx=6, pady=2)
+        point2_source_combo.grid(row=5, column=1, sticky="w", padx=6, pady=2)
         screening_help_button(target_box, "endpoint2_source").grid(
-            row=3, column=2, sticky="w", padx=6, pady=2
+            row=5, column=2, sticky="w", padx=6, pady=2
         )
 
         point2_host = ttk.Frame(target_box)
-        point2_host.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(2, 6))
+        point2_host.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(2, 6))
         point2_atom_frame = ttk.Frame(point2_host)
         ttk.Label(point2_atom_frame, text="Endpoint 2 overlay atom").pack(side="left")
         ttk.Entry(
@@ -3260,7 +3525,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         )
 
         axis_box = ttk.LabelFrame(target_box, text="Rotation axis", padding=8)
-        axis_box.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(5, 0))
+        axis_box.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(5, 0))
         axis_box.columnconfigure(1, weight=1)
         ttk.Label(axis_box, text="Axis source").grid(row=0, column=0, sticky="w", pady=2)
         axis_source_combo = ttk.Combobox(
@@ -3408,7 +3673,8 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             text=(
                 "Rotation is measured from endpoint 1 toward endpoint 2 by the right-hand "
                 "rule around +axis and compared circularly across ±180°. Screening uses "
-                "the origin-overlay geometry and automatically writes the winning -ori PDB."
+                "the origin-overlay geometry, reports every distinct solution within tolerance, "
+                "and automatically writes the best -ori PDB."
             ),
             wraplength=920,
         )
@@ -3434,6 +3700,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             try:
                 ranges = screening_ranges_from_gui()
                 screening_request_from_gui()
+                solution_tolerance, write_all_solutions = screening_options_from_gui()
                 _normalized, _values, candidate_count = validate_screen_angle_ranges(
                     ranges, candidate_cap=250000
                 )
@@ -3446,9 +3713,12 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                 if screen_mode_var.get().strip() == "Screening for rotation"
                 else "distance"
             )
+            tolerance_unit = "deg" if mode_short == "rotation" else "A"
+            write_note = "; write all solution files" if write_all_solutions else ""
             screen_status_var.set(
                 f"Configured {mode_short} screening: {candidate_count} coarse candidate(s) "
-                "plus adaptive refinement."
+                f"plus adaptive refinement; tolerance {solution_tolerance:g} "
+                f"{tolerance_unit}{write_note}."
             )
             close_dialog(restore_snapshot=False)
 
@@ -3482,17 +3752,25 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             target_label.configure(
                 text="Target rotation (degrees)" if is_rotation else "Target distance (angstroms)"
             )
+            solution_tolerance_label.configure(
+                text=(
+                    "Solution tolerance (degrees)"
+                    if is_rotation
+                    else "Solution tolerance (angstroms)"
+                )
+            )
             screening_note_label.configure(
                 text=(
                     "Rotation is measured from endpoint 1 toward endpoint 2 by the right-hand "
                     "rule around +axis and compared circularly across ±180°. Screening uses "
-                    "the origin-overlay geometry and automatically writes the winning -ori PDB."
+                    "the origin-overlay geometry, reports every distinct solution within "
+                    "tolerance, and automatically writes the best -ori PDB."
                     if is_rotation
                     else
                     "Distance is measured directly between endpoint 1 and endpoint 2 in the "
                     "origin-overlay geometry. Screening keeps the closest coarse-to-fine "
-                    "candidate and "
-                    "automatically writes the winning -ori PDB."
+                    "candidates, reports every distinct solution within tolerance, and "
+                    "automatically writes the best -ori PDB."
                 )
             )
             allowed_point2 = ["Overlay atom", "XYZ point"]
@@ -3547,6 +3825,10 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
     def run_from_gui() -> None:
         cli_cmd = ""
         screening_summary = ""
+        screen_result: Optional[ScreeningResult] = None
+        write_all_screen_solutions = False
+        screen_explicit_primary_output: Optional[str] = None
+        additional_screen_outputs = []
         try:
             input_pdb = input_var.get().strip()
             output_pdb = normalize_output_path(output_var.get())
@@ -3569,6 +3851,10 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                     )
                 ranges = screening_ranges_from_gui()
                 request = screening_request_from_gui()
+                solution_tolerance, write_all_screen_solutions = (
+                    screening_options_from_gui()
+                )
+                screen_explicit_primary_output = output_pdb
                 fixed_angles = {
                     name: gui_finite_float(
                         angle_vars[name].get(), f"fixed {name} angle"
@@ -3604,6 +3890,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                     request=request,
                     align_mode=align_mode,
                     candidate_cap=250000,
+                    solution_tolerance=solution_tolerance,
                 )
                 for name, value in screen_result.angles.items():
                     angle_vars[name].set(format_float_for_cli(value))
@@ -3644,6 +3931,10 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                             f"{screen_result.refinement_candidate_count}"
                         ),
                         (
+                            "Promising coarse regions refined: "
+                            f"{screen_result.refinement_region_count}"
+                        ),
+                        (
                             "Total candidates evaluated: "
                             f"{screen_result.evaluated_candidate_count}"
                         ),
@@ -3652,15 +3943,19 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                             f"{SCREEN_REFINEMENT_TOLERANCE_DEG:g} deg"
                         ),
                         f"Target: {request.target:.9g} {unit}",
-                        f"Achieved: {screen_result.achieved_value:.9g} {unit}",
-                        f"Absolute residual: {screen_result.error:.9g} {unit}",
+                        format_screening_solution_table(screen_result, unit),
                         (
                             "Selected angles: "
                             f"phi={format_float_for_cli(phi_deg)}, "
                             f"beta={format_float_for_cli(beta_deg)}, "
                             f"tau={format_float_for_cli(tau_deg)} deg"
                         ),
-                        "Origin overlay output was enabled automatically.",
+                        "Origin overlay output was enabled automatically for the best solution.",
+                        (
+                            "Additional reported solution files will be written."
+                            if write_all_screen_solutions
+                            else "Additional reported solutions are listed only."
+                        ),
                     ]
                 )
                 print(screening_summary, flush=True)
@@ -3707,7 +4002,25 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                 output_pdb=output_pdb,
                 axis_range_specs=axis_range_specs,
             )
+            if screen_result is not None and write_all_screen_solutions:
+                additional_screen_outputs.extend(
+                    write_additional_screening_solution_outputs(
+                        result=screen_result,
+                        input_pdb=input_pdb,
+                        pivot_residue=pivot_residue,
+                        sep_mode=sep_mode,
+                        align_mode=align_mode,
+                        axis_range_specs=axis_range_specs,
+                        explicit_primary_output=screen_explicit_primary_output,
+                    )
+                )
             summary = format_run_summary(out_path, info)
+            if additional_screen_outputs:
+                summary += "\nAdditional screening solution outputs:"
+                for written_path, origin_path in additional_screen_outputs:
+                    summary += f"\n  {written_path}"
+                    if origin_path:
+                        summary += f"\n  {origin_path}"
         except Exception as exc:
             if cli_cmd:
                 print("Equivalent CLI command:", flush=True)
@@ -3727,7 +4040,16 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         result_text.insert("1.0", f"{screening_prefix}CLI: {cli_cmd}\n\n{summary}")
         result_text.see(tk.END)
         print(summary, flush=True)
-        messagebox.showinfo(APP_TITLE, f"Wrote {out_path}", parent=root)
+        output_count = 1 + len(additional_screen_outputs)
+        messagebox.showinfo(
+            APP_TITLE,
+            (
+                f"Wrote {out_path}"
+                if output_count == 1
+                else f"Wrote {output_count} screening solutions; best: {out_path}"
+            ),
+            parent=root,
+        )
 
     ttk.Button(button_frame, text="Run", command=run_from_gui).grid(row=0, column=0, padx=(0, 6))
     ttk.Button(button_frame, text="Close", command=root.destroy).grid(row=0, column=1)
