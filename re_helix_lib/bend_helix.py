@@ -177,8 +177,18 @@ SCREENING_GUI_HELP: Mapping[str, str] = {
     "axis_source": (
         "Rotation axis source\n\n"
         "Geometric definition lets you provide an axis point and direction below. Local "
-        "axis range(s) uses the helix axis derived from the range selected in the main "
-        "Bend Helix window."
+        "axis range(s) uses the helix axis derived from the dedicated ranges entered in "
+        "this screening window."
+    ),
+    "local_axis_ranges": (
+        "Screening local axis range(s)\n\n"
+        "Enter the local-axis residue range used for rotation screening directly in this "
+        "popup. It overrides the main-window Local axis range(s) for candidate generation "
+        "and for every screened output, keeping the reported geometry identical to the "
+        "written models. Separate multiple definitions with semicolons; the definition "
+        "containing the pivot is selected. The start-to-end order of the first range sets "
+        "the positive axis direction.\n\n"
+        "Examples: A1-A35,B60-B26; A36-A60,B25-B1"
     ),
     "axis_point_source": (
         "Axis point source\n\n"
@@ -786,6 +796,15 @@ def parse_axis_range_specs(specs: Optional[Iterable[str]]) -> List[AxisRangeDefi
             if chunk:
                 parsed.append(parse_axis_range_spec(chunk))
     return parsed
+
+
+def split_axis_range_spec_text(text: str) -> List[str]:
+    """Split GUI multiline/semicolon axis-range text into nonempty specifications."""
+    return [
+        chunk.strip()
+        for chunk in str(text).replace(";", "\n").splitlines()
+        if chunk.strip()
+    ]
 
 
 def format_axis_range_spec(axis_def: AxisRangeDefinition) -> str:
@@ -1563,6 +1582,35 @@ def build_origin_overlay_chain_maps(
 
 def _normalized_screening_token(value: str) -> str:
     return value.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def select_screening_axis_range_specs(
+    request: ScreeningRequest,
+    main_axis_range_specs: Optional[Iterable[str]],
+    popup_local_axis_range_specs: Optional[Iterable[str]],
+) -> List[str]:
+    """Use popup-owned local ranges only for local-axis rotation screening."""
+    main_specs = [str(spec).strip() for spec in main_axis_range_specs or () if str(spec).strip()]
+    popup_specs = [
+        str(spec).strip()
+        for spec in popup_local_axis_range_specs or ()
+        if str(spec).strip()
+    ]
+    mode = _normalized_screening_token(request.mode)
+    uses_local_axis = (
+        mode in ("rotation", "screening_for_rotation")
+        and request.axis is not None
+        and _normalized_screening_token(request.axis.source)
+        in ("local", "local_axis", "axis_range", "axis_ranges")
+    )
+    if not uses_local_axis:
+        return main_specs
+    if not popup_specs:
+        raise ValueError(
+            "Local-axis rotation screening requires Local axis range(s) in the "
+            "Screening to achieve window."
+        )
+    return popup_specs
 
 
 def _normalized_atom_name(value: str) -> str:
@@ -2782,6 +2830,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
     screen_point2_atom_var = tk.StringVar()
     screen_point2_xyz_vars = [tk.StringVar() for _ in range(3)]
     screen_axis_source_var = tk.StringVar(value="Geometric definition")
+    screen_local_axis_ranges_var = tk.StringVar()
     screen_axis_point_source_var = tk.StringVar(value="XYZ point")
     screen_axis_point_xyz_vars = [tk.StringVar() for _ in range(3)]
     screen_axis_point_atom_var = tk.StringVar()
@@ -3026,12 +3075,10 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
 
     def get_axis_range_specs_from_gui() -> List[str]:
         text = axis_range_text.get("1.0", tk.END)
-        specs: List[str] = []
-        for line in text.replace(";", "\n").splitlines():
-            line = line.strip()
-            if line:
-                specs.append(line)
-        return specs
+        return split_axis_range_spec_text(text)
+
+    def get_screen_local_axis_range_specs_from_gui() -> List[str]:
+        return split_axis_range_spec_text(screen_local_axis_ranges_var.get())
 
     def selected_screen_angles() -> List[str]:
         return [
@@ -3125,11 +3172,13 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
 
         axis_source = screen_axis_source_var.get().strip()
         if axis_source == "Local axis range(s)":
-            if not get_axis_range_specs_from_gui():
+            local_axis_specs = get_screen_local_axis_range_specs_from_gui()
+            if not local_axis_specs:
                 raise ValueError(
                     "Local-axis rotation screening requires at least one Local axis "
-                    "range in the main Bend Helix window."
+                    "range in the Screening to achieve window."
                 )
+            parse_axis_range_specs(local_axis_specs)
             axis = ScreeningAxis(source="local_axis")
         elif axis_source == "Geometric definition":
             if screen_axis_point_source_var.get().strip() == "Overlay atom":
@@ -3288,6 +3337,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             screen_point2_atom_var,
             *screen_point2_xyz_vars,
             screen_axis_source_var,
+            screen_local_axis_ranges_var,
             screen_axis_point_source_var,
             *screen_axis_point_xyz_vars,
             screen_axis_point_atom_var,
@@ -3538,7 +3588,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         axis_source_combo.grid(row=0, column=1, sticky="w", padx=6, pady=2)
         ttk.Label(
             axis_box,
-            text="Local axis range(s) uses the range selected in the main window.",
+            text="Local axis range(s) is defined independently below.",
         ).grid(row=0, column=2, sticky="w", padx=6, pady=2)
         screening_help_button(axis_box, "axis_source").grid(
             row=0, column=3, sticky="w", padx=6, pady=2
@@ -3547,6 +3597,27 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         geometric_axis_frame = ttk.Frame(axis_box)
         geometric_axis_frame.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(3, 0))
         geometric_axis_frame.columnconfigure(1, weight=1)
+
+        local_axis_range_frame = ttk.Frame(axis_box)
+        local_axis_range_frame.grid(
+            row=1, column=0, columnspan=4, sticky="ew", pady=(3, 0)
+        )
+        local_axis_range_frame.columnconfigure(1, weight=1)
+        ttk.Label(local_axis_range_frame, text="Local axis range(s)").grid(
+            row=0, column=0, sticky="w", pady=2
+        )
+        ttk.Entry(
+            local_axis_range_frame,
+            textvariable=screen_local_axis_ranges_var,
+            width=62,
+        ).grid(row=0, column=1, sticky="ew", padx=6, pady=2)
+        screening_help_button(local_axis_range_frame, "local_axis_ranges").grid(
+            row=0, column=2, sticky="w", padx=6, pady=2
+        )
+        ttk.Label(
+            local_axis_range_frame,
+            text="Example: A1-A35,B60-B26; A36-A60,B25-B1",
+        ).grid(row=1, column=1, sticky="w", padx=6, pady=(0, 2))
 
         ttk.Label(geometric_axis_frame, text="Axis point source").grid(
             row=0, column=0, sticky="w", pady=2
@@ -3791,8 +3862,10 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
 
             if screen_axis_source_var.get().strip() == "Geometric definition":
                 geometric_axis_frame.grid()
+                local_axis_range_frame.grid_remove()
             else:
                 geometric_axis_frame.grid_remove()
+                local_axis_range_frame.grid()
 
             for frame in axis_point_frames.values():
                 frame.pack_forget()
@@ -3851,6 +3924,13 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                     )
                 ranges = screening_ranges_from_gui()
                 request = screening_request_from_gui()
+                axis_range_specs = select_screening_axis_range_specs(
+                    request=request,
+                    main_axis_range_specs=axis_range_specs,
+                    popup_local_axis_range_specs=(
+                        get_screen_local_axis_range_specs_from_gui()
+                    ),
+                )
                 solution_tolerance, write_all_screen_solutions = (
                     screening_options_from_gui()
                 )
@@ -3920,6 +4000,10 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                 screening_summary = "\n".join(
                     [
                         f"Screening mode: {request.mode}",
+                        (
+                            "Axis range(s) used for screening/output: "
+                            + ("; ".join(axis_range_specs) if axis_range_specs else "automatic")
+                        ),
                         "Screened coarse angle grids (degrees):",
                         *range_lines,
                         (

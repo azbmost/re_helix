@@ -264,6 +264,52 @@ class BendHelixScreeningTests(unittest.TestCase):
         self.assertAlmostEqual(result.tau_deg, -90.0)
         self.assertAlmostEqual(result.achieved_value, -90.0, places=7)
 
+    def test_popup_local_axis_ranges_override_main_ranges_for_screening(self):
+        popup_specs = bend.split_axis_range_spec_text(
+            "X1-X3,Y3-Y1; X2-X3,Y2-Y1"
+        )
+        local_request = bend.ScreeningRequest(
+            mode="rotation",
+            target=0.0,
+            point1=self.atom("A:1:P"),
+            point2=self.atom("C:1:P"),
+            axis=bend.ScreeningAxis(source="local_axis"),
+        )
+
+        self.assertEqual(
+            popup_specs,
+            ["X1-X3,Y3-Y1", "X2-X3,Y2-Y1"],
+        )
+        self.assertEqual(
+            bend.select_screening_axis_range_specs(
+                local_request,
+                main_axis_range_specs=["X1-X2,Y3-Y2"],
+                popup_local_axis_range_specs=popup_specs,
+            ),
+            popup_specs,
+        )
+        geometric_request = bend.ScreeningRequest(
+            mode="rotation",
+            target=0.0,
+            point1=self.atom("A:1:P"),
+            point2=self.atom("C:1:P"),
+            axis=bend.ScreeningAxis(source="geometric"),
+        )
+        self.assertEqual(
+            bend.select_screening_axis_range_specs(
+                geometric_request,
+                main_axis_range_specs=["X1-X2,Y3-Y2"],
+                popup_local_axis_range_specs=popup_specs,
+            ),
+            ["X1-X2,Y3-Y2"],
+        )
+        with self.assertRaisesRegex(ValueError, "Screening to achieve window"):
+            bend.select_screening_axis_range_specs(
+                local_request,
+                main_axis_range_specs=["X1-X2,Y3-Y2"],
+                popup_local_axis_range_specs=[],
+            )
+
     def test_phi_corrected_pivot_is_recomputed_for_every_candidate(self):
         context = self.context(local_axis=True)
         request = bend.ScreeningRequest(
@@ -490,6 +536,7 @@ class BendHelixScreeningTests(unittest.TestCase):
             "endpoint2_xyz",
             "endpoint2_pivot",
             "axis_source",
+            "local_axis_ranges",
             "axis_point_source",
             "axis_point_xyz",
             "axis_point_atom",
@@ -510,6 +557,7 @@ class BendHelixScreeningTests(unittest.TestCase):
         self.assertIn('"Step (deg)"', launch_gui_source)
         self.assertIn("screen_solution_tolerance_var", launch_gui_source)
         self.assertIn("screen_write_all_solutions_var", launch_gui_source)
+        self.assertIn("screen_local_axis_ranges_var", launch_gui_source)
         step_help = bend.SCREENING_GUI_HELP["grid_step"]
         self.assertIn("searches between nearby grid values", step_help)
         self.assertIn("0.001 degree", step_help)
