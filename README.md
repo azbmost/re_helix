@@ -18,6 +18,7 @@ Current version: V4.5
 - `re_helix_lib/reverse_strand_direction.py`: bundled topology-aware Reverse Strand Direction tool for reversing selected nucleic-acid chain serializations without moving atoms.
 - `re_helix_lib/generate_lattice.py`: bundled Generate Lattice tool for writing a P1 CRYST1 lattice record from three lattice vectors.
 - `re_helix_lib/get_phenix_restraints.py`: bundled Get Phenix Restraints tool for converting LINK records into Phenix geometry restraints, optional junction movement-selection params, and linker support files.
+- `re_helix_lib/check_pdb_clashes.py`: bundled Check Clashes tool for counting close heavy-atom contacts in any PDB structure, with LINK-aware, alternate-conformation, and sequence-adjacency exclusions.
 - `assets/icon.png`: optional GUI/task-menu icon. The main GUI and bundled helper GUIs use it when present and fall back to the default Tk icon when it is missing.
 
 ## Requirements
@@ -34,7 +35,7 @@ Launch the GUI:
 python3 re_helix.py
 ```
 
-In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, `Insert Virtual Resi` opens the residue-numbering-gap helper, `Permute Chain` opens the cyclic chain-rearrangement helper, `Reverse Strand Direction` opens the topology-preserving strand-serialization helper, `Generate Lattice` opens the P1 lattice/CRYST1 helper, and `Get Phenix Restraints` opens the Phenix restraint-generation helper. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
+In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, `Insert Virtual Resi` opens the residue-numbering-gap helper, `Permute Chain` opens the cyclic chain-rearrangement helper, `Reverse Strand Direction` opens the topology-preserving strand-serialization helper, `Generate Lattice` opens the P1 lattice/CRYST1 helper, `Get Phenix Restraints` opens the Phenix restraint-generation helper, and `Check Clashes` opens the heavy-atom clash checker. Every tool button has a light-blue `?` button beside it that explains what that tool does, the inputs it expects, and the files it writes. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
 
 When the input PDB changes, the GUI updates the default `Output base` automatically unless that field has been changed to a custom value. For large exchange specifications, the `CLI pair args` field below the pair rows can be filled with the same concatenated pair tokens used on the command line; when it is filled, the individual pair rows are ignored. Likewise, `Axis definitions line` accepts a compact value such as `A,B | C,D; E,F`: semicolons separate rows, and `|` separates an axis definition from its optional `move with axis` value. When filled, it replaces the individual Axis definition rows. The **Alignment mode** area between **Axis definitions** and **Other tools** selects **Standard**, **Restrained translation**, or **Restrained rotation**. Standard mode hides the restrained controls. Each restrained mode displays only its applicable point, direction, and vector-source fields.
 
@@ -385,6 +386,92 @@ Useful Get Phenix Restraints options:
 - `--include-phenix-builtin-angles`: diagnostic mode that can reproduce older duplicate-prone angle output.
 
 Use exactly one movement-selection file for `phenix.geometry_minimization`. Usually this should be `*_junctions.params`; do not combine it with `min_P_C5.params` or `min.params` unless you deliberately want to test which top-level `selection = ...` Phenix uses.
+
+## Check Clashes Tool
+
+The bundled Check Clashes tool counts close heavy-atom contacts in a PDB file. The check is purely geometric and structure agnostic, so it works on nucleic acids, proteins, ligands, and mixed assemblies, and it assumes nothing about chain length, residue numbering, or composition. Hydrogens and deuteriums are ignored.
+
+A pair is excluded from the clash count when it is not an independent contact:
+
+- both atoms belong to the same residue;
+- the atoms are alternate conformations of one site, meaning they carry different non-blank `altLoc` labels;
+- the atoms lie in the same chain within `--adjacent-window` residues of each other, so ordinary covalent neighbors are not counted. Insertion-code siblings such as `5A` and `5B` count as one residue apart;
+- the two residues are joined by a `LINK` record;
+- the two residues close a chain that `--circular` marks as cyclic.
+
+The LINK exclusion matters for `re_helix` output. Cyclization, reciprocal exchange, and permuted chains all create junctions where residue numbering no longer tracks real connectivity, so a bonded pair can look far apart in sequence. Without the exclusion every such junction is reported as a false clash. Use `--no-link-exclusion` to see the raw geometric contacts instead.
+
+Open its GUI directly:
+
+```bash
+python3 re_helix_lib/check_pdb_clashes.py --gui
+```
+
+Run it from the command line:
+
+```bash
+python3 re_helix_lib/check_pdb_clashes.py model_aligned_rex.pdb
+```
+
+Check a cyclic model with a looser cutoff and save the report:
+
+```bash
+python3 re_helix_lib/check_pdb_clashes.py model.pdb \
+  --cutoff 2.2 --circular auto -o model_clashes.txt
+```
+
+Useful Check Clashes options:
+
+- `--cutoff A`: heavy-atom distance cutoff in Angstrom. Default: `1.60`, a tight geometric check for atoms driven essentially on top of each other. Raise it to flag softer nonbonded contacts.
+- `--adjacent-window N`: exclude same-chain residue pairs separated by at most `N` residues. Default: `1`. Use `0` to compare every non-identical residue pair.
+- `--circular off|auto|N`: close cyclic chains so the first-to-last junction is not reported. `auto` uses each chain's own lowest and highest residue number, so chains of different lengths are handled correctly. Default: `off`, because `LINK` records already cover most cyclizations.
+- `--no-link-exclusion`: do not exclude residue pairs joined by a `LINK` record.
+- `--label-residues LIST`: label residues for the composition breakdown, as `11,32,53` or chain-qualified `A:11,B:32`. Labeled residues report as `labeled` and the rest as `other`. Default: `none`, giving a single `heavy` class.
+- `--model N`: MODEL to check in a multi-model file such as an NMR ensemble. Default: the first MODEL. Only one model is checked at a time, so ensemble members are never compared against each other.
+- `--top N`: how many of the closest clash pairs to list. Default: `10`. Use `0` for counts only.
+- `--no-select-commands`: omit the UCSF Chimera and UCSF ChimeraX select commands.
+- `--chimera-model N`: Chimera model number used in the select commands. Default: `0`.
+- `--chimerax-model N`: ChimeraX model number used in the select commands. Default: `1`.
+- `-o` or `--output`: also write the report to a text file.
+- `-v` or `--version`: show the bundled tool version.
+
+The report is a tab-separated key/value block covering the atom counts, the active criteria, how many pairs each exclusion removed, the clash count, the minimum clash distance, the composition breakdown, and the closest clash pairs. `scipy.spatial.cKDTree` is used for neighbor search when SciPy is installed, and a pure-Python pair scan produces identical results when it is not.
+
+### Selecting clashing atoms in UCSF Chimera and ChimeraX
+
+By default the report also carries ready-to-paste selection commands. Each select-everything command sits alone on its own line, so a triple-click or any line selection picks up the whole command and nothing else:
+
+```
+chimera_select_all_clashes
+select #0:5.A@C1'|#0:20.A@C1'
+chimerax_select_all_clashes
+select #1/A:5@C1'|#1/A:20@C1'
+```
+
+Each listed clash pair additionally gets its own pair of commands, as the last two columns of the `closest_clashes` table, so a single contact can be isolated:
+
+```
+closest_clashes	distance_A	atom_1	atom_2	chimera	chimerax
+1.200000	A:DA5:C1'#3	A:DA20:C1'#4	select #0:5.A@C1'|#0:20.A@C1'	select #1/A:5@C1'|#1/A:20@C1'
+```
+
+The two programs use different atom-specifier grammars, so both forms are written out:
+
+- Chimera uses `#model:residue.chain@atom`. A blank chain ID is a bare period, as in `#0:12.@P`.
+- ChimeraX uses `#model/chain:residue@atom`. A blank chain ID has no specifier, so the chain part is dropped, as in `#1:12@P`.
+- Residue insertion codes are appended to the residue number in both, as in `#0:52B.A@P` and `#1/A:52B@P`.
+
+Chimera numbers the first opened structure `#0` and ChimeraX numbers it `#1`, which is why the defaults differ. Use `--chimera-model` or `--chimerax-model` when the structure is not the first one open. When `--model` selects a MODEL from a multi-model file, the submodel is included automatically, giving `#0.2` in Chimera and `#1.2` in ChimeraX.
+
+#### Copying a command
+
+These commands are full of punctuation that a text widget treats as word boundaries, so an ordinary double-click would select only a fragment such as `C1`. The GUI therefore offers three ways to copy a whole command:
+
+- **Double-click any command in the report.** The tool highlights the entire command, from `select` to the end of that command, and copies it to the clipboard. Commands are shown on a pale blue background so they are easy to spot.
+- **Use the `Copy Chimera select` and `Copy ChimeraX select` buttons** next to `Run`. These copy the select-everything command directly and stay disabled until a run produces clashes.
+- **Triple-click a select-everything line**, in the GUI or in the saved report file. Those commands sit alone on their own line for exactly this reason.
+
+The per-pair commands in the `closest_clashes` table are separated by tabs, so a line selection there would also pick up the distance and atom labels. Double-click those instead.
 
 ## What Reciprocal Exchange Means
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## V4.6 - 2026-09-05
+
+- Bumped `re_helix` to V4.6 and added the bundled Check Clashes V1.0 tool at `re_helix_lib/check_pdb_clashes.py`.
+- Added **Check Clashes** to the GUI **Other tools** area. The button launches the bundled tool with the currently selected input PDB pre-filled, and mirrors its stdout/stderr into the main run log like the other helpers.
+- Counted close heavy-atom contacts using a purely geometric, structure-agnostic check that assumes nothing about chain length, residue numbering, or composition, so nucleic acids, proteins, ligands, and mixed assemblies are all supported. Hydrogens and deuteriums are ignored.
+- Excluded same-residue pairs, alternate conformations carrying different non-blank `altLoc` labels, same-chain sequence neighbors within `--adjacent-window`, and residue pairs joined by a `LINK` record. Insertion-code siblings such as `5A` and `5B` count as one residue apart, so the default window excludes them while `--adjacent-window 0` still compares every non-identical residue pair.
+- Made the LINK exclusion the default because cyclization, reciprocal exchange, and permuted chains create junctions where residue numbering no longer tracks real connectivity; without it every such junction is reported as a false clash. `--no-link-exclusion` restores the raw geometric contacts.
+- Added `--circular off|auto|N` for cyclic chains. `auto` uses each chain's own lowest and highest residue number so chains of different lengths are handled correctly; the default is `off` because LINK records already cover most cyclizations.
+- Added `--label-residues` for the composition breakdown, accepting plain residue numbers or chain-qualified `A:11` entries, and `--model` for selecting one MODEL from a multi-model file so ensemble members are never compared against each other.
+- Reported per-exclusion pair counts, the clash count, the minimum clash distance, the composition breakdown, and the closest clash pairs as a tab-separated key/value block, with an optional `-o` report file.
+- Added ready-to-paste UCSF Chimera and UCSF ChimeraX selection commands to the report. `chimera_select_all_clashes` and `chimerax_select_all_clashes` select every clashing atom at once, and each listed pair carries its own commands as the last two columns of the `closest_clashes` table.
+- Wrote each program's own atom-specifier grammar: Chimera `#model:residue.chain@atom` with a bare period for a blank chain, and ChimeraX `#model/chain:residue@atom` with the chain part dropped for a blank chain. Insertion codes are appended to the residue number in both, and atoms shared by several clashes are listed once.
+- Defaulted the model numbers to Chimera `#0` and ChimeraX `#1`, matching how each program numbers the first opened structure, with `--chimera-model` and `--chimerax-model` to override. A `--model` selection from a multi-model file becomes the submodel automatically, giving `#0.2` and `#1.2`.
+- Added a **Chimera / ChimeraX select commands** GUI section with its own **?** help and model-number fields, and `--no-select-commands` to suppress the commands entirely.
+- Made the commands easy to copy. Selection commands contain punctuation that a text widget treats as word boundaries, so an ordinary double-click would select only a fragment such as `C1`. Double-clicking any command in the GUI report now highlights the entire command and copies it to the clipboard, and commands are drawn on a pale blue background so they are easy to find.
+- Added **Copy Chimera select** and **Copy ChimeraX select** buttons beside **Run**. They copy the select-everything command without touching the report and stay disabled until a run produces clashes.
+- Placed each select-everything command alone on its own line, under its `chimera_select_all_clashes` or `chimerax_select_all_clashes` key, so a triple-click or any line selection in the GUI or the saved report file picks up the whole command and nothing else.
+- Used `scipy.spatial.cKDTree` for neighbor search when SciPy is present and fell back to a pure-Python pair scan with identical results when it is not, keeping the command-line workflow free of third-party requirements.
+- Added light-blue contextual **?** buttons to every GUI field and regression coverage for the geometry, each exclusion rule, option parsing, backend parity, the report format, and the CLI.
+- Added a light-blue contextual **?** button beside every button in the main **Other tools** area, covering all nine bundled tools. Each explains what the tool does, the inputs it expects, and the files it writes, so the tools are documented without leaving the main window.
+- Rebalanced **Other tools** to five buttons on the first row and four on the second. With the added **?** buttons the measured rows are 987 px and 878 px against the 1320 px window, where the previous seven-button first row would have overflowed.
+
 ## Bend Helix V2.6 - 2026-08-30
 
 - Bumped the bundled Bend Helix tool to V2.6 while keeping the main `re_helix` application at V4.5.

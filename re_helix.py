@@ -2,6 +2,22 @@
 """
 re_helix.py
 
+V4.6 update (2026-09-05):
+- Add Check Clashes to the GUI Other tools area. The bundled
+  re_helix_lib/check_pdb_clashes.py tool counts close heavy-atom contacts in
+  any PDB file, with no assumption about chain length, residue numbering, or
+  composition.
+- Exclude same-residue, alternate-conformation, sequence-adjacent, and
+  LINK-bonded pairs, so cyclization, reciprocal-exchange, and permuted-chain
+  junctions are not reported as false clashes.
+- Support optional cyclic-chain closure, chain-qualified residue labeling for
+  composition counts, and per-MODEL selection in multi-model files.
+- Add a light-blue contextual ? button beside every Other tools button, so each
+  bundled tool explains what it does, what it needs, and what it writes without
+  leaving the main window.
+- Rebalance the Other tools area to five buttons on the first row and four on
+  the second so both rows, with their new ? buttons, stay inside the window.
+
 V4.5 update (2026-08-27):
 - Allow the restrained translation direction and restrained rotation axis
   vector to be defined as the normal to two supplied XYZ vectors.
@@ -417,10 +433,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V4.5"
+SOFTWARE_VERSION = "V4.6"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V4.5: AZBMOST Package Module #2 - "
+    "re_helix V4.6: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -4820,6 +4836,178 @@ chain. The vector is normalized automatically and cannot be zero.
 Axis definitions remain available so their move-with-axis payload rotates with
 the helix, but they do not replace the supplied rotation axis. Direction + point
 axis, axis_dist, axis_parallel, and beta angles are not used in this mode.""",
+    "tool_bend_helix": """Bend Helix: bend a straight two-chain nucleic-acid helix at a
+chosen phosphorus residue.
+
+The helix is treated as two rigid pieces. Piece #1 stays fixed, and piece #2 is
+moved by a beta bend with an optional tau twist.
+
+Main inputs:
+  Pivot: the P-bearing residue marking the border between the pieces, e.g. A36.
+  phi:   hinge direction around the helix axis, in degrees.
+  beta:  bend angle applied to movable piece #2, in degrees.
+  tau:   optional twist of piece #2 around its bent axis, in degrees.
+
+The GUI can also screen one or two of phi/beta/tau over a grid to hit a target
+distance or signed rotation, and report every distinct solution within a
+tolerance.
+
+Options include a local-axis range for already-bent inputs, new chain IDs for
+piece #2, and an origin-overlay PDB for comparing before and after.""",
+    "tool_do_symmetry": """Do Symmetry: average a pseudosymmetric homomeric assembly into
+an idealized symmetric model.
+
+Use it when a model should have rotational symmetry, such as C3, but the
+coordinates are only approximately symmetric after building, editing,
+minimization, or format conversion.
+
+Define the symmetry either way:
+  Groups: list the symmetry-related chain groups, e.g. ABCDMNOP EFGHQRST
+          IJKLUVWX. This is safest for noncontinuous or custom chain layouts.
+  Fold + chains: e.g. fold 3 with chains A-X, when chains are continuous and
+          evenly divisible by the fold.
+
+The tool reorders each symmetry-equivalent copy into the same chain
+organization, rigidly aligns the copies with a least-squares fit, and averages
+matching atom coordinates. Fit atoms can be all, P, backbone, or CA.
+
+Writes <base>_symmetric.pdb.""",
+    "tool_add_pdb_link": """Add PDB LINK Record: create terminal cyclization links and
+rebuild chain topology.
+
+Automatic mode links a nucleic-acid 5'-terminal P to its 3'-terminal O3', or a
+peptide N-terminal N to its C-terminal carbonyl C. Choose the molecule type,
+then check the chains to process; the terminal-atom distance is shown per chain
+so an unreasonable link is easy to spot.
+
+Manual mode stages internal or inter-chain links. Pick the link chemistry, then
+give the residue number and chain for both endpoints.
+
+A GUI run rebuilds chain topology, chain IDs, TER records, residue numbering,
+and LINK records in one pass. Existing input LINK records are preserved and
+remapped to the rebuilt labels when possible.
+
+Default output inserts _circ, or _peptide_circ for peptide cyclization.""",
+    "tool_insert_virtual_resi": """Insert Virtual Resi: open residue-numbering gaps after
+selected residues.
+
+No atoms are added. Each insertion shifts the residue numbers that follow the
+named residue in the same chain, which reserves numbering space for residues to
+be modeled later.
+
+Example:
+  Inserting 3 after A55 changes A56 to A59, A57 to A60, and so on.
+
+Accepted residue tokens: A55, A.55, 55A, or 55.A. Multiple insertions are all
+interpreted against the original input numbering, so specs do not need manual
+pre-adjustment.
+
+Coordinate-like records, TER records, and both residue endpoints of
+fixed-column LINK records are renumbered with the same map.
+
+Default output inserts _vresi.""",
+    "tool_permute_chain": """Permute Chain: cyclically rearrange complete residue blocks in
+one or more chains.
+
+A positive shift moves that many residues from the start to the end. A negative
+shift moves that many residues from the end to the start.
+
+Examples:
+  shift  5: the original sixth residue becomes the new first residue.
+  shift -5: the original last five residues become the new first five.
+
+Output residue numbers stay continuous and start from the chain's original
+smallest residue number, so a chain numbered 10-50 is still numbered 10-50
+afterwards. The same old-to-new map is applied to coordinate-like records, TER,
+HET, both LINK endpoints, and recognizable REMARK residue references.
+
+In the GUI, set the number of permutation sites, then enter one chain ID and
+signed shift per row. Each chain may appear once.
+
+Default output inserts _permuted.""",
+    "tool_generate_lattice": """Generate Lattice: write or replace the P1 CRYST1 record from
+three lattice vectors.
+
+Supply three lattice direction vectors and their distances. Each direction is
+normalized before use.
+
+By default the tool also rotates ATOM/HETATM coordinates and ANISOU tensors
+into the standard PDB crystallographic Cartesian frame, where a lies along +X,
+b lies in the XY plane, and c has positive Z. Non-coordinate records such as
+REMARK, LINK, TITLE, and SEQRES are preserved.
+
+Useful switches:
+  Do not rotate into the crystallographic frame, keeping coordinates as they
+  are while still writing CRYST1.
+  Allow a reflection when the supplied vector order is left-handed.
+  Preserve any existing CRYST1 record.
+  Drop CONECT records from the output.""",
+    "tool_get_phenix_restraints": """Get Phenix Restraints: convert LINK records into Phenix
+geometry restraints.
+
+Reads the PDB LINK records and writes a <base>_links.params file holding
+geometry_restraints.edits bond restraints plus phosphate-centered angle
+restraints that preserve local 3D geometry at each linked phosphate.
+
+Also written when applicable:
+  <base>_junctions.params from REMARK 950 RE_SCRIPT JUNCTION lines, giving a
+  movement selection that frees the junction residues.
+  X33 support files, only when a true standalone 3'-to-3' linker phosphate is
+  detected from two explicit P--O3' LINK records.
+
+Pass the generated params files to phenix.geometry_minimization together with
+the model. Use exactly one movement-selection file; normally that is
+<base>_junctions.params.""",
+    "tool_reverse_strand_direction": """Reverse Strand Direction: reverse the serialized residue
+order of selected chains without moving any atom.
+
+This is a PDB serialization edit, not a geometric flip, a reverse complement, or
+a chemical rebuild. Every coordinate, atom name, and atom serial is unchanged.
+
+Complete residue blocks move together and are relabeled continuously upward from
+the chain's original smallest residue number:
+  Open path A10,A11,A12,A13 becomes the blocks A13,A12,A11,A10, relabeled back
+  to A10,A11,A12,A13.
+  For a covalently closed cycle the current first residue stays anchored, so the
+  direction changes without an unintended circular shift.
+
+Because reversal changes which backbone bonds can be represented implicitly, the
+tool rebuilds the nucleic-acid topology and regenerates the required P--O3' LINK
+records. Existing inverted, 5'-5', 3'-3', and cycle-closure LINK topology is
+preserved and remapped.
+
+For safety it rejects multi-model inputs, and on selected strands rejects
+insertion codes, interleaved or TER-split serialization, cross-chain backbone
+components, and chains whose P/O3' endpoints cannot be resolved. The input file
+is never overwritten in place.
+
+Default output inserts _strand_reversed.""",
+    "tool_check_clashes": """Check Clashes: count close heavy-atom contacts in any PDB
+structure.
+
+The check is purely geometric and makes no assumption about chain length,
+residue numbering, or composition, so nucleic acids, proteins, ligands, and
+mixed assemblies all work. Hydrogens and deuteriums are ignored.
+
+A pair is not counted when it is not an independent contact:
+  both atoms are in the same residue;
+  the atoms are alternate conformations of one site, with different altLoc
+  labels;
+  the atoms are same-chain sequence neighbors within the adjacent window;
+  the two residues are joined by a LINK record;
+  the two residues close a chain marked cyclic.
+
+The LINK exclusion matters for re_helix output. Cyclization, reciprocal
+exchange, and permuted chains create junctions where residue numbering no longer
+tracks real connectivity, so without it every junction reports as a false clash.
+Turn it off to see the raw geometric contacts.
+
+Defaults: 1.60 A cutoff, adjacent window 1, cyclic closure off, no residue
+labeling. Raise the cutoff, for example to 2.2 A, to flag softer contacts.
+
+The report lists the atom counts, active criteria, how many pairs each exclusion
+removed, the clash count, the minimum clash distance, and the closest pairs. It
+can be saved to a text file.""",
 }
 
 
@@ -5771,25 +5959,40 @@ def _launch_gui() -> None:
     other_tools_row1.pack(fill="x")
     other_tools_row2 = ttk.Frame(other_tools_box)
     other_tools_row2.pack(fill="x", pady=(6, 0))
-    bend_helix_button = ttk.Button(other_tools_row1, text="Bend Helix")
-    bend_helix_button.pack(side="left")
-    do_symmetry_button = ttk.Button(other_tools_row1, text="Do Symmetry")
-    do_symmetry_button.pack(side="left", padx=(6, 0))
-    add_pdb_link_button = ttk.Button(other_tools_row1, text="Add PDB LINK Record")
-    add_pdb_link_button.pack(side="left", padx=(6, 0))
-    insert_virtual_resi_button = ttk.Button(other_tools_row1, text="Insert Virtual Resi")
-    insert_virtual_resi_button.pack(side="left", padx=(6, 0))
-    permute_chain_button = ttk.Button(other_tools_row1, text="Permute Chain")
-    permute_chain_button.pack(side="left", padx=(6, 0))
-    generate_lattice_button = ttk.Button(other_tools_row1, text="Generate Lattice")
-    generate_lattice_button.pack(side="left", padx=(6, 0))
-    get_phenix_restraints_button = ttk.Button(other_tools_row1, text="Get Phenix Restraints")
-    get_phenix_restraints_button.pack(side="left", padx=(6, 0))
-    reverse_strand_direction_button = ttk.Button(
-        other_tools_row2,
-        text="Reverse Strand Direction",
+    def add_tool_button(parent, label: str, help_key: str, first: bool = False):
+        """Pack one Other tools button followed by its light-blue ? button."""
+        tool_button = ttk.Button(parent, text=label)
+        tool_button.pack(side="left", padx=(0, 0) if first else (12, 0))
+        make_help_button(parent, label, help_key).pack(side="left", padx=(2, 0))
+        return tool_button
+
+    bend_helix_button = add_tool_button(
+        other_tools_row1, "Bend Helix", "tool_bend_helix", first=True
     )
-    reverse_strand_direction_button.pack(side="left")
+    do_symmetry_button = add_tool_button(
+        other_tools_row1, "Do Symmetry", "tool_do_symmetry"
+    )
+    add_pdb_link_button = add_tool_button(
+        other_tools_row1, "Add PDB LINK Record", "tool_add_pdb_link"
+    )
+    insert_virtual_resi_button = add_tool_button(
+        other_tools_row1, "Insert Virtual Resi", "tool_insert_virtual_resi"
+    )
+    permute_chain_button = add_tool_button(
+        other_tools_row1, "Permute Chain", "tool_permute_chain"
+    )
+    generate_lattice_button = add_tool_button(
+        other_tools_row2, "Generate Lattice", "tool_generate_lattice", first=True
+    )
+    get_phenix_restraints_button = add_tool_button(
+        other_tools_row2, "Get Phenix Restraints", "tool_get_phenix_restraints"
+    )
+    reverse_strand_direction_button = add_tool_button(
+        other_tools_row2, "Reverse Strand Direction", "tool_reverse_strand_direction"
+    )
+    check_clashes_button = add_tool_button(
+        other_tools_row2, "Check Clashes", "tool_check_clashes"
+    )
 
     buttons = ttk.Frame(outer)
     buttons.pack(fill="x", padx=2, pady=4)
@@ -5893,6 +6096,11 @@ def _launch_gui() -> None:
         current_pdb = pdb_var.get().strip()
         extra_args = [current_pdb] if current_pdb else []
         launch_bundled_gui_tool("Get Phenix Restraints", "get_phenix_restraints.py", extra_args)
+
+    def launch_check_clashes_tool() -> None:
+        current_pdb = pdb_var.get().strip()
+        extra_args = [current_pdb] if current_pdb else []
+        launch_bundled_gui_tool("Check Clashes", "check_pdb_clashes.py", extra_args)
 
     row_targets = {"pair": 3, "axis": 0}
     render_state = {"pair_pending": False, "axis_pending": False}
@@ -6217,6 +6425,7 @@ def _launch_gui() -> None:
     insert_virtual_resi_button.configure(command=launch_insert_virtual_resi_tool)
     permute_chain_button.configure(command=launch_permute_chain_tool)
     reverse_strand_direction_button.configure(command=launch_reverse_strand_direction_tool)
+    check_clashes_button.configure(command=launch_check_clashes_tool)
     generate_lattice_button.configure(command=launch_generate_lattice_tool)
     get_phenix_restraints_button.configure(command=launch_get_phenix_restraints_tool)
     render_pair_rows()
