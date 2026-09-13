@@ -1,5 +1,17 @@
 # Changelog
 
+## Insert Virtual Resi V1.1 - 2026-09-12
+
+- Recorded every run in the output header as parse-friendly `REMARK 950 RE_SCRIPT` lines, matching the convention `reciprocal_exchange_pdb` already uses. Previously the output carried no trace of which gaps were opened, and a virtual gap was indistinguishable from a gap already present in the input.
+- Wrote one `VIRTUAL_INSERT` record per insertion spec, giving the chain, the anchor residue in both input and output numbering, the count, and the output-numbering range the virtual residues occupy: `REMARK 950 RE_SCRIPT VIRTUAL_INSERT op=1 chain=A after_orig=A:55 after_new=A:55 count=3 start=A:56 end=A:58`.
+- Reported `after_new` alongside `after_orig` because an earlier gap in the same chain shifts the anchor of every later spec, so an anchor quoted in input numbering alone is ambiguous. For `A55 3` followed by `A70 2`, the second anchor is written out as `A:73` and its virtual range as `A:74`-`A:75`.
+- Gave two specs anchored at the same residue adjacent, non-overlapping ranges rather than two overlapping claims on the same span.
+- Added the `SOFTWARE`, `COMMAND`, and `OUTPUT_STAGE` header records used by the other bundled tools, so a re-run appends a new block and the file keeps a readable history of successive insertions.
+- Placed new records after any existing `REMARK` lines and before the first structural record, so they never land among `LINK` or coordinate records even when a file appends `REMARK` lines after the coordinates.
+- Added `--no-remark` and a matching GUI checkbox to write the plain renumbered file. The equivalent CLI command shown by the GUI carries the flag.
+- Reported the virtual residue ranges in the run summary, which previously listed only the specs and the per-record change counts.
+- Added regression coverage for the range arithmetic, the record format, header placement, the `--no-remark` path, and the guarantee that the REMARK block leaves the renumbering itself unchanged.
+
 ## V4.6 - 2026-09-05
 
 - Bumped `re_helix` to V4.6 and added the bundled Check Clashes V1.0 tool at `re_helix_lib/check_pdb_clashes.py`.

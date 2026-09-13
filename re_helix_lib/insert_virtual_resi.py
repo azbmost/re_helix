@@ -8,6 +8,10 @@ residue numbers of records after the designated residue in the same chain. For
 example, inserting 3 virtual residues after A55 changes original A56 to A59,
 A57 to A60, and so on. LINK record residue numbers are shifted with the same
 mapping so topology records continue to point at the correct residues.
+
+Each run also records what it did as parse-friendly REMARK 950 RE_SCRIPT lines
+in the output header, including the output-numbering range each gap occupies.
+Pass --no-remark (or clear the GUI checkbox) to write the plain renumbered file.
 """
 
 from __future__ import annotations
@@ -26,9 +30,26 @@ except ImportError:  # pragma: no cover - direct script execution fallback
     from gui_icon import apply_optional_icon
 
 TOOL_NAME = "Insert Virtual Resi"
-VERSION = "1.0"
+VERSION = "1.1"
 
 COORD_RECORDS = {"ATOM", "HETATM", "ANISOU", "SIGATM", "SIGUIJ"}
+
+REMARK_PREFIX = "REMARK 950 RE_SCRIPT"
+SOFTWARE_NAME = "insert_virtual_resi"
+SOFTWARE_VERSION = VERSION
+SOFTWARE_DEVELOPER = "DiLiuLab"
+
+# Records that follow REMARK in PDB record ordering. The header block is taken
+# to end at the first of these, so new REMARK lines never land among LINK or
+# coordinate records even when a file appends REMARKs after the coordinates.
+POST_REMARK_RECORDS = COORD_RECORDS | {
+    "DBREF", "DBREF1", "DBREF2", "SEQADV", "SEQRES", "MODRES",
+    "HET", "HETNAM", "HETSYN", "FORMUL",
+    "HELIX", "SHEET", "SSBOND", "LINK", "CISPEP", "SITE",
+    "CRYST1", "ORIGX1", "ORIGX2", "ORIGX3",
+    "SCALE1", "SCALE2", "SCALE3", "MTRIX1", "MTRIX2", "MTRIX3",
+    "MODEL", "TER", "ENDMDL", "CONECT", "MASTER", "END",
+}
 
 
 @dataclass(frozen=True)
@@ -43,12 +64,29 @@ class InsertionSpec:
         return f"{self.chain_id}{self.after_resseq}+{self.count}"
 
 
+@dataclass(frozen=True)
+class VirtualRange:
+    """Output-numbering span occupied by the gap one insertion spec opens."""
+
+    spec: InsertionSpec
+    after_new: int
+    start: int
+    end: int
+
+    @property
+    def label(self) -> str:
+        chain = self.spec.chain_id
+        return f"{chain}{self.start}-{chain}{self.end}"
+
+
 @dataclass
 class RenumberStats:
     specs: List[InsertionSpec]
     coordinate_lines_changed: int = 0
     ter_lines_changed: int = 0
     link_endpoints_changed: int = 0
+    virtual_ranges: List[VirtualRange] = field(default_factory=list)
+    remark_lines_written: int = 0
     warnings: List[str] = field(default_factory=list)
 
 
@@ -186,7 +224,7 @@ def update_resseq_at_columns(
 
 def renumber_pdb_lines(lines: Sequence[str], specs: Sequence[InsertionSpec]) -> Tuple[List[str], RenumberStats]:
     shift_map = build_shift_map(specs)
-    stats = RenumberStats(specs=list(specs))
+    stats = RenumberStats(specs=list(specs), virtual_ranges=compute_virtual_ranges(specs))
     output: List[str] = []
 
     for line_number, line in enumerate(lines, start=1):
@@ -216,11 +254,109 @@ def renumber_pdb_lines(lines: Sequence[str], specs: Sequence[InsertionSpec]) -> 
     return output, stats
 
 
+def compute_virtual_ranges(specs: Sequence[InsertionSpec]) -> List[VirtualRange]:
+    """Return the output-numbering span each insertion spec occupies.
+
+    Specs are walked per chain in the order build_shift_map sorts them, so an
+    earlier gap in a chain pushes later ones further along, and two specs
+    anchored at the same residue get adjacent, non-overlapping spans.
+    """
+    ranges: List[VirtualRange] = []
+    for chain_specs in build_shift_map(specs).values():
+        shift = 0
+        for spec in chain_specs:
+            after_new = spec.after_resseq + shift
+            ranges.append(
+                VirtualRange(
+                    spec=spec,
+                    after_new=after_new,
+                    start=after_new + 1,
+                    end=after_new + spec.count,
+                )
+            )
+            shift += spec.count
+    ranges.sort(key=lambda item: (item.spec.chain_id, item.start))
+    return ranges
+
+
+def clean_remark_value(value: object) -> str:
+    """Return a compact value for parse-friendly REMARK key=value fields."""
+    text = str(value)
+    return text.replace("\n", " ").replace("\r", " ").strip()
+
+
+def residue_label(chain_id: str, resseq: int) -> str:
+    chain = chain_id if chain_id.strip() else "_"
+    return f"{chain}:{int(resseq)}"
+
+
+def build_virtual_insert_remark_lines(
+    ranges: Sequence[VirtualRange],
+    command: Optional[str] = None,
+) -> List[str]:
+    """Build RE_SCRIPT REMARK 950 records describing the virtual residues."""
+    lines = [
+        f"{REMARK_PREFIX} SOFTWARE name={clean_remark_value(SOFTWARE_NAME)} "
+        f"version={clean_remark_value(SOFTWARE_VERSION)} "
+        f"developer={clean_remark_value(SOFTWARE_DEVELOPER)}"
+    ]
+    if command:
+        lines.append(f"{REMARK_PREFIX} COMMAND text={clean_remark_value(command)}")
+    lines.append(f"{REMARK_PREFIX} OUTPUT_STAGE name={clean_remark_value(SOFTWARE_NAME)}")
+    for op_index, item in enumerate(ranges, start=1):
+        chain = item.spec.chain_id
+        lines.append(
+            f"{REMARK_PREFIX} VIRTUAL_INSERT op={op_index} "
+            f"chain={chain if chain.strip() else '_'} "
+            f"after_orig={residue_label(chain, item.spec.after_resseq)} "
+            f"after_new={residue_label(chain, item.after_new)} "
+            f"count={item.spec.count} "
+            f"start={residue_label(chain, item.start)} "
+            f"end={residue_label(chain, item.end)}"
+        )
+    return lines
+
+
+def remark_insert_index(lines: Sequence[str]) -> int:
+    """Return where new REMARK records belong among existing PDB lines."""
+    last_remark = -1
+    for index, line in enumerate(lines):
+        record = line[:6].strip()
+        if record == "REMARK":
+            last_remark = index
+        elif record in POST_REMARK_RECORDS:
+            return last_remark + 1 if last_remark >= 0 else index
+    return last_remark + 1 if last_remark >= 0 else len(lines)
+
+
+def dominant_line_ending(lines: Sequence[str]) -> str:
+    for line in lines:
+        _, ending = split_line_ending(line)
+        if ending:
+            return ending
+    return "\n"
+
+
+def insert_remark_lines(lines: Sequence[str], remark_lines: Sequence[str]) -> List[str]:
+    """Splice REMARK records into the header block, keeping the line ending."""
+    result = list(lines)
+    if not remark_lines:
+        return result
+    ending = dominant_line_ending(result)
+    index = remark_insert_index(result)
+    if index >= len(result) and result and not result[-1].endswith(("\n", "\r")):
+        result[-1] = result[-1] + ending
+    result[index:index] = [line + ending for line in remark_lines]
+    return result
+
+
 def insert_virtual_residues(
     input_pdb: Path,
     specs: Sequence[InsertionSpec],
     output_pdb: Optional[Path] = None,
     verbose: bool = True,
+    write_remarks: bool = True,
+    command: Optional[str] = None,
 ) -> Tuple[Path, RenumberStats]:
     input_pdb = Path(input_pdb)
     if output_pdb is None:
@@ -230,6 +366,10 @@ def insert_virtual_residues(
 
     lines = input_pdb.read_text(errors="replace").splitlines(True)
     updated_lines, stats = renumber_pdb_lines(lines, specs)
+    if write_remarks:
+        remark_lines = build_virtual_insert_remark_lines(stats.virtual_ranges, command=command)
+        updated_lines = insert_remark_lines(updated_lines, remark_lines)
+        stats.remark_lines_written = len(remark_lines)
     output_pdb.write_text("".join(updated_lines))
 
     if verbose:
@@ -237,23 +377,37 @@ def insert_virtual_residues(
     return output_pdb, stats
 
 
-def build_cli_command(script_name: str, input_pdb: str, specs: Sequence[InsertionSpec], output_pdb: str) -> str:
+def build_cli_command(
+    script_name: str,
+    input_pdb: str,
+    specs: Sequence[InsertionSpec],
+    output_pdb: str,
+    write_remarks: bool = True,
+) -> str:
     parts: List[str] = [sys.executable, script_name, input_pdb]
     for spec in specs:
         parts.extend(["--insert", spec.token, str(spec.count)])
     if output_pdb:
         parts.extend(["-o", output_pdb])
+    if not write_remarks:
+        parts.append("--no-remark")
     return " ".join(shlex.quote(str(part)) for part in parts)
 
 
 def format_summary(output_pdb: Path, stats: RenumberStats) -> str:
-    lines = [
-        "Insertion specs: " + ", ".join(spec.label for spec in stats.specs),
+    lines = ["Insertion specs: " + ", ".join(spec.label for spec in stats.specs)]
+    if stats.virtual_ranges:
+        lines.append(
+            "Virtual residue ranges (output numbering): "
+            + ", ".join(item.label for item in stats.virtual_ranges)
+        )
+    lines.extend([
         "Coordinate-like records changed: %d" % stats.coordinate_lines_changed,
         "TER records changed: %d" % stats.ter_lines_changed,
         "LINK endpoints changed: %d" % stats.link_endpoints_changed,
+        "REMARK 950 RE_SCRIPT lines written: %d" % stats.remark_lines_written,
         "Wrote: %s" % output_pdb,
-    ]
+    ])
     if stats.warnings:
         lines.append("Warnings:")
         lines.extend("  " + warning for warning in stats.warnings)
@@ -275,6 +429,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Insertion spec such as --insert A55 3. Repeat for multiple sites.",
     )
     parser.add_argument("-o", "--output", help="Output PDB file. Default: <input>_vresi.pdb")
+    parser.add_argument(
+        "--no-remark",
+        action="store_true",
+        help="Do not write REMARK 950 RE_SCRIPT VIRTUAL_INSERT records into the output header.",
+    )
     parser.add_argument("--gui", action="store_true", help="Open the Tk GUI.")
     parser.add_argument("-v", "--version", action="version", version=f"{TOOL_NAME} V{VERSION}")
     return parser
@@ -300,6 +459,7 @@ def run_gui(initial_path: Optional[str] = None) -> int:
 
     input_var = tk.StringVar(value=initial_path or "")
     output_var = tk.StringVar()
+    remark_var = tk.BooleanVar(value=True)
     status_var = tk.StringVar(value="Enter one insertion per line, for example: A55 3")
 
     def refresh_default_output() -> None:
@@ -358,6 +518,12 @@ def run_gui(initial_path: Optional[str] = None) -> int:
     specs_text = scrolledtext.ScrolledText(specs_box, height=8, wrap="word")
     specs_text.grid(row=1, column=0, sticky="nsew")
 
+    ttk.Checkbutton(
+        specs_box,
+        text="Write REMARK 950 RE_SCRIPT VIRTUAL_INSERT records (chain, anchor, count, range)",
+        variable=remark_var,
+    ).grid(row=2, column=0, sticky="w", pady=(6, 0))
+
     ttk.Label(outer, textvariable=status_var, wraplength=720).grid(row=4, column=0, columnspan=3, sticky="ew", pady=4)
 
     buttons = ttk.Frame(outer)
@@ -372,7 +538,10 @@ def run_gui(initial_path: Optional[str] = None) -> int:
                 raise ValueError("Input PDB file does not exist: %s" % input_pdb)
             specs = parse_specs_text(specs_text.get("1.0", tk.END))
             output_pdb = output_var.get().strip() or str(default_output_path(Path(input_pdb)))
-            cli_cmd = build_cli_command(Path(__file__).name, input_pdb, specs, output_pdb)
+            write_remarks = bool(remark_var.get())
+            cli_cmd = build_cli_command(
+                Path(__file__).name, input_pdb, specs, output_pdb, write_remarks
+            )
             print("Equivalent CLI command:", flush=True)
             print(cli_cmd, flush=True)
             out_path, stats = insert_virtual_residues(
@@ -380,6 +549,8 @@ def run_gui(initial_path: Optional[str] = None) -> int:
                 specs,
                 output_pdb=Path(output_pdb),
                 verbose=False,
+                write_remarks=write_remarks,
+                command=cli_cmd,
             )
             summary = format_summary(out_path, stats)
             print(summary, flush=True)
@@ -412,7 +583,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
     try:
         specs = parse_insert_pairs(args.insert)
-        cli_cmd = build_cli_command(Path(__file__).name, args.pdb, specs, args.output or "")
+        write_remarks = not args.no_remark
+        cli_cmd = build_cli_command(
+            Path(__file__).name, args.pdb, specs, args.output or "", write_remarks
+        )
         print("Equivalent CLI command:", flush=True)
         print(cli_cmd, flush=True)
         insert_virtual_residues(
@@ -420,6 +594,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             specs,
             output_pdb=Path(args.output) if args.output else None,
             verbose=True,
+            write_remarks=write_remarks,
+            command=cli_cmd,
         )
         return 0
     except Exception as exc:

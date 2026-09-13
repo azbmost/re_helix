@@ -13,7 +13,7 @@ Current version: V4.5
 - `re_helix_lib/bend_helix.py`: bundled Bend Helix tool for bending a straight two-chain helix.
 - `re_helix_lib/do_symmetry.py`: bundled Do Symmetry tool for averaging a pseudosymmetric assembly into an idealized symmetric PDB.
 - `re_helix_lib/add_pdb_link_record.py`: bundled Add PDB LINK Record tool for nucleic-acid P/O3' and peptide N/C terminal links, manual P/O3' links, and chain-topology rebuilding.
-- `re_helix_lib/insert_virtual_resi.py`: bundled Insert Virtual Resi tool for inserting residue-numbering gaps and updating LINK endpoints.
+- `re_helix_lib/insert_virtual_resi.py`: bundled Insert Virtual Resi tool for inserting residue-numbering gaps, updating LINK endpoints, and recording each gap's range as `REMARK 950 RE_SCRIPT VIRTUAL_INSERT` header lines.
 - `re_helix_lib/permute_chain.py`: bundled Permute Chain tool for cyclically rearranging and continuously renumbering one or more chains.
 - `re_helix_lib/reverse_strand_direction.py`: bundled topology-aware Reverse Strand Direction tool for reversing selected nucleic-acid chain serializations without moving atoms.
 - `re_helix_lib/generate_lattice.py`: bundled Generate Lattice tool for writing a P1 CRYST1 lattice record from three lattice vectors.
@@ -251,11 +251,26 @@ python3 re_helix_lib/insert_virtual_resi.py input.pdb --insert A55 3 --insert B.
 
 Accepted residue token formats are `A55`, `A.55`, `55A`, and `55.A`. Multiple insertions are interpreted against the original input residue numbering. The tool updates coordinate-like records, `TER` records, and both residue endpoints of fixed-column `LINK` records using the same renumbering map.
 
+Because no atoms are written, a virtual gap would otherwise be indistinguishable from a gap already present in the input. Each run therefore records what it did in the output header as parse-friendly `REMARK 950 RE_SCRIPT` lines, the same convention `reciprocal_exchange_pdb` uses:
+
+```
+REMARK 950 RE_SCRIPT SOFTWARE name=insert_virtual_resi version=1.1 developer=DiLiuLab
+REMARK 950 RE_SCRIPT COMMAND text=...
+REMARK 950 RE_SCRIPT OUTPUT_STAGE name=insert_virtual_resi
+REMARK 950 RE_SCRIPT VIRTUAL_INSERT op=1 chain=A after_orig=A:55 after_new=A:55 count=3 start=A:56 end=A:58
+REMARK 950 RE_SCRIPT VIRTUAL_INSERT op=2 chain=A after_orig=A:70 after_new=A:73 count=2 start=A:74 end=A:75
+```
+
+One `VIRTUAL_INSERT` record is written per insertion spec. `start` and `end` give the output-numbering range the virtual residues occupy, so the second record above reserves `A74` and `A75`. `after_orig` names the anchor residue in the input numbering and `after_new` in the output numbering; the two differ whenever an earlier gap in the same chain has already shifted that anchor. Two specs anchored at the same residue receive adjacent, non-overlapping ranges.
+
+New records are placed after any existing `REMARK` lines and before the first structural record. A re-run appends a fresh block, so a file that passed through the tool twice keeps a readable history of both insertions.
+
 Useful Insert Virtual Resi options:
 
 - `--insert A55 3`: add a gap of 3 residue numbers after residue 55 in chain A.
 - Repeat `--insert` for more chains or residue positions.
 - `-o output.pdb`: choose the output file. Without `-o`, the default output inserts `_vresi` before the input extension.
+- `--no-remark`: write the renumbered file without the `REMARK 950 RE_SCRIPT` records. The GUI has a matching checkbox, enabled by default.
 - `-v` or `--version`: show the bundled tool version.
 
 ## Permute Chain Tool

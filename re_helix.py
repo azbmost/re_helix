@@ -4905,6 +4905,16 @@ pre-adjustment.
 Coordinate-like records, TER records, and both residue endpoints of
 fixed-column LINK records are renumbered with the same map.
 
+The output header records each gap as REMARK 950 RE_SCRIPT VIRTUAL_INSERT lines
+giving the chain, the anchor residue in input and output numbering, the count,
+and the output-numbering range the virtual residues occupy:
+
+  REMARK 950 RE_SCRIPT VIRTUAL_INSERT op=1 chain=A after_orig=A:55
+  after_new=A:55 count=3 start=A:56 end=A:58
+
+Clear the REMARK checkbox, or pass --no-remark, to write the renumbered file
+without those records.
+
 Default output inserts _vresi.""",
     "tool_permute_chain": """Permute Chain: cyclically rearrange complete residue blocks in
 one or more chains.
