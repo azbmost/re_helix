@@ -13,6 +13,7 @@ Usage modes
 
 2) Named CLI arguments:
        bend_helixV2_6.py --input A60-heli.pdb --pivot A36 --phi 0 --beta 30 --tau 10 --align y --origin y
+       bend_helixV2_6.py --input A60-heli.pdb --pivot A36 --phi 0 --beta 30 --shift_axial 2 --shift_radial -1.5
        bend_helixV2_6.py --input A60-heli.pdb --pivot A36 --phi 0 --beta 30 --axis_range A1-A35,B60-B26 -o bent.pdb
 
 3) GUI mode:
@@ -29,22 +30,32 @@ Geometry implemented here
 - The chosen residue defines the *border* base pair between the two rigid pieces.
   Piece 2 contains the chosen base pair and every base pair after it along the
   duplex axis; piece 1 contains the remaining base pairs.
-- At the axial height of the chosen P atom, we project that atom to the helix
-  axis, creating a circle in the plane perpendicular to the axis.
-- phi rotates the chosen P position around the axis on that circle.
+- shift_axial (Sa) and shift_radial (Sr) first translate movable piece 2, in
+  angstroms, before any rotation is built. Positive Sa moves piece 2 forward
+  along the positive helix axis and negative Sa moves it backward. Positive Sr
+  moves piece 2 outward along the pivot P atom's own radial direction, away
+  from the helix axis, and negative Sr moves it inward. Both default to 0.
+- Every rotation below is then built from the *shifted* pivot position.
+- At the axial height of the shifted P atom, we project that atom to the helix
+  axis, creating a circle in the plane perpendicular to the axis. Sa slides that
+  circle along the axis and Sr changes its radius.
+- phi rotates the shifted P position around the axis on that circle.
 - The hinge is the tangent line to that circle at the rotated point.
 - beta rotates movable piece 2 rigidly about that hinge. Positive beta bends
   piece 2 away from the helix axis in the radial direction defined by phi.
 - tau adds an extra twist of movable piece 2 about its own bent helical axis
   relative to fixed piece 1. Positive tau follows the right-hand rule about the bent axis;
-  negative tau is left-handed.
+  negative tau is left-handed. The twist axis is piece 2's own axis, so it is
+  carried along by Sa and Sr.
 - With --align y (default), piece 2 is translated after the bend/twist so that
-  the pivot residue's P atom returns to its original pre-bend position.
+  the pivot residue's P atom returns to its shifted pivot position, which is its
+  original pre-bend position when Sa and Sr are both 0.
 - With --align n, the result matches the V2.1 bend/twist behaviour.
 - With --sep y, piece 2 is additionally written under new chain IDs so that
   piece 1 and piece 2 are separated in the final PDB.
 - Output filenames are written as *_PxByTz.pdb, or *_PxByTz_sep.pdb when
-  --sep y is used, unless -o/--output is provided.
+  --sep y is used, unless -o/--output is provided. When either shift is nonzero,
+  SaaSrr is appended to the angle block, giving *_PxByTzSaaSrr.pdb.
 - With --origin y, an additional <main-output>-ori.pdb file is written that
   contains the original full helix and the same rigid full-helix transform used
   for piece 2, under sequential chain IDs.
@@ -76,42 +87,85 @@ except ImportError:  # pragma: no cover - direct script execution fallback
     from gui_icon import apply_optional_icon
 
 EPS = 1.0e-8
+# Smallest shifted pivot radius whose own tangent is still numerically usable.
+HINGE_TANGENT_MIN_RADIUS = 1.0e-6
 CHAIN_ID_CANDIDATES = string.ascii_uppercase + string.ascii_lowercase + string.digits
 Point3D = Tuple[float, float, float]
 TOOL_NAME = "Bend Helix"
-VERSION = "V2.6"
+VERSION = "V2.7"
 APP_TITLE = f"{TOOL_NAME} {VERSION}"
 SCREEN_REFINEMENT_TOLERANCE_DEG = 1.0e-3
+SCREEN_REFINEMENT_TOLERANCE_A = 1.0e-3
 SCREEN_REFINEMENT_MAX_ROUNDS = 80
 DEFAULT_SCREEN_STEP_DEG = 6.0
+DEFAULT_SCREEN_STEP_A = 0.5
 DEFAULT_SCREEN_SOLUTION_TOLERANCE = 1.0e-3
+
+# Screened variables. The three angles are degrees; the two pivot shifts are
+# angstroms. Order is the canonical report/dedup order everywhere.
+SCREEN_ANGLE_NAMES: Tuple[str, ...] = ("phi", "beta", "tau")
+SCREEN_SHIFT_NAMES: Tuple[str, ...] = ("shift_axial", "shift_radial")
+SCREEN_VARIABLE_NAMES: Tuple[str, ...] = SCREEN_ANGLE_NAMES + SCREEN_SHIFT_NAMES
+SCREEN_VARIABLE_LABELS: Mapping[str, str] = {
+    "phi": "Phi",
+    "beta": "Beta",
+    "tau": "Tau",
+    "shift_axial": "Shift axial",
+    "shift_radial": "Shift radial",
+}
 DEFAULT_SCREEN_RANGES: Mapping[str, Tuple[float, float]] = {
     "phi": (-90.0, 90.0),
     "beta": (-180.0, 180.0),
     "tau": (-180.0, 180.0),
+    "shift_axial": (-10.0, 10.0),
+    "shift_radial": (-10.0, 10.0),
 }
+
+
+def screen_variable_unit(name: str) -> str:
+    """Return ``deg`` for a screened angle and ``A`` for a screened pivot shift."""
+    return "deg" if name in SCREEN_ANGLE_NAMES else "A"
+
+
+def screen_variable_default_step(name: str) -> float:
+    """Return the default coarse-grid step for one screened variable."""
+    return DEFAULT_SCREEN_STEP_DEG if name in SCREEN_ANGLE_NAMES else DEFAULT_SCREEN_STEP_A
+
+
+def screen_variable_tolerance(name: str) -> float:
+    """Return the refinement/de-duplication precision for one screened variable."""
+    return (
+        SCREEN_REFINEMENT_TOLERANCE_DEG
+        if name in SCREEN_ANGLE_NAMES
+        else SCREEN_REFINEMENT_TOLERANCE_A
+    )
 
 SCREENING_GUI_HELP: Mapping[str, str] = {
     "grid_from": (
-        "From angle (degrees)\n\n"
-        "The first coarse-grid angle value, in degrees. From may be smaller "
-        "or larger than To, so both ascending and descending grids are allowed.\n\n"
+        "From value\n\n"
+        "The first coarse-grid value for this variable. Its unit follows the row label: "
+        "degrees for phi, beta, and tau; angstroms for the shift axial and shift radial "
+        "pivot shifts. From may be smaller or larger than To, so both ascending and "
+        "descending grids are allowed.\n\n"
         "Example: From = -30, To = 30, Step = 10 starts at -30 degrees."
     ),
     "grid_to": (
-        "To angle (degrees)\n\n"
-        "The final coarse-grid angle value, in degrees. To is always included, "
-        "even when Step does not land on it exactly.\n\n"
+        "To value\n\n"
+        "The final coarse-grid value for this variable, in degrees for an angle or "
+        "angstroms for a pivot shift. To is always included, even when Step does not "
+        "land on it exactly.\n\n"
         "Example: From = 0, To = 10, Step = 4 tests 0, 4, 8, and 10 degrees."
     ),
     "grid_step": (
-        "Step (degrees)\n\n"
-        "A positive coarse-grid spacing in degrees. Bend Helix first tests the inclusive "
+        "Step\n\n"
+        "A positive coarse-grid spacing, in degrees for an angle or angstroms for a pivot "
+        "shift. Bend Helix first tests the inclusive "
         "grid, then efficiently searches between nearby grid values around every promising "
         "local coarse region. The adaptive refinement halves its spacing until it reaches "
-        "0.001 degree. The default coarse Step is 6 degrees. With two screened angles, "
-        "the coarse search uses their Cartesian "
-        "product and refinement adjusts both angles.\n\n"
+        "0.001 degree for an angle or 0.001 angstrom for a pivot shift. The default coarse "
+        "Step is 6 degrees for an angle and 0.5 angstrom for a pivot shift. With two "
+        "screened variables, the coarse search uses their Cartesian "
+        "product and refinement adjusts both variables.\n\n"
         "Example: From = 0, To = 10, Step = 4 starts with 0, 4, 8, and 10, then can "
         "select an in-between value such as 6.35 degrees."
     ),
@@ -132,8 +186,9 @@ SCREENING_GUI_HELP: Mapping[str, str] = {
         "Solution tolerance\n\n"
         "The largest target residual that counts as a reported solution. Its unit follows "
         "the screening mode: angstroms for distance and degrees for rotation. Distinct "
-        "solutions are sorted by residual and de-duplicated at the 0.001-degree angle "
-        "refinement precision. The default tolerance is 0.001. If no solution meets this "
+        "solutions are sorted by residual and de-duplicated at each screened variable's own "
+        "refinement precision: 0.001 degree for an angle and 0.001 angstrom for a pivot "
+        "shift. The default tolerance is 0.001. If no solution meets this "
         "tolerance, only the closest fallback is reported.\n\n"
         "Example: 0.01 reports distances within 0.01 angstrom or rotations within 0.01 degree."
     ),
@@ -171,8 +226,8 @@ SCREENING_GUI_HELP: Mapping[str, str] = {
     "endpoint2_pivot": (
         "Phi-corrected pivot P\n\n"
         "Use the selected pivot residue's P position after applying the current candidate's "
-        "phi correction. This endpoint is candidate-dependent and is available only for "
-        "rotation screening."
+        "pivot shifts and phi correction. This endpoint is candidate-dependent and is "
+        "available only for rotation screening."
     ),
     "axis_source": (
         "Rotation axis source\n\n"
@@ -315,6 +370,7 @@ class BendGeometryPreparation:
     axis_dir: Point3D
     axis_foot: Point3D
     radial: Point3D
+    radial_dir: Point3D
     radius: float
     pair_idx: int
     pair_keys: Tuple[Tuple[Tuple[str, int], Tuple[str, int]], ...]
@@ -326,11 +382,16 @@ class BendGeometryPreparation:
 
 @dataclass(frozen=True)
 class BendTransform:
-    """Pure rigid transform derived from one phi/beta/tau candidate."""
+    """Pure rigid transform derived from one shift/phi/beta/tau candidate."""
 
     phi_deg: float
     beta_deg: float
     tau_deg: float
+    shift_axial: float
+    shift_radial: float
+    shift_vector: Point3D
+    pivot_shifted: Point3D
+    shifted_radius: float
     hinge_point: Point3D
     hinge_dir: Point3D
     twist_axis_point_pre_align: Point3D
@@ -344,7 +405,10 @@ class BendTransform:
         beta_rad = math.radians(self.beta_deg)
         tau_rad = math.radians(self.tau_deg)
         transformed = rotate_point_about_line(
-            coord, self.hinge_point, self.hinge_dir, beta_rad
+            v_add(coord, self.shift_vector),
+            self.hinge_point,
+            self.hinge_dir,
+            beta_rad,
         )
         if abs(tau_rad) > 0.0:
             transformed = rotate_point_about_line(
@@ -456,13 +520,15 @@ class ScreeningContext:
 
 @dataclass(frozen=True)
 class ScreeningSolution:
-    """One distinct coarse/refined angle solution and its target metric."""
+    """One distinct coarse/refined candidate solution and its target metric."""
 
     phi_deg: float
     beta_deg: float
     tau_deg: float
     achieved_value: float
     error: float
+    shift_axial: float = 0.0
+    shift_radial: float = 0.0
 
     @property
     def angles(self) -> Dict[str, float]:
@@ -471,6 +537,14 @@ class ScreeningSolution:
             "beta": self.beta_deg,
             "tau": self.tau_deg,
         }
+
+    @property
+    def variables(self) -> Dict[str, float]:
+        """Return all five screened variables, angles first then pivot shifts."""
+        values = self.angles
+        values["shift_axial"] = self.shift_axial
+        values["shift_radial"] = self.shift_radial
+        return values
 
 
 @dataclass(frozen=True)
@@ -488,6 +562,8 @@ class ScreeningResult:
     solution_tolerance: float = DEFAULT_SCREEN_SOLUTION_TOLERANCE
     target_tolerance_met: bool = False
     refinement_region_count: int = 0
+    shift_axial: float = 0.0
+    shift_radial: float = 0.0
 
     @property
     def angles(self) -> Dict[str, float]:
@@ -496,6 +572,14 @@ class ScreeningResult:
             "beta": self.beta_deg,
             "tau": self.tau_deg,
         }
+
+    @property
+    def variables(self) -> Dict[str, float]:
+        """Return all five screened variables, angles first then pivot shifts."""
+        values = self.angles
+        values["shift_axial"] = self.shift_axial
+        values["shift_radial"] = self.shift_radial
+        return values
 
     @property
     def observed_value(self) -> float:
@@ -1019,6 +1103,8 @@ def build_equivalent_cli_command(
     origin_mode: str,
     output_pdb: Optional[str] = None,
     axis_range_specs: Optional[Iterable[str]] = None,
+    shift_axial: float = 0.0,
+    shift_radial: float = 0.0,
 ) -> str:
     script_name = os.path.basename(__file__) if "__file__" in globals() else "bend_helixV2_6.py"
     parts = [
@@ -1034,6 +1120,10 @@ def build_equivalent_cli_command(
         format_float_for_cli(beta_deg),
         "--tau",
         format_float_for_cli(tau_deg),
+        "--shift_axial",
+        format_float_for_cli(shift_axial),
+        "--shift_radial",
+        format_float_for_cli(shift_radial),
         "--sep",
         sep_mode,
         "--align",
@@ -1054,6 +1144,8 @@ def make_output_name(
     phi_deg: float,
     beta_deg: float,
     tau_deg: float,
+    shift_axial: float = 0.0,
+    shift_radial: float = 0.0,
     sep_mode: str = "n",
     screen_mode: bool = False,
 ) -> str:
@@ -1065,6 +1157,12 @@ def make_output_name(
         f"B{format_angle_for_filename(beta_deg)}"
         f"T{format_angle_for_filename(tau_deg)}"
     )
+    # Unshifted runs keep the historical _PxByTz block untouched.
+    if float(shift_axial) != 0.0 or float(shift_radial) != 0.0:
+        suffix += (
+            f"Sa{format_angle_for_filename(shift_axial)}"
+            f"Sr{format_angle_for_filename(shift_radial)}"
+        )
     if screen_mode:
         suffix += "_scr"
     if sep_mode == "y":
@@ -1102,6 +1200,8 @@ def make_screen_solution_output_name(
         solution.phi_deg,
         solution.beta_deg,
         solution.tau_deg,
+        solution.shift_axial,
+        solution.shift_radial,
         sep_mode=sep_mode,
         screen_mode=True,
     )
@@ -1325,6 +1425,7 @@ def prepare_bend_geometry(
         axis_dir=axis_dir,
         axis_foot=axis_foot,
         radial=radial,
+        radial_dir=v_norm(radial),
         radius=radius,
         pair_idx=pair_idx,
         pair_keys=pair_keys,
@@ -1344,26 +1445,65 @@ def build_bend_transform(
     phi_deg: float,
     beta_deg: float,
     tau_deg: float = 0.0,
+    shift_axial: float = 0.0,
+    shift_radial: float = 0.0,
     align_mode: str = "y",
 ) -> BendTransform:
     """Build one candidate's full-helix transform without mutating records."""
     phi_deg = float(phi_deg)
     beta_deg = float(beta_deg)
     tau_deg = float(tau_deg)
+    shift_axial = float(shift_axial)
+    shift_radial = float(shift_radial)
+    if not math.isfinite(shift_axial):
+        raise ValueError("Axial pivot shift must be finite.")
+    if not math.isfinite(shift_radial):
+        raise ValueError("Radial pivot shift must be finite.")
     align_mode = normalize_align(align_mode)
 
     phi_rad = math.radians(phi_deg)
     beta_rad = math.radians(beta_deg)
     tau_rad = math.radians(tau_deg)
-    radial_phi = rotate_vector(preparation.radial, preparation.axis_dir, phi_rad)
-    hinge_point = v_add(preparation.axis_foot, radial_phi)
-    hinge_dir = v_cross(preparation.axis_dir, radial_phi)
+
+    # Translate movable piece #2 first, then rebuild every rotation from the
+    # shifted pivot. Both offsets are exactly zero-preserving, so a zero shift
+    # reproduces the pre-V2.7 geometry bit for bit.
+    shift_vector = v_add(
+        v_scale(preparation.axis_dir, shift_axial),
+        v_scale(preparation.radial_dir, shift_radial),
+    )
+    pivot_shifted = v_add(preparation.selected_p, shift_vector)
+    axis_foot_shifted = v_add(
+        preparation.axis_foot, v_scale(preparation.axis_dir, shift_axial)
+    )
+    radial_shifted = v_add(
+        preparation.radial, v_scale(preparation.radial_dir, shift_radial)
+    )
+    shifted_radius = preparation.radius + shift_radial
+
+    radial_phi = rotate_vector(radial_shifted, preparation.axis_dir, phi_rad)
+    hinge_point = v_add(axis_foot_shifted, radial_phi)
+    # The radial vector is perpendicular to the unit axis, so
+    # |axis_dir x radial_phi| == |shifted_radius|. A radial shift may pull the
+    # hinge onto the axis or past it, where that tangent is either degenerate or
+    # sign-flipped; deriving it from the unit radial direction instead keeps the
+    # hinge direction, and therefore the sense of beta, continuous across the
+    # crossing. The threshold sits far below any physical helix radius, so an
+    # unshifted run always takes the first branch.
+    tangent_source = (
+        radial_phi
+        if shifted_radius >= HINGE_TANGENT_MIN_RADIUS
+        else rotate_vector(preparation.radial_dir, preparation.axis_dir, phi_rad)
+    )
+    hinge_dir = v_cross(preparation.axis_dir, tangent_source)
     if v_len(hinge_dir) < EPS:
         raise ValueError("Failed to construct a non-zero tangent direction for the hinge.")
     hinge_dir = v_norm(hinge_dir)
 
+    # tau spins piece #2 about its own helical axis, which the shift carries
+    # along with the piece.
     twist_axis_point_pre_align = rotate_point_about_line(
-        preparation.axis_foot, hinge_point, hinge_dir, beta_rad
+        v_add(preparation.axis_foot, shift_vector), hinge_point, hinge_dir, beta_rad
     )
     twist_axis_dir = v_norm(
         rotate_vector(preparation.axis_dir, hinge_dir, beta_rad)
@@ -1371,7 +1511,7 @@ def build_bend_transform(
 
     def transform_without_alignment(coord: Point3D) -> Point3D:
         transformed = rotate_point_about_line(
-            coord, hinge_point, hinge_dir, beta_rad
+            v_add(coord, shift_vector), hinge_point, hinge_dir, beta_rad
         )
         if abs(tau_rad) > 0.0:
             transformed = rotate_point_about_line(
@@ -1385,7 +1525,7 @@ def build_bend_transform(
     align_translation: Point3D = (0.0, 0.0, 0.0)
     if align_mode == "y":
         align_translation = v_sub(
-            preparation.selected_p,
+            pivot_shifted,
             transform_without_alignment(preparation.selected_p),
         )
 
@@ -1393,6 +1533,11 @@ def build_bend_transform(
         phi_deg=phi_deg,
         beta_deg=beta_deg,
         tau_deg=tau_deg,
+        shift_axial=shift_axial,
+        shift_radial=shift_radial,
+        shift_vector=shift_vector,
+        pivot_shifted=pivot_shifted,
+        shifted_radius=shifted_radius,
         hinge_point=hinge_point,
         hinge_dir=hinge_dir,
         twist_axis_point_pre_align=twist_axis_point_pre_align,
@@ -1412,6 +1557,8 @@ def bend_structure(
     phi_deg: float,
     beta_deg: float,
     tau_deg: float = 0.0,
+    shift_axial: float = 0.0,
+    shift_radial: float = 0.0,
     sep_mode: str = "n",
     align_mode: str = "y",
     output_pdb: Optional[str] = None,
@@ -1425,6 +1572,8 @@ def bend_structure(
         phi_deg=phi_deg,
         beta_deg=beta_deg,
         tau_deg=tau_deg,
+        shift_axial=shift_axial,
+        shift_radial=shift_radial,
         align_mode=align_mode,
     )
 
@@ -1442,7 +1591,15 @@ def bend_structure(
             list(preparation.duplex_chains),
         )
 
-    out_path = normalize_output_path(output_pdb) or make_output_name(input_pdb, phi_deg, beta_deg, tau_deg, sep_mode=sep_mode)
+    out_path = normalize_output_path(output_pdb) or make_output_name(
+        input_pdb,
+        phi_deg,
+        beta_deg,
+        tau_deg,
+        transform.shift_axial,
+        transform.shift_radial,
+        sep_mode=sep_mode,
+    )
     info = {
         "pair_idx": preparation.pair_idx,
         "n_pairs": len(preparation.pair_keys),
@@ -1451,11 +1608,18 @@ def bend_structure(
         "radius": preparation.radius,
         "axis_point": preparation.axis_point,
         "axis_dir": preparation.axis_dir,
+        "selected_p": preparation.selected_p,
+        "radial_dir": preparation.radial_dir,
         "hinge_point": transform.hinge_point,
         "hinge_dir": transform.hinge_dir,
         "phi_deg": transform.phi_deg,
         "beta_deg": transform.beta_deg,
         "tau_deg": transform.tau_deg,
+        "shift_axial": transform.shift_axial,
+        "shift_radial": transform.shift_radial,
+        "shift_vector": transform.shift_vector,
+        "pivot_shifted": transform.pivot_shifted,
+        "shifted_radius": transform.shifted_radius,
         "twist_axis_point_pre_align": transform.twist_axis_point_pre_align,
         "twist_axis_point": transform.twist_axis_point,
         "twist_axis_dir": transform.twist_axis_dir,
@@ -1553,9 +1717,12 @@ def build_full_helix_transform(info: Dict[str, object]):
     tau_rad = math.radians(float(info["tau_deg"]))
     align_mode = str(info["align_mode"])
     align_translation = info["align_translation"]
+    shift_vector = info.get("shift_vector") or (0.0, 0.0, 0.0)
 
     def transform(coord: Tuple[float, float, float]) -> Tuple[float, float, float]:
-        new_coord = rotate_point_about_line(coord, hinge_point, hinge_dir, beta_rad)
+        new_coord = rotate_point_about_line(
+            v_add(coord, shift_vector), hinge_point, hinge_dir, beta_rad
+        )
         if abs(tau_rad) > 0.0:
             new_coord = rotate_point_about_line(new_coord, twist_axis_point_pre_align, twist_axis_dir, tau_rad)
         if align_mode == "y":
@@ -1919,15 +2086,36 @@ def wrapped_angle_error_deg(actual: float, target: float) -> float:
     return abs(difference)
 
 
-def _normalize_angle_name(name: str) -> str:
+_SCREEN_VARIABLE_ALIASES: Mapping[str, str] = {
+    "phi": "phi",
+    "beta": "beta",
+    "tau": "tau",
+    "shift_axial": "shift_axial",
+    "axial_shift": "shift_axial",
+    "axial": "shift_axial",
+    "sa": "shift_axial",
+    "shift_radial": "shift_radial",
+    "radial_shift": "shift_radial",
+    "radial": "shift_radial",
+    "sr": "shift_radial",
+}
+
+
+def _normalize_screen_variable_name(name: str) -> str:
+    """Resolve one screened-variable name or alias to its canonical spelling."""
     normalized = _normalized_screening_token(name)
-    if normalized.endswith("_deg"):
-        normalized = normalized[:-4]
-    if normalized not in ("phi", "beta", "tau"):
+    for unit_suffix in ("_deg", "_a", "_ang"):
+        if normalized.endswith(unit_suffix) and normalized != unit_suffix:
+            normalized = normalized[: -len(unit_suffix)]
+            break
+    resolved = _SCREEN_VARIABLE_ALIASES.get(normalized)
+    if resolved is None:
         raise ValueError(
-            f"Unknown screened angle '{name}'; expected phi, beta, or tau."
+            f"Unknown screened variable '{name}'; expected one of "
+            + ", ".join(SCREEN_VARIABLE_NAMES)
+            + "."
         )
-    return normalized
+    return resolved
 
 
 def _angle_range_value_count(angle_range: ScreenAngleRange) -> int:
@@ -1978,7 +2166,9 @@ def validate_screen_angle_ranges(
     """Validate one/two unique grids and enforce the total candidate cap."""
     supplied = tuple(ranges)
     if len(supplied) not in (1, 2):
-        raise ValueError("Angle screening requires exactly one or two screened angles.")
+        raise ValueError(
+            "Screening requires exactly one or two screened variables."
+        )
     if isinstance(candidate_cap, bool) or int(candidate_cap) != candidate_cap:
         raise ValueError("Screening candidate cap must be a positive integer.")
     cap = int(candidate_cap)
@@ -1991,9 +2181,9 @@ def validate_screen_angle_ranges(
     for angle_range in supplied:
         if not isinstance(angle_range, ScreenAngleRange):
             raise ValueError("Each screening grid must be a ScreenAngleRange.")
-        name = _normalize_angle_name(angle_range.name)
+        name = _normalize_screen_variable_name(angle_range.name)
         if name in names:
-            raise ValueError(f"Screened angle '{name}' was supplied more than once.")
+            raise ValueError(f"Screened variable '{name}' was supplied more than once.")
         names.add(name)
         normalized_range = ScreenAngleRange(
             name,
@@ -2029,10 +2219,14 @@ def format_screening_grid_preview(
             displayed = formatted[:12] + ["..."] + formatted[-6:]
         else:
             displayed = formatted
+        label = SCREEN_VARIABLE_LABELS.get(
+            angle_range.name, angle_range.name.capitalize()
+        )
         lines.append(
-            f"{angle_range.name.capitalize()} grid ({len(values)}): "
+            f"{label} grid ({len(values)}): "
             + ", ".join(displayed)
-            + " deg"
+            + " "
+            + screen_variable_unit(angle_range.name)
         )
     lines.append(f"Total coarse candidates: {candidate_count}")
     return "\n".join(lines)
@@ -2041,12 +2235,22 @@ def format_screening_grid_preview(
 def format_screening_solution_table(
     result: ScreeningResult,
     unit: str,
+    include_shifts: Optional[bool] = None,
 ) -> str:
     """Format all reported screening solutions in deterministic result order."""
     status = (
         f"{result.solution_count} distinct solution(s) within tolerance"
         if result.target_tolerance_met
         else "no solution met tolerance; closest fallback shown"
+    )
+    if include_shifts is None:
+        # Pure-angle runs keep the historical three-column layout.
+        include_shifts = any(
+            solution.shift_axial != 0.0 or solution.shift_radial != 0.0
+            for solution in result.solutions
+        )
+    shift_header = (
+        "shift axial (A)  shift radial (A)  " if include_shifts else ""
     )
     lines = [
         (
@@ -2055,15 +2259,22 @@ def format_screening_solution_table(
         ),
         (
             "  #  phi (deg)       beta (deg)      tau (deg)       "
-            f"achieved ({unit})     residual ({unit})"
+            f"{shift_header}achieved ({unit})     residual ({unit})"
         ),
     ]
     for index, solution in enumerate(result.solutions, start=1):
+        shift_columns = (
+            f"{format_float_for_cli(solution.shift_axial):<17}"
+            f"{format_float_for_cli(solution.shift_radial):<18}"
+            if include_shifts
+            else ""
+        )
         lines.append(
             f"  {index:<3d}"
             f"{format_float_for_cli(solution.phi_deg):<16}"
             f"{format_float_for_cli(solution.beta_deg):<16}"
             f"{format_float_for_cli(solution.tau_deg):<16}"
+            f"{shift_columns}"
             f"{solution.achieved_value:<17.9g}"
             f"{solution.error:.9g}"
         )
@@ -2142,11 +2353,15 @@ def screen_bend_angles(
     candidate_cap: int = 250000,
     solution_tolerance: float = DEFAULT_SCREEN_SOLUTION_TOLERANCE,
 ) -> ScreeningResult:
-    """Refine every promising coarse region and report distinct target matches."""
+    """Refine every promising coarse region and report distinct target matches.
+
+    ``fixed_angles`` must supply every unscreened angle; an unscreened pivot
+    shift defaults to 0.
+    """
     if not isinstance(context, ScreeningContext):
-        raise ValueError("Angle screening requires a ScreeningContext.")
+        raise ValueError("Screening requires a ScreeningContext.")
     if not isinstance(request, ScreeningRequest):
-        raise ValueError("Angle screening requires a ScreeningRequest.")
+        raise ValueError("Screening requires a ScreeningRequest.")
     normalized_ranges, grid_values, candidate_count = (
         validate_screen_angle_ranges(ranges, candidate_cap)
     )
@@ -2161,14 +2376,19 @@ def screen_bend_angles(
     screened_names = {angle_range.name for angle_range in normalized_ranges}
     normalized_fixed: Dict[str, float] = {}
     for raw_name, raw_value in fixed_angles.items():
-        name = _normalize_angle_name(raw_name)
+        name = _normalize_screen_variable_name(raw_name)
         value = float(raw_value)
         if not math.isfinite(value):
-            raise ValueError(f"Fixed angle '{name}' must be finite.")
+            raise ValueError(f"Fixed value for '{name}' must be finite.")
         normalized_fixed[name] = value
-    for name in ("phi", "beta", "tau"):
+    for name in SCREEN_ANGLE_NAMES:
         if name not in screened_names and name not in normalized_fixed:
             raise ValueError(f"Fixed value for unscreened angle '{name}' is required.")
+    for name in SCREEN_SHIFT_NAMES:
+        # An unscreened pivot shift defaults to no shift, so pre-V2.7 callers
+        # that only supply angles keep working unchanged.
+        if name not in screened_names:
+            normalized_fixed.setdefault(name, 0.0)
 
     point1_resolver = _compile_screening_point(context, request.point1)
     point2_resolver = _compile_screening_point(context, request.point2)
@@ -2191,17 +2411,19 @@ def screen_bend_angles(
 
     evaluation_cache = {}
 
-    def evaluate_angles(angles: Mapping[str, float]):
+    def evaluate_candidate(angles: Mapping[str, float]):
         nonlocal best_evaluation, first_candidate_error
-        angle_key = (angles["phi"], angles["beta"], angles["tau"])
-        if angle_key in evaluation_cache:
-            return evaluation_cache[angle_key]
+        candidate_key = tuple(angles[name] for name in SCREEN_VARIABLE_NAMES)
+        if candidate_key in evaluation_cache:
+            return evaluation_cache[candidate_key]
         try:
             transform = build_bend_transform(
                 context.preparation,
                 phi_deg=angles["phi"],
                 beta_deg=angles["beta"],
                 tau_deg=angles["tau"],
+                shift_axial=angles["shift_axial"],
+                shift_radial=angles["shift_radial"],
                 align_mode=align_mode,
             )
             point1 = point1_resolver(transform)
@@ -2218,13 +2440,13 @@ def screen_bend_angles(
         except (ValueError, OverflowError) as exc:
             if first_candidate_error is None:
                 first_candidate_error = exc
-            evaluation_cache[angle_key] = None
+            evaluation_cache[candidate_key] = None
             return None
 
         candidate_angles = dict(angles)
-        key = (error, angles["phi"], angles["beta"], angles["tau"])
+        key = (error,) + candidate_key
         evaluation = (key, candidate_angles, achieved)
-        evaluation_cache[angle_key] = evaluation
+        evaluation_cache[candidate_key] = evaluation
         if best_evaluation is None or key < best_evaluation[0]:
             best_evaluation = evaluation
         return evaluation
@@ -2239,7 +2461,7 @@ def screen_bend_angles(
         angles = dict(normalized_fixed)
         for angle_range, value in zip(normalized_ranges, candidate_values):
             angles[angle_range.name] = value
-        evaluation = evaluate_angles(angles)
+        evaluation = evaluate_candidate(angles)
         coarse_evaluations[candidate_indices] = evaluation
 
     if best_evaluation is None:
@@ -2302,7 +2524,7 @@ def screen_bend_angles(
         refinement_steps = dict(initial_refinement_steps)
         for _round_index in range(SCREEN_REFINEMENT_MAX_ROUNDS):
             if not any(
-                refinement_steps[name] > SCREEN_REFINEMENT_TOLERANCE_DEG
+                refinement_steps[name] > screen_variable_tolerance(name)
                 for name in screened_order
             ):
                 break
@@ -2328,7 +2550,7 @@ def screen_bend_angles(
                     trial_angles[name] = trial_value
                 if not changed:
                     continue
-                trial_evaluation = evaluate_angles(trial_angles)
+                trial_evaluation = evaluate_candidate(trial_angles)
                 if (
                     trial_evaluation is not None
                     and trial_evaluation[0] < local_best[0]
@@ -2362,22 +2584,27 @@ def screen_bend_angles(
 
     distinct_solutions = []
     solution_buckets = {}
+    # Two candidates are the same solution when every screened variable agrees
+    # inside its own refinement precision: 0.001 deg for an angle, 0.001 A for a
+    # pivot shift. Only the screened variables can differ between candidates, so
+    # bucketing on those keeps the neighbour sweep small.
+    dedup_names = tuple(screened_order)
     for evaluation in sorted(reportable_evaluations, key=lambda item: item[0]):
         key, angles, achieved = evaluation
         cell = tuple(
-            math.floor(angles[name] / SCREEN_REFINEMENT_TOLERANCE_DEG)
-            for name in ("phi", "beta", "tau")
+            math.floor(angles[name] / screen_variable_tolerance(name))
+            for name in dedup_names
         )
         duplicate = False
-        for offsets in itertools.product((-1, 0, 1), repeat=3):
+        for offsets in itertools.product((-1, 0, 1), repeat=len(dedup_names)):
             neighbor_cell = tuple(
                 index + offset for index, offset in zip(cell, offsets)
             )
             for existing in solution_buckets.get(neighbor_cell, ()):
                 if all(
-                    abs(angles[name] - existing.angles[name])
-                    <= SCREEN_REFINEMENT_TOLERANCE_DEG
-                    for name in ("phi", "beta", "tau")
+                    abs(angles[name] - existing.variables[name])
+                    <= screen_variable_tolerance(name)
+                    for name in dedup_names
                 ):
                     duplicate = True
                     break
@@ -2391,6 +2618,8 @@ def screen_bend_angles(
             tau_deg=angles["tau"],
             achieved_value=achieved,
             error=key[0],
+            shift_axial=angles["shift_axial"],
+            shift_radial=angles["shift_radial"],
         )
         distinct_solutions.append(solution)
         solution_buckets.setdefault(cell, []).append(solution)
@@ -2399,6 +2628,8 @@ def screen_bend_angles(
         phi_deg=best_angles["phi"],
         beta_deg=best_angles["beta"],
         tau_deg=best_angles["tau"],
+        shift_axial=best_angles["shift_axial"],
+        shift_radial=best_angles["shift_radial"],
         achieved_value=best_achieved,
         error=best_key[0],
         candidate_count=candidate_count,
@@ -2492,7 +2723,11 @@ def merge_cli_value(
 
 
 
-def resolve_run_parameters(args) -> Tuple[str, str, float, float, float, str, str, str, Optional[str], List[str]]:
+def resolve_run_parameters(
+    args,
+) -> Tuple[
+    str, str, float, float, float, str, str, str, Optional[str], List[str], float, float
+]:
     input_pdb = merge_cli_value(
         label="input PDB",
         positional=args.input_pdb,
@@ -2516,6 +2751,14 @@ def resolve_run_parameters(args) -> Tuple[str, str, float, float, float, str, st
         optional=args.beta_deg_opt,
     )
     tau_deg = 0.0 if args.tau_deg_opt is None else float(args.tau_deg_opt)
+    shift_axial = 0.0 if args.shift_axial is None else float(args.shift_axial)
+    shift_radial = 0.0 if args.shift_radial is None else float(args.shift_radial)
+    for label, value in (
+        ("--shift_axial", shift_axial),
+        ("--shift_radial", shift_radial),
+    ):
+        if not math.isfinite(value):
+            raise ValueError(f"{label} must be a finite number of angstroms.")
     sep_mode = normalize_sep(args.sep)
     align_mode = normalize_align(args.align)
     origin_mode = normalize_origin(args.origin)
@@ -2550,6 +2793,8 @@ def resolve_run_parameters(args) -> Tuple[str, str, float, float, float, str, st
         origin_mode,
         output_pdb,
         axis_range_specs,
+        shift_axial,
+        shift_radial,
     )
 
 
@@ -2564,6 +2809,8 @@ def run_bending(
     origin_mode: str = "n",
     output_pdb: Optional[str] = None,
     axis_range_specs: Optional[Iterable[str]] = None,
+    shift_axial: float = 0.0,
+    shift_radial: float = 0.0,
 ) -> Tuple[str, Dict[str, object]]:
     records, residues = read_pdb(input_pdb)
     origin_source_records = clone_records(records) if origin_mode == "y" else None
@@ -2586,6 +2833,8 @@ def run_bending(
         phi_deg=phi_deg,
         beta_deg=beta_deg,
         tau_deg=tau_deg,
+        shift_axial=shift_axial,
+        shift_radial=shift_radial,
         sep_mode=sep_mode,
         align_mode=align_mode,
         output_pdb=output_pdb,
@@ -2640,6 +2889,8 @@ def write_additional_screening_solution_outputs(
             phi_deg=solution.phi_deg,
             beta_deg=solution.beta_deg,
             tau_deg=solution.tau_deg,
+            shift_axial=solution.shift_axial,
+            shift_radial=solution.shift_radial,
             sep_mode=sep_mode,
             align_mode=align_mode,
             origin_mode="y",
@@ -2659,6 +2910,24 @@ def format_run_summary(out_path: str, info: Dict[str, object]) -> str:
     twist_axis_dir = info["twist_axis_dir"]
     align_translation = info["align_translation"]
     piece1_end = int(info["piece2_pair_start"]) - 1
+    shift_vector = info.get("shift_vector") or (0.0, 0.0, 0.0)
+    pivot_shifted = info.get("pivot_shifted")
+
+    shift_detail_lines: List[str] = []
+    if shift_vector != (0.0, 0.0, 0.0):
+        shift_detail_lines.append(
+            "Pivot shift translation applied to movable piece #2: "
+            f"({shift_vector[0]:.3f}, {shift_vector[1]:.3f}, {shift_vector[2]:.3f})"
+        )
+        if pivot_shifted is not None:
+            shift_detail_lines.append(
+                "Shifted pivot P position: "
+                f"({pivot_shifted[0]:.3f}, {pivot_shifted[1]:.3f}, {pivot_shifted[2]:.3f})"
+            )
+        shift_detail_lines.append(
+            "Shifted helix radius at pivot P: "
+            f"{float(info.get('shifted_radius', info['radius'])):.3f} A"
+        )
 
     lines = [
         f"Wrote {out_path}",
@@ -2671,12 +2940,18 @@ def format_run_summary(out_path: str, info: Dict[str, object]) -> str:
         f"Axis source: {info.get('axis_source') or 'automatic whole-duplex axis'}",
         f"Estimated helix radius at pivot P: {info['radius']:.3f} A",
         f"Axis direction: ({axis_dir[0]:.6f}, {axis_dir[1]:.6f}, {axis_dir[2]:.6f})",
+        (
+            "Pivot shift of movable piece #2 before bending: axial "
+            f"{float(info.get('shift_axial', 0.0)):.6f} A, radial "
+            f"{float(info.get('shift_radial', 0.0)):.6f} A"
+        ),
+        *shift_detail_lines,
         f"Hinge point: ({hinge_point[0]:.3f}, {hinge_point[1]:.3f}, {hinge_point[2]:.3f})",
         f"Hinge direction: ({hinge_dir[0]:.6f}, {hinge_dir[1]:.6f}, {hinge_dir[2]:.6f})",
         f"Tau twist of movable piece #2: {info['tau_deg']:.6f} deg",
         f"Twist axis point: ({twist_axis_point[0]:.3f}, {twist_axis_point[1]:.3f}, {twist_axis_point[2]:.3f})",
         f"Twist axis direction: ({twist_axis_dir[0]:.6f}, {twist_axis_dir[1]:.6f}, {twist_axis_dir[2]:.6f})",
-        f"Align pivot P back to original position (--align): {info['align_mode']}",
+        f"Align pivot P back to its shifted pivot position (--align): {info['align_mode']}",
     ]
 
     if info.get("align_mode") == "y":
@@ -2727,11 +3002,37 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--beta_deg", "--beta", dest="beta_deg_opt", type=float, help="beta bend angle in degrees")
     parser.add_argument("--tau_deg", "--tau", dest="tau_deg_opt", type=float, help="additional twist angle in degrees (default: 0)")
     parser.add_argument(
+        "--shift_axial",
+        "--shift-axial",
+        "--sa",
+        dest="shift_axial",
+        type=float,
+        help=(
+            "shift of movable piece #2 along the helix axis before bending, in "
+            "angstroms; positive is forward along the positive axis (default: 0)"
+        ),
+    )
+    parser.add_argument(
+        "--shift_radial",
+        "--shift-radial",
+        "--sr",
+        dest="shift_radial",
+        type=float,
+        help=(
+            "shift of movable piece #2 along the pivot radius before bending, in "
+            "angstroms; positive is outward away from the helix axis (default: 0)"
+        ),
+    )
+    parser.add_argument(
         "-o",
         "--output",
         "--output_pdb",
         dest="output_pdb",
-        help="optional output PDB filename; if omitted, automatic *_PxByTz.pdb naming is used, with _sep added when --sep y",
+        help=(
+            "optional output PDB filename; if omitted, automatic *_PxByTz.pdb naming is "
+            "used, extended to *_PxByTzSaaSrr.pdb when a pivot shift is nonzero, with "
+            "_sep added when --sep y"
+        ),
     )
     parser.add_argument(
         "--axis_range",
@@ -2788,10 +3089,10 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
 
     root.title(APP_TITLE)
     apply_optional_icon(root, __file__)
-    root.geometry("1020x840")
+    root.geometry("1020x900")
     root.resizable(True, True)
     root.columnconfigure(1, weight=1)
-    root.rowconfigure(12, weight=1)
+    root.rowconfigure(14, weight=1)
 
     input_var = tk.StringVar(value=defaults.get("input_pdb", ""))
     output_var = tk.StringVar(value=defaults.get("output_pdb", ""))
@@ -2799,13 +3100,21 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
     phi_var = tk.StringVar(value=defaults.get("phi_deg", ""))
     beta_var = tk.StringVar(value=defaults.get("beta_deg", ""))
     tau_var = tk.StringVar(value=defaults.get("tau_deg", "0"))
+    shift_axial_var = tk.StringVar(value=defaults.get("shift_axial", "0"))
+    shift_radial_var = tk.StringVar(value=defaults.get("shift_radial", "0"))
     sep_var = tk.StringVar(value=defaults.get("sep", "n"))
     align_var = tk.StringVar(value=defaults.get("align", "y"))
     origin_var = tk.StringVar(value=defaults.get("origin", "n"))
 
-    angle_vars = {"phi": phi_var, "beta": beta_var, "tau": tau_var}
-    screen_angle_vars = {
-        name: tk.BooleanVar(value=False) for name in ("phi", "beta", "tau")
+    variable_vars = {
+        "phi": phi_var,
+        "beta": beta_var,
+        "tau": tau_var,
+        "shift_axial": shift_axial_var,
+        "shift_radial": shift_radial_var,
+    }
+    screen_select_vars = {
+        name: tk.BooleanVar(value=False) for name in SCREEN_VARIABLE_NAMES
     }
     screen_range_vars = {
         name: {
@@ -2815,9 +3124,11 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             "stop": tk.StringVar(
                 value=format_float_for_cli(DEFAULT_SCREEN_RANGES[name][1])
             ),
-            "step": tk.StringVar(value=format_float_for_cli(DEFAULT_SCREEN_STEP_DEG)),
+            "step": tk.StringVar(
+                value=format_float_for_cli(screen_variable_default_step(name))
+            ),
         }
-        for name in ("phi", "beta", "tau")
+        for name in SCREEN_VARIABLE_NAMES
     }
     screen_mode_var = tk.StringVar(value="Screening for distance")
     screen_target_var = tk.StringVar()
@@ -2840,7 +3151,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
     screen_axis_two_atom_vars = [tk.StringVar() for _ in range(2)]
     screen_axis_normal_vars = [tk.StringVar() for _ in range(6)]
     screen_status_var = tk.StringVar(
-        value="Check one or two angles, then configure the screening target."
+        value="Check one or two variables, then configure the screening target."
     )
     screen_dialog_state: Dict[str, object] = {"window": None, "configured": False}
 
@@ -2894,15 +3205,46 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             "is right-handed by the right-hand rule; negative tau is left-handed.\n\n"
             "Examples: 10, -15, 0"
         ),
+        "shift_axial": (
+            "Sa: shift pivot along the axis (angstroms)\n\n"
+            "Slides movable piece #2 along the local helix axis before any rotation is "
+            "built, and rebuilds the hinge from the shifted pivot.\n\n"
+            "Positive Sa moves piece #2 forward, away from fixed piece #1, which opens the "
+            "junction; negative Sa moves it backward, toward piece #1. Piece #2 is always "
+            "the axis-downstream side of the pivot, so unlike phi this sign does not depend "
+            "on which chain appears first in the PDB. It is not the 5'-to-3' direction of "
+            "the pivot strand.\n\n"
+            "The slide follows the local axis as it stands before the bend, not piece #2's "
+            "own bent axis, so with a large beta the displacement will not look parallel to "
+            "piece #2. With a local axis range, it follows the range you supplied.\n\n"
+            "Examples: 3.4, -2, 0"
+        ),
+        "shift_radial": (
+            "Sr: shift pivot along the radius (angstroms)\n\n"
+            "Moves movable piece #2 along the pivot P atom's own radial direction, measured "
+            "outward from the local helix axis, before any rotation is built. Positive Sr "
+            "moves piece #2 out, away from the axis; negative Sr moves it in.\n\n"
+            "The radial direction is fixed at the phi = 0 direction and does not rotate with "
+            "phi, because the shift is applied before the rotation. At phi = 180 a positive "
+            "Sr therefore moves piece #2 toward the side opposite the hinge.\n\n"
+            "The direction is taken from the P atom of the residue you named. Naming the "
+            "other residue of the same pivot base pair gives the same two pieces but "
+            "reverses Sr, so check the reported radius and shifted radius in the run log.\n\n"
+            "Sr also changes the radius of the circle that phi sweeps. Sr = -radius puts the "
+            "hinge exactly on the helix axis, and values below that push it through to the "
+            "far side; both are allowed and neither reverses the sense of beta.\n\n"
+            "Examples: 1.5, -9.4, 0"
+        ),
         "screening": (
-            "Angle screening\n\n"
-            "Check Screen beside exactly one or two of phi, beta, and tau. The checked "
-            "angle fields are replaced by inclusive From/To/Step grids configured in the "
-            "Screening to achieve... window; unchecked angles stay fixed at their entered "
+            "Screening\n\n"
+            "Check Screen beside exactly one or two of phi, beta, tau, Sa, and Sr. The "
+            "checked fields are replaced by inclusive From/To/Step grids configured in the "
+            "Screening to achieve... window; unchecked variables stay fixed at their entered "
             "values.\n\n"
-            "From, To, and Step are all in degrees. After testing the coarse grid, Bend "
+            "From, To, and Step use the unit of the checked variable: degrees for phi, beta, "
+            "and tau; angstroms for Sa and Sr. After testing the coarse grid, Bend "
             "Helix efficiently refines between steps around every promising local region down "
-            "to 0.001 degree.\n\n"
+            "to 0.001 degree or 0.001 angstrom.\n\n"
             "Each candidate is evaluated against an origin-overlay distance or signed-rotation "
             "target. Every distinct solution within the configured target tolerance is "
             "reported; if none qualifies, the closest fallback is shown. The best origin-overlay "
@@ -2928,8 +3270,15 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         "align": (
             "Align pivot after bending (--align)\n\n"
             "y: after bend/twist, translate movable piece #2 so the pivot residue P atom "
-            "returns to its original position before bending.\n"
-            "n: keep the unaligned placement used by V2.1."
+            "returns to its shifted pivot position. With Sa = Sr = 0 that is its original "
+            "position before bending, exactly as in earlier versions.\n"
+            "n: keep the unaligned placement used by V2.1.\n\n"
+            "Note on the shifts: with align = y, the net effect of Sa and Sr is exactly to "
+            "translate the bent piece #2 by the shift vector. The bend and twist keep the "
+            "same shape and direction they would have without a shift. The rebuilt hinge "
+            "position changes the result only with align = n. Aligning back to the "
+            "*unshifted* pivot instead would cancel Sa and Sr entirely, which is why the "
+            "shifted pivot is the target."
         ),
         "origin": (
             "Write origin overlay (--origin)\n\n"
@@ -3000,7 +3349,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
     phi_entry = ttk.Entry(root, textvariable=phi_var)
     phi_entry.grid(row=4, column=1, sticky="ew", padx=8, pady=4)
     phi_screen_check = ttk.Checkbutton(
-        root, text="Screen", variable=screen_angle_vars["phi"]
+        root, text="Screen", variable=screen_select_vars["phi"]
     )
     phi_screen_check.grid(row=4, column=2, sticky="w", padx=(0, 8), pady=4)
     help_button(4, "phi")
@@ -3009,7 +3358,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
     beta_entry = ttk.Entry(root, textvariable=beta_var)
     beta_entry.grid(row=5, column=1, sticky="ew", padx=8, pady=4)
     beta_screen_check = ttk.Checkbutton(
-        root, text="Screen", variable=screen_angle_vars["beta"]
+        root, text="Screen", variable=screen_select_vars["beta"]
     )
     beta_screen_check.grid(row=5, column=2, sticky="w", padx=(0, 8), pady=4)
     help_button(5, "beta")
@@ -3018,60 +3367,86 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
     tau_entry = ttk.Entry(root, textvariable=tau_var)
     tau_entry.grid(row=6, column=1, sticky="ew", padx=8, pady=4)
     tau_screen_check = ttk.Checkbutton(
-        root, text="Screen", variable=screen_angle_vars["tau"]
+        root, text="Screen", variable=screen_select_vars["tau"]
     )
     tau_screen_check.grid(row=6, column=2, sticky="w", padx=(0, 8), pady=4)
     help_button(6, "tau")
 
-    angle_entries = {"phi": phi_entry, "beta": beta_entry, "tau": tau_entry}
+    ttk.Label(root, text="Sa: shift pivot along axis (A)").grid(row=7, column=0, sticky="w", padx=8, pady=4)
+    shift_axial_entry = ttk.Entry(root, textvariable=shift_axial_var)
+    shift_axial_entry.grid(row=7, column=1, sticky="ew", padx=8, pady=4)
+    shift_axial_screen_check = ttk.Checkbutton(
+        root, text="Screen", variable=screen_select_vars["shift_axial"]
+    )
+    shift_axial_screen_check.grid(row=7, column=2, sticky="w", padx=(0, 8), pady=4)
+    help_button(7, "shift_axial")
+
+    ttk.Label(root, text="Sr: shift pivot along radius (A)").grid(row=8, column=0, sticky="w", padx=8, pady=4)
+    shift_radial_entry = ttk.Entry(root, textvariable=shift_radial_var)
+    shift_radial_entry.grid(row=8, column=1, sticky="ew", padx=8, pady=4)
+    shift_radial_screen_check = ttk.Checkbutton(
+        root, text="Screen", variable=screen_select_vars["shift_radial"]
+    )
+    shift_radial_screen_check.grid(row=8, column=2, sticky="w", padx=(0, 8), pady=4)
+    help_button(8, "shift_radial")
+
+    variable_entries = {
+        "phi": phi_entry,
+        "beta": beta_entry,
+        "tau": tau_entry,
+        "shift_axial": shift_axial_entry,
+        "shift_radial": shift_radial_entry,
+    }
     screen_checkbuttons = {
         "phi": phi_screen_check,
         "beta": beta_screen_check,
         "tau": tau_screen_check,
+        "shift_axial": shift_axial_screen_check,
+        "shift_radial": shift_radial_screen_check,
     }
 
-    ttk.Label(root, text="Angle screening target").grid(
-        row=7, column=0, sticky="w", padx=8, pady=4
+    ttk.Label(root, text="Screening target").grid(
+        row=9, column=0, sticky="w", padx=8, pady=4
     )
     screening_button = ttk.Button(root, text="Screening to achieve...", state="disabled")
-    screening_button.grid(row=7, column=1, sticky="w", padx=8, pady=4)
+    screening_button.grid(row=9, column=1, sticky="w", padx=8, pady=4)
     ttk.Label(root, textvariable=screen_status_var, wraplength=300).grid(
-        row=7, column=2, sticky="w", padx=(0, 8), pady=4
+        row=9, column=2, sticky="w", padx=(0, 8), pady=4
     )
-    help_button(7, "screening")
+    help_button(9, "screening")
 
-    ttk.Label(root, text="Local axis range(s), one per line").grid(row=8, column=0, sticky="nw", padx=8, pady=4)
+    ttk.Label(root, text="Local axis range(s), one per line").grid(row=10, column=0, sticky="nw", padx=8, pady=4)
     axis_range_text = tk.Text(root, height=3, width=48, wrap="none")
-    axis_range_text.grid(row=8, column=1, sticky="ew", padx=8, pady=4)
+    axis_range_text.grid(row=10, column=1, sticky="ew", padx=8, pady=4)
     axis_default = defaults.get("axis_ranges", "")
     if axis_default:
         axis_range_text.insert("1.0", axis_default)
-    ttk.Label(root, text="Example: A1-A35,B60-B26").grid(row=8, column=2, sticky="w", padx=(0, 8), pady=4)
-    help_button(8, "axis_range")
+    ttk.Label(root, text="Example: A1-A35,B60-B26").grid(row=10, column=2, sticky="w", padx=(0, 8), pady=4)
+    help_button(10, "axis_range")
 
-    ttk.Label(root, text="Separate piece #2 chain IDs (--sep)").grid(row=9, column=0, sticky="w", padx=8, pady=4)
+    ttk.Label(root, text="Separate piece #2 chain IDs (--sep)").grid(row=11, column=0, sticky="w", padx=8, pady=4)
     sep_box = ttk.Combobox(root, textvariable=sep_var, values=("n", "y"), state="readonly", width=6)
-    sep_box.grid(row=9, column=1, sticky="w", padx=8, pady=4)
+    sep_box.grid(row=11, column=1, sticky="w", padx=8, pady=4)
     sep_box.set(sep_var.get())
-    help_button(9, "sep")
+    help_button(11, "sep")
 
-    ttk.Label(root, text="Realign pivot P after bending (--align)").grid(row=10, column=0, sticky="w", padx=8, pady=4)
+    ttk.Label(root, text="Realign pivot P after bending (--align)").grid(row=12, column=0, sticky="w", padx=8, pady=4)
     align_box = ttk.Combobox(root, textvariable=align_var, values=("y", "n"), state="readonly", width=6)
-    align_box.grid(row=10, column=1, sticky="w", padx=8, pady=4)
+    align_box.grid(row=12, column=1, sticky="w", padx=8, pady=4)
     align_box.set(align_var.get())
-    help_button(10, "align")
+    help_button(12, "align")
 
-    ttk.Label(root, text="Write origin overlay PDB (--origin)").grid(row=11, column=0, sticky="w", padx=8, pady=4)
+    ttk.Label(root, text="Write origin overlay PDB (--origin)").grid(row=13, column=0, sticky="w", padx=8, pady=4)
     origin_box = ttk.Combobox(root, textvariable=origin_var, values=("n", "y"), state="readonly", width=6)
-    origin_box.grid(row=11, column=1, sticky="w", padx=8, pady=4)
+    origin_box.grid(row=13, column=1, sticky="w", padx=8, pady=4)
     origin_box.set(origin_var.get())
-    help_button(11, "origin")
+    help_button(13, "origin")
 
     result_text = scrolledtext.ScrolledText(root, height=14, width=90, wrap="word")
-    result_text.grid(row=12, column=0, columnspan=4, sticky="nsew", padx=8, pady=(8, 4))
+    result_text.grid(row=14, column=0, columnspan=4, sticky="nsew", padx=8, pady=(8, 4))
 
     button_frame = ttk.Frame(root)
-    button_frame.grid(row=13, column=0, columnspan=4, sticky="e", padx=8, pady=(4, 8))
+    button_frame.grid(row=15, column=0, columnspan=4, sticky="e", padx=8, pady=(4, 8))
 
     def get_axis_range_specs_from_gui() -> List[str]:
         text = axis_range_text.get("1.0", tk.END)
@@ -3080,12 +3455,15 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
     def get_screen_local_axis_range_specs_from_gui() -> List[str]:
         return split_axis_range_spec_text(screen_local_axis_ranges_var.get())
 
-    def selected_screen_angles() -> List[str]:
+    def selected_screen_variables() -> List[str]:
         return [
             name
-            for name in ("phi", "beta", "tau")
-            if bool(screen_angle_vars[name].get())
+            for name in SCREEN_VARIABLE_NAMES
+            if bool(screen_select_vars[name].get())
         ]
+
+    def screen_variable_gui_label(name: str) -> str:
+        return f"{SCREEN_VARIABLE_LABELS[name]} ({screen_variable_unit(name)})"
 
     def gui_finite_float(raw_value: str, label: str) -> float:
         text = raw_value.strip()
@@ -3113,23 +3491,25 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         return ScreeningPoint("overlay_atom", selector)
 
     def screening_ranges_from_gui() -> List[ScreenAngleRange]:
-        selected = selected_screen_angles()
+        selected = selected_screen_variables()
         if len(selected) not in (1, 2):
-            raise ValueError("Check Screen for exactly one or two angles.")
+            raise ValueError("Check Screen for exactly one or two variables.")
         ranges: List[ScreenAngleRange] = []
         for name in selected:
             values = screen_range_vars[name]
+            unit = "degrees" if screen_variable_unit(name) == "deg" else "angstroms"
+            label = SCREEN_VARIABLE_LABELS[name]
             ranges.append(
                 ScreenAngleRange(
                     name=name,
                     start=gui_finite_float(
-                        values["start"].get(), f"{name} From (degrees)"
+                        values["start"].get(), f"{label} From ({unit})"
                     ),
                     stop=gui_finite_float(
-                        values["stop"].get(), f"{name} To (degrees)"
+                        values["stop"].get(), f"{label} To ({unit})"
                     ),
                     step=gui_finite_float(
-                        values["step"].get(), f"{name} Step (degrees)"
+                        values["step"].get(), f"{label} Step ({unit})"
                     ),
                 )
             )
@@ -3282,9 +3662,9 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             return f"Origin-overlay mapping is unavailable: {exc}"
 
     def refresh_screen_angle_state(*_args) -> None:
-        selected = selected_screen_angles()
-        for name in ("phi", "beta", "tau"):
-            angle_entries[name].configure(
+        selected = selected_screen_variables()
+        for name in SCREEN_VARIABLE_NAMES:
+            variable_entries[name].configure(
                 state="disabled" if name in selected else "normal"
             )
             screen_checkbuttons[name].configure(
@@ -3298,19 +3678,21 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         screen_dialog_state["configured"] = False
         if selected:
             screen_status_var.set(
-                "Screening settings need review for " + ", ".join(selected) + "."
+                "Screening settings need review for "
+                + ", ".join(SCREEN_VARIABLE_LABELS[name] for name in selected)
+                + "."
             )
         else:
             screen_status_var.set(
-                "Check one or two angles, then configure the screening target."
+                "Check one or two variables, then configure the screening target."
             )
 
     def open_screening_dialog() -> None:
-        selected = selected_screen_angles()
+        selected = selected_screen_variables()
         if len(selected) not in (1, 2):
             messagebox.showerror(
                 APP_TITLE,
-                "Check Screen for exactly one or two angles.",
+                "Check Screen for exactly one or two variables.",
                 parent=root,
             )
             return
@@ -3384,7 +3766,8 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
 
         ttk.Label(
             outer,
-            text="Screening " + " and ".join(selected),
+            text="Screening "
+            + " and ".join(SCREEN_VARIABLE_LABELS[name] for name in selected),
             font=("TkDefaultFont", 11, "bold"),
         ).grid(row=0, column=0, sticky="w")
         ttk.Label(
@@ -3393,21 +3776,25 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             wraplength=920,
         ).grid(row=1, column=0, sticky="ew", pady=(3, 8))
 
-        ranges_box = ttk.LabelFrame(outer, text="Coarse candidate angle grid", padding=8)
+        ranges_box = ttk.LabelFrame(
+            outer, text="Coarse candidate variable grid", padding=8
+        )
         ranges_box.grid(row=2, column=0, sticky="ew", pady=(0, 8))
-        ttk.Label(ranges_box, text="Angle").grid(
+        ttk.Label(ranges_box, text="Variable").grid(
             row=0, column=0, sticky="w", padx=(0, 8)
         )
+        # Column headers carry no unit because the two pivot shifts are
+        # angstroms while the three angles are degrees; each row label says which.
         for column, label in (
-            (1, "From (deg)"),
-            (3, "To (deg)"),
-            (5, "Step (deg)"),
+            (1, "From"),
+            (3, "To"),
+            (5, "Step"),
         ):
             ttk.Label(ranges_box, text=label).grid(
                 row=0, column=column, sticky="w", padx=(0, 8)
             )
         for row_index, name in enumerate(selected, start=1):
-            ttk.Label(ranges_box, text=name.capitalize()).grid(
+            ttk.Label(ranges_box, text=screen_variable_gui_label(name)).grid(
                 row=row_index, column=0, sticky="w", padx=(0, 8), pady=2
             )
             values = screen_range_vars[name]
@@ -3428,10 +3815,11 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                 )
         ttk.Label(
             ranges_box,
-            text="From, To, and Step are degrees. Both endpoints are tested; Step is a "
+            text="From, To, and Step use each row's own unit: degrees for phi, beta, and "
+            "tau; angstroms for the two pivot shifts. Both endpoints are tested; Step is a "
             "positive magnitude. Every promising local coarse region is adaptively refined "
-            "between steps to 0.001°. Descending ranges are allowed. Maximum coarse grid: "
-            "250,000 candidates.",
+            "between steps to 0.001° or 0.001 A. Descending ranges are allowed. Maximum "
+            "coarse grid: 250,000 candidates.",
             wraplength=840,
         ).grid(
             row=len(selected) + 1,
@@ -3891,7 +4279,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         mode_combo.focus_set()
 
     screening_button.configure(command=open_screening_dialog)
-    for variable in screen_angle_vars.values():
+    for variable in screen_select_vars.values():
         variable.trace_add("write", refresh_screen_angle_state)
     refresh_screen_angle_state()
 
@@ -3915,7 +4303,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             origin_mode = normalize_origin(origin_var.get())
             axis_range_specs = get_axis_range_specs_from_gui()
 
-            screened_names = selected_screen_angles()
+            screened_names = selected_screen_variables()
             if screened_names:
                 if not bool(screen_dialog_state.get("configured")):
                     raise ValueError(
@@ -3937,9 +4325,10 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                 screen_explicit_primary_output = output_pdb
                 fixed_angles = {
                     name: gui_finite_float(
-                        angle_vars[name].get(), f"fixed {name} angle"
+                        variable_vars[name].get(),
+                        f"fixed {SCREEN_VARIABLE_LABELS[name]} value",
                     )
-                    for name in ("phi", "beta", "tau")
+                    for name in SCREEN_VARIABLE_NAMES
                     if name not in screened_names
                 }
                 _normalized, _values, candidate_count = validate_screen_angle_ranges(
@@ -3972,11 +4361,13 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                     candidate_cap=250000,
                     solution_tolerance=solution_tolerance,
                 )
-                for name, value in screen_result.angles.items():
-                    angle_vars[name].set(format_float_for_cli(value))
+                for name, value in screen_result.variables.items():
+                    variable_vars[name].set(format_float_for_cli(value))
                 phi_deg = screen_result.phi_deg
                 beta_deg = screen_result.beta_deg
                 tau_deg = screen_result.tau_deg
+                shift_axial = screen_result.shift_axial
+                shift_radial = screen_result.shift_radial
                 origin_mode = "y"
                 origin_var.set("y")
                 if output_pdb is None:
@@ -3985,15 +4376,19 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                         phi_deg,
                         beta_deg,
                         tau_deg,
+                        shift_axial,
+                        shift_radial,
                         sep_mode=sep_mode,
                         screen_mode=True,
                     )
                 unit = "A" if request.mode == "distance" else "deg"
                 range_lines = [
                     (
-                        f"  {item.name}: {format_float_for_cli(item.start)} to "
+                        f"  {SCREEN_VARIABLE_LABELS[item.name]}: "
+                        f"{format_float_for_cli(item.start)} to "
                         f"{format_float_for_cli(item.stop)} by "
-                        f"{format_float_for_cli(item.step)} deg"
+                        f"{format_float_for_cli(item.step)} "
+                        f"{screen_variable_unit(item.name)}"
                     )
                     for item in ranges
                 ]
@@ -4004,7 +4399,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                             "Axis range(s) used for screening/output: "
                             + ("; ".join(axis_range_specs) if axis_range_specs else "automatic")
                         ),
-                        "Screened coarse angle grids (degrees):",
+                        "Screened coarse variable grids:",
                         *range_lines,
                         (
                             "Coarse candidates evaluated: "
@@ -4024,15 +4419,27 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                         ),
                         (
                             "Refinement precision: "
-                            f"{SCREEN_REFINEMENT_TOLERANCE_DEG:g} deg"
+                            f"{SCREEN_REFINEMENT_TOLERANCE_DEG:g} deg, "
+                            f"{SCREEN_REFINEMENT_TOLERANCE_A:g} A"
                         ),
                         f"Target: {request.target:.9g} {unit}",
-                        format_screening_solution_table(screen_result, unit),
+                        format_screening_solution_table(
+                            screen_result,
+                            unit,
+                            include_shifts=any(
+                                name in SCREEN_SHIFT_NAMES for name in screened_names
+                            ),
+                        ),
                         (
                             "Selected angles: "
                             f"phi={format_float_for_cli(phi_deg)}, "
                             f"beta={format_float_for_cli(beta_deg)}, "
                             f"tau={format_float_for_cli(tau_deg)} deg"
+                        ),
+                        (
+                            "Selected pivot shifts: "
+                            f"axial={format_float_for_cli(shift_axial)}, "
+                            f"radial={format_float_for_cli(shift_radial)} A"
                         ),
                         "Origin overlay output was enabled automatically for the best solution.",
                         (
@@ -4047,6 +4454,12 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                 phi_deg = gui_finite_float(phi_var.get(), "phi angle")
                 beta_deg = gui_finite_float(beta_var.get(), "beta angle")
                 tau_deg = gui_finite_float(tau_var.get(), "tau angle")
+                shift_axial = gui_finite_float(
+                    shift_axial_var.get(), "Sa axial pivot shift"
+                )
+                shift_radial = gui_finite_float(
+                    shift_radial_var.get(), "Sr radial pivot shift"
+                )
 
             cli_cmd = build_equivalent_cli_command(
                 input_pdb=input_pdb,
@@ -4059,6 +4472,8 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                 origin_mode=origin_mode,
                 output_pdb=output_pdb,
                 axis_range_specs=axis_range_specs,
+                shift_axial=shift_axial,
+                shift_radial=shift_radial,
             )
 
             result_text.delete("1.0", tk.END)
@@ -4080,6 +4495,8 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                 phi_deg=phi_deg,
                 beta_deg=beta_deg,
                 tau_deg=tau_deg,
+                shift_axial=shift_axial,
+                shift_radial=shift_radial,
                 sep_mode=sep_mode,
                 align_mode=align_mode,
                 origin_mode=origin_mode,
@@ -4155,6 +4572,8 @@ def main() -> int:
             "phi_deg": "" if (args.phi_deg_opt is None and args.phi_deg is None) else str(args.phi_deg_opt if args.phi_deg_opt is not None else args.phi_deg),
             "beta_deg": "" if (args.beta_deg_opt is None and args.beta_deg is None) else str(args.beta_deg_opt if args.beta_deg_opt is not None else args.beta_deg),
             "tau_deg": "0" if args.tau_deg_opt is None else str(args.tau_deg_opt),
+            "shift_axial": "0" if args.shift_axial is None else str(args.shift_axial),
+            "shift_radial": "0" if args.shift_radial is None else str(args.shift_radial),
             "sep": args.sep,
             "align": args.align,
             "origin": args.origin,
@@ -4174,6 +4593,8 @@ def main() -> int:
             origin_mode,
             output_pdb,
             axis_range_specs,
+            shift_axial,
+            shift_radial,
         ) = resolve_run_parameters(args)
     except Exception as exc:
         parser.print_usage(sys.stderr)
@@ -4187,6 +4608,8 @@ def main() -> int:
             phi_deg=phi_deg,
             beta_deg=beta_deg,
             tau_deg=tau_deg,
+            shift_axial=shift_axial,
+            shift_radial=shift_radial,
             sep_mode=sep_mode,
             align_mode=align_mode,
             origin_mode=origin_mode,

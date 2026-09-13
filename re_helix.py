@@ -4840,17 +4840,24 @@ axis, axis_dist, axis_parallel, and beta angles are not used in this mode.""",
 chosen phosphorus residue.
 
 The helix is treated as two rigid pieces. Piece #1 stays fixed, and piece #2 is
-moved by a beta bend with an optional tau twist.
+moved by an optional pivot shift, a beta bend, and an optional tau twist.
 
 Main inputs:
   Pivot: the P-bearing residue marking the border between the pieces, e.g. A36.
   phi:   hinge direction around the helix axis, in degrees.
   beta:  bend angle applied to movable piece #2, in degrees.
   tau:   optional twist of piece #2 around its bent axis, in degrees.
+  Sa:    optional shift of piece #2 along the helix axis, in angstroms.
+         Positive is forward, away from fixed piece #1.
+  Sr:    optional shift of piece #2 along the pivot radius, in angstroms.
+         Positive is outward, away from the helix axis.
 
-The GUI can also screen one or two of phi/beta/tau over a grid to hit a target
-distance or signed rotation, and report every distinct solution within a
-tolerance.
+Sa and Sr are applied before any rotation, and the hinge and twist axis are then
+rebuilt from the shifted pivot. Both default to 0.
+
+The GUI can also screen one or two of phi/beta/tau/Sa/Sr over a grid to hit a
+target distance or signed rotation, and report every distinct solution within a
+tolerance. Angle grids are in degrees and shift grids are in angstroms.
 
 Options include a local-axis range for already-bent inputs, new chain IDs for
 piece #2, and an origin-overlay PDB for comparing before and after.""",

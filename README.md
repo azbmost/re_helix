@@ -109,7 +109,7 @@ This writes:
 
 ## Bend Helix Tool
 
-The bundled Bend Helix V2.6 tool bends a straight two-chain nucleic-acid helix at a selected phosphorus residue. It treats the helix as two rigid pieces: piece #1 stays fixed, while piece #2 is moved by a beta bend and optional tau twist.
+The bundled Bend Helix V2.7 tool bends a straight two-chain nucleic-acid helix at a selected phosphorus residue. It treats the helix as two rigid pieces: piece #1 stays fixed, while piece #2 is moved by an optional pivot shift, a beta bend, and an optional tau twist.
 
 Open its GUI directly:
 
@@ -123,23 +123,48 @@ Run it from the command line:
 python3 re_helix_lib/bend_helix.py --input straight_helix.pdb --pivot A36 --phi 0 --beta 30 --tau 0
 ```
 
+Shift the movable piece before bending it:
+
+```bash
+python3 re_helix_lib/bend_helix.py --input straight_helix.pdb --pivot A36 --phi 0 --beta 30 --shift_axial 2 --shift_radial -1.5
+```
+
 Useful Bend Helix options:
 
 - `--pivot A36`: P-bearing residue that marks the border between fixed piece #1 and movable piece #2.
 - `--phi 0`: hinge direction around the helix axis, in degrees.
 - `--beta 30`: bend angle for movable piece #2, in degrees.
 - `--tau 10`: optional twist of movable piece #2 around its bent axis, in degrees.
+- `--shift_axial 2` (`--sa`): shift of movable piece #2 along the helix axis before bending, in angstroms. Positive is forward, away from fixed piece #1.
+- `--shift_radial -1.5` (`--sr`): shift of movable piece #2 along the pivot radius before bending, in angstroms. Positive is outward, away from the helix axis.
 - `--axis_range A1-A35,B60-B26`: optional local-axis range for already-bent inputs.
 - `--sep y`: give movable piece #2 new chain IDs in the output.
 - `--origin y`: also write an origin-overlay PDB for comparing the original and transformed helix.
 
-### Angle screening in the GUI
+### Shifting the pivot
 
-Each phi, beta, and tau field has a **Screen** checkbox. Check exactly one or two angles, then click **Screening to achieve...** to define the target and the candidate grid. An unchecked angle is held at the value in its main-window field. For each checked angle, provide **From**, **To**, and **Step** values, all in degrees: the From and To values are included in the coarse search, and Step must be positive. The default coarse ranges are phi −90° to 90°, beta −180° to 180°, and tau −180° to 180°; Step defaults to 6°. With two checked angles, Bend Helix evaluates their Cartesian-product coarse grid. A live preview beneath the fields shows each calculated coarse-grid value (compacted for long grids), the value count for each angle, and the total number of coarse candidates.
+`--shift_axial` (**Sa**) and `--shift_radial` (**Sr**) translate movable piece #2 in angstroms *before* any rotation is built, and every rotation is then rebuilt from the shifted pivot. Both default to 0, so a run without them behaves exactly as it did in earlier versions.
 
-After the coarse pass, Bend Helix identifies every local coarse minimum as a promising region and refines each region independently. It adjusts one or both screened angles with an adaptive pattern search, halves the refinement spacing when no improvement is found, and stops at 0.001-degree precision. Thus, From = 0, To = 10, Step = 4 starts with 0, 4, 8, and 10 degrees but can select an in-between result such as 6.35 degrees. Refining the local regions independently allows separate solution branches to be found without constructing an extremely dense full grid.
+- **Sa**, along the axis. Positive Sa moves piece #2 forward, away from fixed piece #1, opening the junction; negative Sa moves it backward, toward piece #1. Piece #2 is by construction the axis-downstream side of the pivot, so this sign does not depend on which chain appears first in the PDB the way phi does, and it is not the 5'-to-3' direction of the pivot strand. The slide follows the local axis as it stands *before* the bend, not piece #2's own bent axis, so at a large beta the displacement will not look parallel to piece #2. With `--axis_range`, it follows the range you supplied, which for an already-bent input may describe piece #1.
+- **Sr**, along the radius. Positive Sr moves piece #2 out, away from the helix axis; negative Sr moves it in. The direction is the pivot P atom's own radial direction, fixed at the phi = 0 direction: it does **not** rotate with phi, because the shift happens before the rotation. At phi = 180 a positive Sr therefore moves piece #2 toward the side opposite the hinge. The direction is taken from the P atom of the residue you named, so naming the other residue of the same pivot base pair gives the same two pieces but reverses Sr.
 
-**Solution tolerance** determines which distinct results are reported. Its unit is angstroms in distance mode and degrees in rotation mode, and its default is 0.001. Qualifying solutions are de-duplicated at the 0.001-degree angle refinement precision and sorted by residual, then phi, beta, and tau. If none reaches the requested tolerance, the closest candidate is reported explicitly as a fallback. The result pane and run log show a table containing every reported solution.
+Sr also changes the radius of the circle that phi sweeps: the hinge sits at distance `radius + Sr` from the axis. `Sr = -radius` places the hinge exactly on the helix axis, turning beta into a pure axial kink, and values below that push the hinge through to the far side. Both are allowed, and neither reverses the sense of beta. The run log reports the original radius, the shifted radius, the shift vector, and the shifted pivot position.
+
+One consequence is worth knowing before you use the shifts:
+
+> With `--align y` (the default), the net effect of Sa and Sr is exactly to translate the bent piece #2 by the shift vector. The bend and twist keep the same shape and direction they would have without a shift. The rebuilt hinge position changes the result only with `--align n`.
+
+This follows from what `--align y` does: it puts the pivot P atom back on a fixed target, which cancels every hinge *location* from the result and leaves only the alignment target itself. The target is the *shifted* pivot; aligning back to the unshifted pivot instead would cancel Sa and Sr entirely and make the two settings do nothing.
+
+Automatic output names gain an `Sa...Sr...` block after the angle block whenever either shift is nonzero, for example `model_P0B30T0Sa2Srm1p5.pdb`. A run with both shifts at 0 keeps the historical `model_P0B30T0.pdb` name unchanged.
+
+### Screening in the GUI
+
+Each phi, beta, tau, **Sa**, and **Sr** field has a **Screen** checkbox. Check exactly one or two of the five, then click **Screening to achieve...** to define the target and the candidate grid. An unchecked variable is held at the value in its main-window field. For each checked variable, provide **From**, **To**, and **Step** values: the From and To values are included in the coarse search, and Step must be positive. Each row uses its own unit, shown in its row label — degrees for phi, beta, and tau; angstroms for Sa and Sr — so a mixed pair such as beta and Sr is screened in degrees and angstroms respectively. The default coarse ranges are phi −90° to 90°, beta −180° to 180°, tau −180° to 180°, and −10 Å to 10 Å for both shifts; Step defaults to 6° for an angle and 0.5 Å for a shift. With two checked variables, Bend Helix evaluates their Cartesian-product coarse grid. A live preview beneath the fields shows each calculated coarse-grid value (compacted for long grids), the value count for each variable, and the total number of coarse candidates.
+
+After the coarse pass, Bend Helix identifies every local coarse minimum as a promising region and refines each region independently. It adjusts one or both screened variables with an adaptive pattern search, halves the refinement spacing when no improvement is found, and stops at 0.001-degree or 0.001-angstrom precision. Thus, From = 0, To = 10, Step = 4 starts with 0, 4, 8, and 10 degrees but can select an in-between result such as 6.35 degrees. Refining the local regions independently allows separate solution branches to be found without constructing an extremely dense full grid.
+
+**Solution tolerance** determines which distinct results are reported. Its unit is angstroms in distance mode and degrees in rotation mode, and its default is 0.001. Qualifying solutions are de-duplicated at each screened variable's own refinement precision and sorted by residual, then phi, beta, tau, Sa, and Sr. If none reaches the requested tolerance, the closest candidate is reported explicitly as a fallback. The result pane and run log show a table containing every reported solution; the table gains **shift axial** and **shift radial** columns when a shift is in play.
 
 By default, only the best solution and its origin-overlay PDB are written. Enable **Write all reported solutions** to write every additional solution under numbered names such as `model_P10Bm20T30_scr_sol002.pdb`; each additional model also receives a corresponding `-ori.pdb` overlay. All reported solutions use the selected `--align y` or `--align n` behavior during screening and output generation.
 
@@ -148,13 +173,13 @@ Every argument or source choice in the screening popup has a light-blue **?** bu
 The screening window provides two target modes:
 
 - **Screening for distance** minimizes the absolute difference from a requested distance in angstroms. Define the two endpoints as either two atoms or one atom plus one XYZ point.
-- **Screening for rotation** minimizes the circular difference from a requested signed angle in degrees around a defined axis. Define the endpoints as two atoms, one atom plus one XYZ point, or one atom plus the phi-corrected pivot P position. The latter is the pivot P position after applying the candidate phi correction, so it is recalculated for every candidate.
+- **Screening for rotation** minimizes the circular difference from a requested signed angle in degrees around a defined axis. Define the endpoints as two atoms, one atom plus one XYZ point, or one atom plus the phi-corrected pivot P position. The latter is the pivot P position after applying the candidate's pivot shifts and phi correction, so it is recalculated for every candidate; note that it degenerates to a single phi-independent point when `radius + Sr` reaches 0.
 
 Atom selectors refer to the origin-overlay PDB, not to the chain IDs in the input PDB. Use `CHAIN:RESIDUE:ATOM` syntax, for example `A:36:P` or `C:36:O5'`. For a standard two-chain origin overlay, A and B identify the original model, while C and D identify the fully transformed model. Residue numbers and atom names remain those of the corresponding overlay atoms.
 
 For rotation screening, the axis can be supplied geometrically with the same source choices used by the main tool's restrained-rotation mode: an XYZ point or overlay atom for the axis point, together with a direct vector, two XYZ points, two overlay atoms, or the right-hand normal to two vectors for its direction. Alternatively, choose **Local axis range(s)** and enter the range definitions directly in the screening popup; multiple definitions can be separated by semicolons. These popup-owned ranges override the main-window Local axis range(s) for candidate generation and for the best/additional screened outputs, so the evaluated and written geometries remain identical without copying values from the main window.
 
-The measured rotation is signed from endpoint 1 toward endpoint 2 by the right-hand rule about the positive axis direction. Angular differences wrap across -180/180 degrees, so equivalent directions near the wrap boundary compare correctly. Bend Helix reports every distinct coarse or refined solution within tolerance; an exact target is not required because the closest fallback is retained when necessary. Automatic screening output names retain the selected P/B/T angle values and add `_scr`, for example `model_P0B30T0_scr.pdb` or `model_P0B30T0_scr_sep.pdb`; an explicit **Save as** path is honored without automatically adding `_scr`. A screening run automatically writes the best model's origin-overlay PDB even when origin-overlay output was not otherwise selected, so its name inherits `_scr` as well (for example, `model_P0B30T0_scr-ori.pdb`).
+The measured rotation is signed from endpoint 1 toward endpoint 2 by the right-hand rule about the positive axis direction. Angular differences wrap across -180/180 degrees, so equivalent directions near the wrap boundary compare correctly. Bend Helix reports every distinct coarse or refined solution within tolerance; an exact target is not required because the closest fallback is retained when necessary. Automatic screening output names retain the selected P/B/T angle values, add the `Sa...Sr...` block when a shift is nonzero, and add `_scr`, for example `model_P0B30T0_scr.pdb`, `model_P0B30T0_scr_sep.pdb`, or `model_P0B30T0Sa2Sr0_scr.pdb`; an explicit **Save as** path is honored without automatically adding `_scr`. A screening run automatically writes the best model's origin-overlay PDB even when origin-overlay output was not otherwise selected, so its name inherits `_scr` as well (for example, `model_P0B30T0_scr-ori.pdb`).
 
 ## Do Symmetry Tool
 
