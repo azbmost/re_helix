@@ -53,9 +53,15 @@ Geometry implemented here
 - With --align n, the result matches the V2.1 bend/twist behaviour.
 - With --sep y, piece 2 is additionally written under new chain IDs so that
   piece 1 and piece 2 are separated in the final PDB.
-- Output filenames are written as *_PxByTz.pdb, or *_PxByTz_sep.pdb when
-  --sep y is used, unless -o/--output is provided. When either shift is nonzero,
-  SaaSrr is appended to the angle block, giving *_PxByTzSaaSrr.pdb.
+- Output filenames are written as *_PvCccRrr_PxByTz.pdb, or
+  *_PvCccRrr_PxByTz_sep.pdb when --sep y is used, unless -o/--output is
+  provided. The leading Pv block names the pivot residue, for example PvA36.
+  When either shift is nonzero, SaaSrr is appended to the angle block, giving
+  *_PvA36_PxByTzSaaSrr.pdb.
+- Every output PDB records how it was made as REMARK 950 RE_SCRIPT SOFTWARE,
+  COMMAND and OUTPUT_STAGE lines, using the same convention as the other
+  bundled tools. The COMMAND record holds the equivalent CLI command, so the
+  model can be regenerated from the file itself.
 - With --origin y, an additional <main-output>-ori.pdb file is written that
   contains the original full helix and the same rigid full-helix transform used
   for piece 2, under sequential chain IDs.
@@ -89,10 +95,28 @@ except ImportError:  # pragma: no cover - direct script execution fallback
 EPS = 1.0e-8
 # Smallest shifted pivot radius whose own tangent is still numerically usable.
 HINGE_TANGENT_MIN_RADIUS = 1.0e-6
+
+# Provenance records, using the same REMARK 950 RE_SCRIPT convention the other
+# bundled tools write and get_phenix_restraints/reverse_strand_direction parse.
+REMARK_PREFIX = "REMARK 950 RE_SCRIPT"
+SOFTWARE_NAME = "bend_helix"
+SOFTWARE_DEVELOPER = "DiLiuLab"
+COORD_RECORDS = {"ATOM", "HETATM", "ANISOU", "SIGATM", "SIGUIJ"}
+# Records that follow REMARK in PDB record ordering. The header block ends at
+# the first of these, so new REMARK lines never land among LINK or coordinate
+# records even when a file appends REMARKs after the coordinates.
+POST_REMARK_RECORDS = COORD_RECORDS | {
+    "DBREF", "DBREF1", "DBREF2", "SEQADV", "SEQRES", "MODRES",
+    "HET", "HETNAM", "HETSYN", "FORMUL",
+    "HELIX", "SHEET", "SSBOND", "LINK", "CISPEP", "SITE",
+    "CRYST1", "ORIGX1", "ORIGX2", "ORIGX3",
+    "SCALE1", "SCALE2", "SCALE3", "MTRIX1", "MTRIX2", "MTRIX3",
+    "MODEL", "TER", "ENDMDL", "CONECT", "MASTER", "END",
+}
 CHAIN_ID_CANDIDATES = string.ascii_uppercase + string.ascii_lowercase + string.digits
 Point3D = Tuple[float, float, float]
 TOOL_NAME = "Bend Helix"
-VERSION = "V2.7"
+VERSION = "V2.8"
 APP_TITLE = f"{TOOL_NAME} {VERSION}"
 SCREEN_REFINEMENT_TOLERANCE_DEG = 1.0e-3
 SCREEN_REFINEMENT_TOLERANCE_A = 1.0e-3
@@ -1086,6 +1110,20 @@ def format_angle_for_filename(value: float) -> str:
 
 
 
+def format_pivot_for_filename(pivot: object) -> str:
+    """Return the pivot residue as a filename-safe ``A36`` style label.
+
+    Accepts a resolved ``(chain_id, res_seq)`` key or any residue token the CLI
+    takes, so callers holding either form produce the same label.
+    """
+    if isinstance(pivot, (tuple, list)) and len(pivot) == 2:
+        chain_id, res_seq = pivot[0], int(pivot[1])
+    else:
+        chain_id, res_seq = parse_residue_token(str(pivot))
+    chain = str(chain_id).strip() or "_"
+    return f"{chain}{format_angle_for_filename(res_seq)}"
+
+
 def format_float_for_cli(value: float) -> str:
     if abs(value - round(value)) < 1.0e-8:
         return str(int(round(value)))
@@ -1148,11 +1186,16 @@ def make_output_name(
     shift_radial: float = 0.0,
     sep_mode: str = "n",
     screen_mode: bool = False,
+    pivot: object = None,
 ) -> str:
     stem, ext = os.path.splitext(inp)
     if not ext:
         ext = ".pdb"
+    pivot_block = (
+        f"_Pv{format_pivot_for_filename(pivot)}" if pivot is not None else ""
+    )
     suffix = (
+        f"{pivot_block}"
         f"_P{format_angle_for_filename(phi_deg)}"
         f"B{format_angle_for_filename(beta_deg)}"
         f"T{format_angle_for_filename(tau_deg)}"
@@ -1184,6 +1227,7 @@ def make_screen_solution_output_name(
     solution_index: int,
     sep_mode: str = "n",
     explicit_primary_output: Optional[str] = None,
+    pivot: object = None,
 ) -> str:
     """Name one additional reported screening solution deterministically."""
     if solution_index < 2:
@@ -1204,6 +1248,7 @@ def make_screen_solution_output_name(
         solution.shift_radial,
         sep_mode=sep_mode,
         screen_mode=True,
+        pivot=pivot,
     )
     stem, ext = os.path.splitext(generated)
     if stem.endswith("_sep"):
@@ -1599,6 +1644,7 @@ def bend_structure(
         transform.shift_axial,
         transform.shift_radial,
         sep_mode=sep_mode,
+        pivot=preparation.selected_key,
     )
     info = {
         "pair_idx": preparation.pair_idx,
@@ -1653,6 +1699,58 @@ def rewrite_ter_line(template_line: str, last_atom: Optional[AtomRecord]) -> str
     )
     return updated + "\n"
 
+
+
+def clean_remark_value(value: object) -> str:
+    """Return a compact value for parse-friendly REMARK key=value fields."""
+    text = str(value)
+    return text.replace("\n", " ").replace("\r", " ").strip()
+
+
+def build_bend_remark_lines(command: Optional[str] = None) -> List[str]:
+    """Build the RE_SCRIPT provenance records written into every output PDB."""
+    lines = [
+        f"{REMARK_PREFIX} SOFTWARE name={clean_remark_value(SOFTWARE_NAME)} "
+        f"version={clean_remark_value(VERSION)} "
+        f"developer={clean_remark_value(SOFTWARE_DEVELOPER)}"
+    ]
+    if command:
+        lines.append(f"{REMARK_PREFIX} COMMAND text={clean_remark_value(command)}")
+    lines.append(f"{REMARK_PREFIX} OUTPUT_STAGE name={clean_remark_value(SOFTWARE_NAME)}")
+    return lines
+
+
+def record_name_of(record: object) -> str:
+    """Return the six-column PDB record name of an atom or passthrough record."""
+    if isinstance(record, AtomRecord):
+        return record.record_name
+    return str(getattr(record, "line", ""))[:6].strip()
+
+
+def remark_insert_index(records: Sequence[object]) -> int:
+    """Return where new REMARK records belong among existing records."""
+    last_remark = -1
+    for index, record in enumerate(records):
+        name = record_name_of(record)
+        if name == "REMARK":
+            last_remark = index
+        elif name in POST_REMARK_RECORDS:
+            return last_remark + 1 if last_remark >= 0 else index
+    return last_remark + 1 if last_remark >= 0 else len(records)
+
+
+def insert_remark_records(records: Sequence[object], remark_lines: Sequence[str]):
+    """Return a new record list with the REMARK records spliced into the header.
+
+    ``read_pdb`` opens the input in universal-newline mode, so every passthrough
+    record already carries a bare LF whatever the input used; new records match.
+    """
+    result = list(records)
+    if not remark_lines:
+        return result
+    index = remark_insert_index(result)
+    result[index:index] = [RawRecord(line=line + "\n") for line in remark_lines]
+    return result
 
 
 def write_pdb(records, out_path: str, update_ter: bool = False) -> None:
@@ -2647,6 +2745,7 @@ def write_origin_overlay_pdb(
     out_path: str,
     transform_coord,
     chain_order: List[str],
+    remark_lines: Optional[Sequence[str]] = None,
 ) -> Dict[str, Dict[str, str]]:
     if not chain_order:
         raise ValueError("No duplex chains are available for --origin output.")
@@ -2669,6 +2768,8 @@ def write_origin_overlay_pdb(
 
     serial = 1
     with open(out_path, "w") as out:
+        for line in remark_lines or ():
+            out.write(line + "\n")
         for chain_map, apply_transform in ((chain_map_model1, False), (chain_map_model2, True)):
             for orig_chain in chain_order:
                 last_atom: Optional[AtomRecord] = None
@@ -2811,6 +2912,7 @@ def run_bending(
     axis_range_specs: Optional[Iterable[str]] = None,
     shift_axial: float = 0.0,
     shift_radial: float = 0.0,
+    command: Optional[str] = None,
 ) -> Tuple[str, Dict[str, object]]:
     records, residues = read_pdb(input_pdb)
     origin_source_records = clone_records(records) if origin_mode == "y" else None
@@ -2840,7 +2942,32 @@ def run_bending(
         output_pdb=output_pdb,
         axis_range_defs=axis_range_defs,
     )
-    write_pdb(records, out_path, update_ter=(sep_mode == "y"))
+
+    if command is None:
+        command = build_equivalent_cli_command(
+            input_pdb=input_pdb,
+            pivot_residue=pivot_residue,
+            phi_deg=phi_deg,
+            beta_deg=beta_deg,
+            tau_deg=tau_deg,
+            sep_mode=sep_mode,
+            align_mode=align_mode,
+            origin_mode=origin_mode,
+            output_pdb=output_pdb,
+            axis_range_specs=[
+                format_axis_range_spec(axis_def) for axis_def in axis_range_defs
+            ],
+            shift_axial=shift_axial,
+            shift_radial=shift_radial,
+        )
+    remark_lines = build_bend_remark_lines(command)
+    write_pdb(
+        insert_remark_records(records, remark_lines),
+        out_path,
+        update_ter=(sep_mode == "y"),
+    )
+    info["command"] = command
+    info["remark_lines"] = tuple(remark_lines)
 
     info["origin_mode"] = origin_mode
     info["origin_out_path"] = None
@@ -2857,6 +2984,7 @@ def run_bending(
             out_path=origin_out_path,
             transform_coord=build_full_helix_transform(info),
             chain_order=list(info["duplex_chains"]),
+            remark_lines=remark_lines,
         )
         info["origin_out_path"] = origin_out_path
         info.update(origin_info)
@@ -2872,9 +3000,13 @@ def write_additional_screening_solution_outputs(
     align_mode: str,
     axis_range_specs: Optional[Iterable[str]] = None,
     explicit_primary_output: Optional[str] = None,
+    pivot: object = None,
 ) -> Tuple[Tuple[str, Optional[str]], ...]:
     """Write every reported solution after the primary/best one, including overlays."""
     written = []
+    # Fall back to the caller's own token so these names carry the same pivot
+    # block that bend_structure puts on the primary output.
+    pivot_label = pivot if pivot is not None else pivot_residue
     for solution_index, solution in enumerate(result.solutions[1:], start=2):
         solution_out_path = make_screen_solution_output_name(
             input_pdb=input_pdb,
@@ -2882,6 +3014,7 @@ def write_additional_screening_solution_outputs(
             solution_index=solution_index,
             sep_mode=sep_mode,
             explicit_primary_output=explicit_primary_output,
+            pivot=pivot_label,
         )
         written_path, solution_info = run_bending(
             input_pdb=input_pdb,
@@ -3029,9 +3162,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--output_pdb",
         dest="output_pdb",
         help=(
-            "optional output PDB filename; if omitted, automatic *_PxByTz.pdb naming is "
-            "used, extended to *_PxByTzSaaSrr.pdb when a pivot shift is nonzero, with "
-            "_sep added when --sep y"
+            "optional output PDB filename; if omitted, automatic *_PvA36_PxByTz.pdb "
+            "naming is used, extended to *_PvA36_PxByTzSaaSrr.pdb when a pivot shift is "
+            "nonzero, with _sep added when --sep y"
         ),
     )
     parser.add_argument(
@@ -3164,10 +3297,15 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         ),
         "output": (
             "Output PDB file\n\n"
-            "Optional. Leave this blank to use automatic naming such as input_P0B30T0.pdb "
-            "or input_P0B30T0_sep.pdb. If you provide a filename, that path is used for the "
+            "Optional. Leave this blank to use automatic naming such as "
+            "input_PvA36_P0B30T0.pdb or input_PvA36_P0B30T0_sep.pdb. The leading Pv block "
+            "names the pivot residue, so runs pivoted at different residues no longer "
+            "overwrite one another. If you provide a filename, that path is used for the "
             "main bent model. Automatic screening names add _scr after the angle values, "
-            "for example input_P0B30T0_scr.pdb or input_P0B30T0_scr_sep.pdb."
+            "for example input_PvA36_P0B30T0_scr.pdb or input_PvA36_P0B30T0_scr_sep.pdb.\n\n"
+            "Every output PDB also records the equivalent CLI command as a "
+            "REMARK 950 RE_SCRIPT COMMAND line, alongside SOFTWARE and OUTPUT_STAGE "
+            "records, so a model carries its own provenance."
         ),
         "pivot": (
             "Pivot P residue\n\n"
@@ -4289,6 +4427,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         screen_result: Optional[ScreeningResult] = None
         write_all_screen_solutions = False
         screen_explicit_primary_output: Optional[str] = None
+        screen_pivot_key: object = None
         additional_screen_outputs = []
         try:
             input_pdb = input_var.get().strip()
@@ -4352,6 +4491,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                     pivot_residue=pivot_residue,
                     axis_range_specs=axis_range_specs,
                 )
+                screen_pivot_key = context.preparation.selected_key
                 screen_result = screen_bend_angles(
                     context=context,
                     fixed_angles=fixed_angles,
@@ -4380,6 +4520,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                         shift_radial,
                         sep_mode=sep_mode,
                         screen_mode=True,
+                        pivot=context.preparation.selected_key,
                     )
                 unit = "A" if request.mode == "distance" else "deg"
                 range_lines = [
@@ -4502,6 +4643,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                 origin_mode=origin_mode,
                 output_pdb=output_pdb,
                 axis_range_specs=axis_range_specs,
+                command=cli_cmd,
             )
             if screen_result is not None and write_all_screen_solutions:
                 additional_screen_outputs.extend(
@@ -4513,6 +4655,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                         align_mode=align_mode,
                         axis_range_specs=axis_range_specs,
                         explicit_primary_output=screen_explicit_primary_output,
+                        pivot=screen_pivot_key,
                     )
                 )
             summary = format_run_summary(out_path, info)

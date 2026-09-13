@@ -4860,7 +4860,11 @@ target distance or signed rotation, and report every distinct solution within a
 tolerance. Angle grids are in degrees and shift grids are in angstroms.
 
 Options include a local-axis range for already-bent inputs, new chain IDs for
-piece #2, and an origin-overlay PDB for comparing before and after.""",
+piece #2, and an origin-overlay PDB for comparing before and after.
+
+Automatic output names lead with the pivot, as in model_PvA36_P0B30T0.pdb, and
+every output PDB records the equivalent CLI command as a
+REMARK 950 RE_SCRIPT COMMAND line.""",
     "tool_do_symmetry": """Do Symmetry: average a pseudosymmetric homomeric assembly into
 an idealized symmetric model.
 

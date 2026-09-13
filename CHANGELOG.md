@@ -1,5 +1,18 @@
 # Changelog
 
+## Bend Helix V2.8 - 2026-09-12
+
+- Bumped the bundled Bend Helix tool to V2.8 while keeping the main `re_helix` application at V4.6.
+- Led automatic output names with a `Pv` block naming the pivot residue: `model_PvA36_P0B30T0.pdb`, and `model_PvA36_P0B30T0Sa2Srm1p5.pdb` when a pivot shift is nonzero. Bends pivoted at different residues previously collided on one filename whenever the angles matched.
+- Took the pivot label from the residue as resolved in the input rather than the typed token, so `A36`, `36A`, and `A.36` all name the same file. Blank chains and negative residue numbers stay filename-safe as `_36` and `Am12`.
+- Carried the pivot block through the `-ori` overlay and every numbered `_solNNN` screening solution, so a screening run's files all agree on the pivot they came from.
+- Recorded each run in every output PDB as `REMARK 950 RE_SCRIPT` SOFTWARE, COMMAND, and OUTPUT_STAGE lines, the same convention `reciprocal_exchange_pdb` and `insert_virtual_resi` already use and that `get_phenix_restraints` and `reverse_strand_direction` parse. The COMMAND record holds the full equivalent CLI command, so a bent model carries the recipe that produced it.
+- Made the GUI pass the command it prints into the writer, so the command in the result pane and the command in the file are the same string rather than two independent reconstructions.
+- Placed the records after any existing `REMARK` lines and before the first structural record, so they never land among `LINK` or coordinate records even when a file appends `REMARK` lines after the coordinates. Re-running the tool on its own output appends a fresh block and keeps the earlier one.
+- Wrote the same block into the `-ori` origin-overlay PDB, which is built from scratch rather than from the input records and would otherwise have carried no provenance at all.
+- Flattened embedded newlines in the COMMAND value so one run can never produce more than one record, and documented that `read_pdb` reads universal newlines, so a CRLF input has always been written back as LF.
+- Added regression coverage for the naming block, the resolved-pivot normalization, record content and placement, overlay parity, the GUI-supplied command, re-run accumulation, and a round trip that replays the recorded command and compares the result byte for byte against the original output.
+
 ## Bend Helix V2.7 - 2026-09-12
 
 - Bumped the bundled Bend Helix tool to V2.7 while keeping the main `re_helix` application at V4.6.

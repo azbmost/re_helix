@@ -1,6 +1,7 @@
 import inspect
 import math
 import re
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -716,7 +717,7 @@ class BendHelixScreeningTests(unittest.TestCase):
             completed.stdout.strip(),
             f"{bend.TOOL_NAME} {bend.VERSION}",
         )
-        self.assertEqual(bend.VERSION, "V2.7")
+        self.assertEqual(bend.VERSION, "V2.8")
 
     def test_screening_automatic_names_append_scr_before_optional_sep(self):
         self.assertEqual(
@@ -1224,7 +1225,7 @@ class BendHelixPivotShiftTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("axial 3.000000 A, radial 2.000000 A", completed.stdout)
-        written = self.input_path.with_name("xy_duplex_P0B0T0Sa3Sr2.pdb")
+        written = self.input_path.with_name("xy_duplex_PvX2_P0B0T0Sa3Sr2.pdb")
         self.assertTrue(written.is_file(), completed.stdout)
         self.assertPointAlmostEqual(
             _p_coords(written)[("X", 3)], (3.0, 0.0, 7.0), places=3
@@ -1478,6 +1479,309 @@ class BendHelixShiftScreeningTests(unittest.TestCase):
                 ],
                 candidate_cap=100,
             )
+
+
+class BendHelixPivotNamingTests(unittest.TestCase):
+    """The PvCHAINRES block automatic output names carry."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.input_path = Path(self.temp_dir.name) / "xy_duplex.pdb"
+        self.input_path.write_text(_screening_fixture_pdb(), encoding="utf-8")
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_pivot_label_accepts_a_resolved_key_or_any_residue_token(self):
+        self.assertEqual(bend.format_pivot_for_filename(("A", 36)), "A36")
+        for token in ("A36", "36A", "A.36", "36.A"):
+            self.assertEqual(bend.format_pivot_for_filename(token), "A36")
+        # A blank chain and a negative residue number stay filename-safe.
+        self.assertEqual(bend.format_pivot_for_filename((" ", 12)), "_12")
+        self.assertEqual(bend.format_pivot_for_filename(("A", -12)), "Am12")
+
+    def test_pivot_block_precedes_the_angle_block_and_is_opt_in(self):
+        self.assertEqual(
+            bend.make_output_name("model.pdb", 0.0, 30.0, 0.0, pivot=("A", 36)),
+            "model_PvA36_P0B30T0.pdb",
+        )
+        self.assertEqual(
+            bend.make_output_name(
+                "model.pdb", 0.0, 30.0, 0.0, 2.0, -1.5, pivot="A36"
+            ),
+            "model_PvA36_P0B30T0Sa2Srm1p5.pdb",
+        )
+        self.assertEqual(
+            bend.make_output_name(
+                "model.pdb", 0.0, 30.0, 0.0, sep_mode="y", screen_mode=True,
+                pivot=("B", 24),
+            ),
+            "model_PvB24_P0B30T0_scr_sep.pdb",
+        )
+        # Omitting the pivot keeps the historical name, so callers that have no
+        # pivot to hand are unaffected.
+        self.assertEqual(
+            bend.make_output_name("model.pdb", 0.0, 30.0, 0.0),
+            "model_P0B30T0.pdb",
+        )
+
+    def test_screen_solution_names_carry_the_same_pivot_block(self):
+        solution = bend.ScreeningSolution(10.0, -20.0, 30.0, 5.0, 0.0)
+        self.assertEqual(
+            bend.make_screen_solution_output_name(
+                "model.pdb", solution, solution_index=2, pivot=("B", 24)
+            ),
+            "model_PvB24_P10Bm20T30_scr_sol002.pdb",
+        )
+
+    def test_automatic_name_uses_the_resolved_pivot_not_the_typed_token(self):
+        """X2 and 2X name the same residue, so they must name the same file."""
+        written = set()
+        for token in ("X2", "2X", "X.2"):
+            out_path, _info = bend.run_bending(
+                input_pdb=str(self.input_path),
+                pivot_residue=token,
+                phi_deg=0.0,
+                beta_deg=30.0,
+            )
+            written.add(Path(out_path).name)
+        self.assertEqual(written, {"xy_duplex_PvX2_P0B30T0.pdb"})
+
+    def test_origin_overlay_inherits_the_pivot_block(self):
+        out_path, info = bend.run_bending(
+            input_pdb=str(self.input_path),
+            pivot_residue="X2",
+            phi_deg=0.0,
+            beta_deg=30.0,
+            origin_mode="y",
+        )
+        self.assertTrue(Path(out_path).name.startswith("xy_duplex_PvX2_"))
+        self.assertEqual(
+            Path(info["origin_out_path"]).name, "xy_duplex_PvX2_P0B30T0-ori.pdb"
+        )
+
+    def test_additional_screening_solutions_carry_the_pivot_block(self):
+        context = bend.prepare_screening_context(str(self.input_path), "X2")
+        result = bend.screen_bend_angles(
+            context,
+            {"phi": 0.0, "beta": 0.0, "shift_axial": 0.0, "shift_radial": 0.0},
+            [bend.ScreenAngleRange("tau", -90.0, 90.0, 45.0)],
+            bend.ScreeningRequest(
+                mode="distance",
+                target=2.0 * math.sin(math.radians(15.0)),
+                point1=bend.ScreeningPoint("overlay_atom", "A:1:P"),
+                point2=bend.ScreeningPoint("overlay_atom", "C:1:P"),
+            ),
+            align_mode="n",
+        )
+        self.assertGreater(result.solution_count, 1)
+        additional = bend.write_additional_screening_solution_outputs(
+            result=result,
+            input_pdb=str(self.input_path),
+            pivot_residue="X2",
+            sep_mode="n",
+            align_mode="n",
+            pivot=context.preparation.selected_key,
+        )
+        for written_path, origin_path in additional:
+            self.assertIn("_PvX2_", Path(written_path).name)
+            self.assertIn("_PvX2_", Path(origin_path).name)
+
+
+class BendHelixRemarkTests(unittest.TestCase):
+    """RE_SCRIPT provenance records written into the output PDBs."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.input_path = Path(self.temp_dir.name) / "xy_duplex.pdb"
+        self.input_path.write_text(_screening_fixture_pdb(), encoding="utf-8")
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def remark_lines(path):
+        return [
+            line
+            for line in Path(path).read_text(encoding="utf-8").splitlines()
+            if line.startswith(bend.REMARK_PREFIX)
+        ]
+
+    def test_output_records_software_command_and_stage(self):
+        out_path, info = bend.run_bending(
+            input_pdb=str(self.input_path),
+            pivot_residue="X2",
+            phi_deg=0.0,
+            beta_deg=30.0,
+            shift_axial=2.0,
+            shift_radial=-1.5,
+        )
+        lines = self.remark_lines(out_path)
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(
+            lines[0],
+            f"{bend.REMARK_PREFIX} SOFTWARE name=bend_helix "
+            f"version={bend.VERSION} developer=DiLiuLab",
+        )
+        self.assertTrue(lines[1].startswith(f"{bend.REMARK_PREFIX} COMMAND text="))
+        self.assertEqual(
+            lines[2], f"{bend.REMARK_PREFIX} OUTPUT_STAGE name=bend_helix"
+        )
+
+        command = lines[1].split("text=", 1)[1]
+        self.assertIn("--pivot X2", command)
+        self.assertIn("--phi 0", command)
+        self.assertIn("--beta 30", command)
+        self.assertIn("--shift_axial 2", command)
+        self.assertIn("--shift_radial -1.5", command)
+        self.assertEqual(command, info["command"])
+
+    def test_recorded_command_reproduces_the_same_output_file(self):
+        """The REMARK is only useful if replaying it lands on the same model."""
+        out_path, _info = bend.run_bending(
+            input_pdb=str(self.input_path),
+            pivot_residue="X2",
+            phi_deg=12.5,
+            beta_deg=30.0,
+            tau_deg=-7.0,
+            shift_axial=2.0,
+            shift_radial=-1.5,
+        )
+        command = self.remark_lines(out_path)[1].split("text=", 1)[1]
+        argv = shlex.split(command)[2:]  # drop "python bend_helix.py"
+        first = Path(out_path).read_bytes()
+        Path(out_path).unlink()
+
+        completed = subprocess.run(
+            [sys.executable, str(Path(bend.__file__).resolve()), *argv],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(Path(out_path).is_file(), completed.stdout)
+        self.assertEqual(Path(out_path).read_bytes(), first)
+
+    def test_records_land_after_existing_remarks_and_before_structure(self):
+        # The trailing REMARK after the LINK is the case the POST_REMARK_RECORDS
+        # set exists for: scanning only for coordinates would treat it as the
+        # end of the header and splice the new records in among the LINKs.
+        source = self.input_path.read_text(encoding="utf-8")
+        self.input_path.write_text(
+            "REMARK   1 EXISTING HEADER LINE\n"
+            "LINK         P     DA X   1                 P     DA Y   3\n"
+            "REMARK   2 STRAY REMARK AFTER THE LINK\n"
+            + source,
+            encoding="utf-8",
+        )
+        out_path, _info = bend.run_bending(
+            input_pdb=str(self.input_path),
+            pivot_residue="X2",
+            phi_deg=0.0,
+            beta_deg=30.0,
+        )
+        lines = Path(out_path).read_text(encoding="utf-8").splitlines()
+        names = [line[:6].strip() for line in lines]
+        first_script = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith(bend.REMARK_PREFIX)
+        )
+        last_script = max(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith(bend.REMARK_PREFIX)
+        )
+        self.assertEqual(lines[0], "REMARK   1 EXISTING HEADER LINE")
+        self.assertEqual(first_script, 1)
+        self.assertLess(last_script, names.index("LINK"))
+        self.assertLess(last_script, names.index("ATOM"))
+
+    def test_origin_overlay_carries_the_same_records(self):
+        out_path, info = bend.run_bending(
+            input_pdb=str(self.input_path),
+            pivot_residue="X2",
+            phi_deg=0.0,
+            beta_deg=30.0,
+            origin_mode="y",
+        )
+        self.assertEqual(
+            self.remark_lines(info["origin_out_path"]),
+            self.remark_lines(out_path),
+        )
+        overlay = Path(info["origin_out_path"]).read_text(encoding="utf-8").splitlines()
+        self.assertTrue(overlay[0].startswith(bend.REMARK_PREFIX))
+        self.assertTrue(overlay[3].startswith("ATOM  "))
+
+    def test_a_supplied_command_is_recorded_verbatim(self):
+        """The GUI passes the command it prints, so both must agree exactly."""
+        out_path, info = bend.run_bending(
+            input_pdb=str(self.input_path),
+            pivot_residue="X2",
+            phi_deg=0.0,
+            beta_deg=30.0,
+            command="python bend_helix.py --from-the-gui",
+        )
+        self.assertEqual(info["command"], "python bend_helix.py --from-the-gui")
+        self.assertEqual(
+            self.remark_lines(out_path)[1],
+            f"{bend.REMARK_PREFIX} COMMAND text=python bend_helix.py --from-the-gui",
+        )
+
+    def test_rerunning_on_an_output_appends_a_second_block(self):
+        first_path, _info = bend.run_bending(
+            input_pdb=str(self.input_path),
+            pivot_residue="X2",
+            phi_deg=0.0,
+            beta_deg=30.0,
+        )
+        second_path, _info = bend.run_bending(
+            input_pdb=first_path,
+            pivot_residue="X2",
+            phi_deg=0.0,
+            beta_deg=10.0,
+        )
+        lines = self.remark_lines(second_path)
+        self.assertEqual(len(lines), 6)
+        self.assertIn("--beta 30", lines[1])
+        self.assertIn("--beta 10", lines[4])
+
+    def test_multi_line_command_is_flattened_into_one_record(self):
+        out_path, _info = bend.run_bending(
+            input_pdb=str(self.input_path),
+            pivot_residue="X2",
+            phi_deg=0.0,
+            beta_deg=30.0,
+            command="line one\nline two\r\nline three",
+        )
+        lines = self.remark_lines(out_path)
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(
+            lines[1],
+            f"{bend.REMARK_PREFIX} COMMAND text=line one line two  line three",
+        )
+
+    def test_crlf_input_is_normalized_to_lf_as_it_already_was(self):
+        """read_pdb reads universal newlines, so every output has been LF-only.
+
+        The new records must not be the one place a stray CR appears.
+        """
+        crlf_path = Path(self.temp_dir.name) / "crlf.pdb"
+        crlf_path.write_bytes(
+            self.input_path.read_text(encoding="utf-8")
+            .replace("\n", "\r\n")
+            .encode("utf-8")
+        )
+        out_path, _info = bend.run_bending(
+            input_pdb=str(crlf_path),
+            pivot_residue="X2",
+            phi_deg=0.0,
+            beta_deg=30.0,
+        )
+        raw = Path(out_path).read_bytes()
+        self.assertIn(b"RE_SCRIPT SOFTWARE name=bend_helix", raw)
+        self.assertNotIn(b"\r", raw)
+        self.assertEqual(len(self.remark_lines(out_path)), 3)
 
 
 def _p_coords(path: Path):

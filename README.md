@@ -109,7 +109,7 @@ This writes:
 
 ## Bend Helix Tool
 
-The bundled Bend Helix V2.7 tool bends a straight two-chain nucleic-acid helix at a selected phosphorus residue. It treats the helix as two rigid pieces: piece #1 stays fixed, while piece #2 is moved by an optional pivot shift, a beta bend, and an optional tau twist.
+The bundled Bend Helix V2.8 tool bends a straight two-chain nucleic-acid helix at a selected phosphorus residue. It treats the helix as two rigid pieces: piece #1 stays fixed, while piece #2 is moved by an optional pivot shift, a beta bend, and an optional tau twist.
 
 Open its GUI directly:
 
@@ -141,6 +141,20 @@ Useful Bend Helix options:
 - `--sep y`: give movable piece #2 new chain IDs in the output.
 - `--origin y`: also write an origin-overlay PDB for comparing the original and transformed helix.
 
+### Output file names and provenance
+
+Automatic output names lead with a `Pv` block naming the pivot residue, then the angle block: `model_PvA36_P0B30T0.pdb`, or `model_PvA36_P0B30T0_sep.pdb` with `--sep y`. The pivot label comes from the residue as resolved in the input, so `A36`, `36A`, and `A.36` all produce the same file, and bends pivoted at different residues no longer overwrite one another. An explicit `-o`/**Save as** path is used as given.
+
+Every output PDB — the bent model, the `-ori` overlay, and each screened solution — records how it was made, using the same `REMARK 950 RE_SCRIPT` convention as the other bundled tools:
+
+```
+REMARK 950 RE_SCRIPT SOFTWARE name=bend_helix version=V2.8 developer=DiLiuLab
+REMARK 950 RE_SCRIPT COMMAND text=python bend_helix.py --input A60-heli.pdb --pivot A36 --phi 0 --beta 30 --tau 0 --shift_axial 0 --shift_radial 0 --sep n --align y --origin n
+REMARK 950 RE_SCRIPT OUTPUT_STAGE name=bend_helix
+```
+
+The `COMMAND` record holds the full equivalent CLI command, so a model carries the recipe that produced it and can be regenerated from the file alone. When the run came from the GUI, this is the same command string the GUI prints in its result pane. Records are placed after any existing `REMARK` lines and before the first structural record, so they never land among `LINK` or coordinate records, and re-running the tool on its own output appends a fresh block rather than replacing the old one.
+
 ### Shifting the pivot
 
 `--shift_axial` (**Sa**) and `--shift_radial` (**Sr**) translate movable piece #2 in angstroms *before* any rotation is built, and every rotation is then rebuilt from the shifted pivot. Both default to 0, so a run without them behaves exactly as it did in earlier versions.
@@ -156,7 +170,7 @@ One consequence is worth knowing before you use the shifts:
 
 This follows from what `--align y` does: it puts the pivot P atom back on a fixed target, which cancels every hinge *location* from the result and leaves only the alignment target itself. The target is the *shifted* pivot; aligning back to the unshifted pivot instead would cancel Sa and Sr entirely and make the two settings do nothing.
 
-Automatic output names gain an `Sa...Sr...` block after the angle block whenever either shift is nonzero, for example `model_P0B30T0Sa2Srm1p5.pdb`. A run with both shifts at 0 keeps the historical `model_P0B30T0.pdb` name unchanged.
+Automatic output names gain an `Sa...Sr...` block after the angle block whenever either shift is nonzero, for example `model_PvA36_P0B30T0Sa2Srm1p5.pdb`. A run with both shifts at 0 omits that block.
 
 ### Screening in the GUI
 
@@ -179,7 +193,7 @@ Atom selectors refer to the origin-overlay PDB, not to the chain IDs in the inpu
 
 For rotation screening, the axis can be supplied geometrically with the same source choices used by the main tool's restrained-rotation mode: an XYZ point or overlay atom for the axis point, together with a direct vector, two XYZ points, two overlay atoms, or the right-hand normal to two vectors for its direction. Alternatively, choose **Local axis range(s)** and enter the range definitions directly in the screening popup; multiple definitions can be separated by semicolons. These popup-owned ranges override the main-window Local axis range(s) for candidate generation and for the best/additional screened outputs, so the evaluated and written geometries remain identical without copying values from the main window.
 
-The measured rotation is signed from endpoint 1 toward endpoint 2 by the right-hand rule about the positive axis direction. Angular differences wrap across -180/180 degrees, so equivalent directions near the wrap boundary compare correctly. Bend Helix reports every distinct coarse or refined solution within tolerance; an exact target is not required because the closest fallback is retained when necessary. Automatic screening output names retain the selected P/B/T angle values, add the `Sa...Sr...` block when a shift is nonzero, and add `_scr`, for example `model_P0B30T0_scr.pdb`, `model_P0B30T0_scr_sep.pdb`, or `model_P0B30T0Sa2Sr0_scr.pdb`; an explicit **Save as** path is honored without automatically adding `_scr`. A screening run automatically writes the best model's origin-overlay PDB even when origin-overlay output was not otherwise selected, so its name inherits `_scr` as well (for example, `model_P0B30T0_scr-ori.pdb`).
+The measured rotation is signed from endpoint 1 toward endpoint 2 by the right-hand rule about the positive axis direction. Angular differences wrap across -180/180 degrees, so equivalent directions near the wrap boundary compare correctly. Bend Helix reports every distinct coarse or refined solution within tolerance; an exact target is not required because the closest fallback is retained when necessary. Automatic screening output names retain the pivot block and the selected P/B/T angle values, add the `Sa...Sr...` block when a shift is nonzero, and add `_scr`, for example `model_PvA36_P0B30T0_scr.pdb`, `model_PvA36_P0B30T0_scr_sep.pdb`, or `model_PvA36_P0B30T0Sa2Sr0_scr.pdb`; an explicit **Save as** path is honored without automatically adding `_scr`. A screening run automatically writes the best model's origin-overlay PDB even when origin-overlay output was not otherwise selected, so its name inherits `_scr` as well (for example, `model_PvA36_P0B30T0_scr-ori.pdb`).
 
 ## Do Symmetry Tool
 
