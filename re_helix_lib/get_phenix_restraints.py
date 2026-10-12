@@ -8,6 +8,16 @@ for LINK records involving phosphate P--O3' or P--O5' bonds, generate
 phosphate-centered angle restraints that preserve the local 3D geometry of
 P, OP1/OP2 (or legacy O1P/O2P), O5', and the LINK-derived O3'/O5' atom.
 
+Get Phenix Restraints V1.1
+--------------------------
+- A standard 3'->5' P--O3' LINK that Phenix does not link by itself, such as a
+  strand closure or a link between non-consecutive residues, now gets the
+  restraints Phenix gives every ordinary backbone link (its rna3p chain link):
+  the O3'-P bond, the three P-centered O3' angles, the O3'-side C3'-O3'-P
+  angle, and the epsilon/zeta/alpha torsions. V1.0 wrote only the bond and the
+  P-centered angles, so the unrestrained C3'-O3'-P angle took up the strain of
+  the junction during minimization. --legacy-link-restraints restores V1.0.
+
 V4 update
 ---------
 - Add explicit restraints for standalone X33 3'-3' linker phosphate residues:
@@ -158,7 +168,7 @@ O3_NAMES = ("O3'", "O3*")
 O5_NAMES = ("O5'", "O5*")
 
 TOOL_NAME = "Get Phenix Restraints"
-VERSION = "V1.0"
+VERSION = "V1.1"
 
 DEFAULT_LINKER_RESNAME = "X33"
 X33_RESNAME = DEFAULT_LINKER_RESNAME
@@ -172,6 +182,22 @@ STANDARD_NUCLEIC_ACID_RESNAMES = {"A", "C", "G", "U", "DA", "DC", "DG", "DT"}
 
 JUNCTION_BASE_ATOM_NAMES = (" P ", " OP1", " OP2", " O5'", " C5'", " O3'", " O1P", " O2P")
 JUNCTION_EXTRA_SUGAR_ATOM_NAMES = (" C4'", " O4'", " C3'", " C2'", " O2'")
+
+# Phenix's restraints for an ordinary 3'->5' backbone link: the rna3p chain link
+# in chem_data/geostd/rna_dna/chain_link_rna3p.cif (Phenix 1.21). Phenix applies
+# them to consecutive residues itself; a closure LINK gets them from this tool.
+RNA3P_O3_P_BOND = (1.607, 0.015)
+RNA3P_O3_P_O5_ANGLE = (104.0, 1.5)
+RNA3P_O3_P_OP_ANGLE = (108.0, 3.0)
+RNA3P_C3_O3_P_ANGLE = (120.2, 1.5)
+# name, atoms, ideal, sigma, periodicity (rna3p alpha 300 is written as -60)
+RNA3P_DIHEDRALS = (
+    ("epsilon", ("C4'", "C3'", "O3'", "P"), -140.0, 35.0, 1),
+    ("zeta", ("C3'", "O3'", "P", "O5'"), 172.0, 30.0, 3),
+    ("alpha", ("O3'", "P", "O5'", "C5'"), -60.0, 20.0, 3),
+)
+BACKBONE_LINK_O3_SIDE_ATOMS = ("C4'", "C3'", "O3'")
+BACKBONE_LINK_P_SIDE_ATOMS = ("P", "OP1", "OP2", "O5'", "C5'")
 
 
 def normalize_linker_resname(resname: str) -> str:
@@ -569,9 +595,14 @@ def build_phosphate_angle_lines(
     skip_phenix_builtin_angles: bool = True,
     preexisting_angle_keys: Optional[Set[Tuple[Tuple[str, int, str], Tuple[Tuple[str, int, str], Tuple[str, int, str]]]]] = None,
     linker_resname: str = DEFAULT_LINKER_RESNAME,
+    rna3p_center_keys: Optional[Set[Tuple[str, int]]] = None,
 ) -> Tuple[List[str], List[str]]:
     """
     Build phosphate-centered angle restraints derived from LINK records.
+
+    Phosphates in rna3p_center_keys belong to standard 3'->5' backbone LINKs;
+    their LINK-derived O3' angles take the Phenix rna3p ideals and sigmas
+    instead of the --angle-* values.
 
     Returns:
         angle_lines: .params lines to append inside geometry_restraints.edits
@@ -771,19 +802,25 @@ def build_phosphate_angle_lines(
                 mixed_angle=mixed_angle,
                 bridging_angle=bridging_angle,
             )
+            sigma = angle_sigma
+            if center_key in (rna3p_center_keys or ()) and (custom_1 or custom_2):
+                # The custom ligand is the LINK O3': O3'-P-O5' or O3'-P-OP1/OP2.
+                ideal, sigma = RNA3P_O3_P_O5_ANGLE if role_1 == role_2 == "bridging" else RNA3P_O3_P_OP_ANGLE
             center_angle_lines.extend(
                 build_angle_block(
                     ligand_1=ligand_1,
                     center_p=center_p,
                     ligand_2=ligand_2,
                     angle_ideal=ideal,
-                    angle_sigma=angle_sigma,
+                    angle_sigma=sigma,
                 )
             )
             center_angle_lines.append("")
             generated_angle_count += 1
 
         if center_angle_lines:
+            if center_key in (rna3p_center_keys or ()):
+                linkage_kind += " backbone LINK (Phenix rna3p values)"
             angle_lines.append(
                 "    # Phosphate angles for "
                 f"{linkage_kind} centered at {center_p.label()}"
@@ -911,6 +948,147 @@ def build_bond_block(atom_1: AtomRef, atom_2: AtomRef, distance_ideal: float, si
     lines.append(f"      sigma = {sigma:.3f}")
     lines.append("    }")
     return lines
+
+
+def build_dihedral_block(atoms: List[AtomRef], angle_ideal: float, sigma: float, periodicity: int) -> List[str]:
+    lines: List[str] = []
+    lines.append("    dihedral {")
+    lines.append("      action = add")
+    for i, atom in enumerate(atoms, start=1):
+        lines.append(f"      atom_selection_{i} = {atom.selection()}")
+    lines.append(f"      angle_ideal = {angle_ideal:.3f}")
+    lines.append(f"      sigma = {sigma:.3f}")
+    lines.append(f"      periodicity = {periodicity:d}")
+    lines.append("    }")
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Standard 3'->5' backbone LINK helpers
+# ---------------------------------------------------------------------------
+
+def find_backbone_link_atoms(
+    link: LinkRecord,
+    atom_index: AtomIndex,
+    previous_residue_by_key: Dict[Tuple[str, int], Optional[Tuple[str, int]]],
+) -> Tuple[Optional[Dict[str, AtomRef]], str]:
+    """Return the atoms of a standard 3'->5' backbone LINK that Phenix does not make.
+
+    A P--O3' LINK qualifies when both residues are standard nucleotides and the
+    O3' residue is not the P residue's previous residue in the same chain, as at
+    a strand closure; Phenix links consecutive residues itself. On success the
+    result is (atoms, "") with C4'/C3'/O3' of the O3' residue and P/OP1/OP2/O5'/C5'
+    of the P residue. Otherwise it is (None, reason), with an empty reason for
+    LINKs that are not P--O3' bonds. Callers must exclude phosphates that carry
+    more than one LINK-derived ligand (3'-to-3' and 5'-to-5' linkages).
+    """
+    endpoint = get_phosphate_link_endpoint(link)
+    if endpoint is None or endpoint[2] != "O3":
+        return None, ""
+    p_link, o3_link, _ = endpoint
+    p_key = (p_link.chain_id, p_link.res_seq)
+    o3_key = (o3_link.chain_id, o3_link.res_seq)
+    if p_key == o3_key:
+        return None, "the P and O3' atoms are in the same residue"
+    if previous_residue_by_key.get(p_key) == o3_key:
+        return None, "consecutive"
+
+    atoms: Dict[str, AtomRef] = {}
+    missing: List[str] = []
+    for names, (chain_id, res_seq) in (
+        (BACKBONE_LINK_O3_SIDE_ATOMS, o3_key),
+        (BACKBONE_LINK_P_SIDE_ATOMS, p_key),
+    ):
+        for name in names:
+            candidates = {"OP1": NONBRIDGING_1_NAMES, "OP2": NONBRIDGING_2_NAMES}.get(name, (name,))
+            atom = find_atom(atom_index, chain_id, res_seq, candidates)
+            if atom is None:
+                missing.append(f"{name} of {chain_id or '_'}{res_seq}")
+            else:
+                atoms[name] = atom
+
+    res_names = {
+        atoms[name].res_name if name in atoms else fallback.res_name
+        for name, fallback in (("O3'", o3_link), ("P", p_link))
+    }
+    nonstandard = sorted(name for name in res_names if name.strip().upper() not in STANDARD_NUCLEIC_ACID_RESNAMES)
+    if nonstandard:
+        return None, "nonstandard residue " + ", ".join(nonstandard)
+    if missing:
+        return None, "missing " + ", ".join(missing)
+    return atoms, ""
+
+
+def build_backbone_link_lines(link_number: int, atoms: Dict[str, AtomRef]) -> List[str]:
+    """Return the O3'-side angle and backbone torsions of one backbone LINK."""
+    o3_label, p_label = atoms["O3'"].label(), atoms["P"].label()
+    lines: List[str] = [
+        f"    # O3'-side angle and epsilon/zeta/alpha torsions for LINK {link_number}"
+        f" ({o3_label} -> {p_label}), Phenix rna3p values"
+    ]
+    c3_o3_p_ideal, c3_o3_p_sigma = RNA3P_C3_O3_P_ANGLE
+    # build_angle_block names its middle atom center_p; here the vertex is O3'.
+    lines.extend(build_angle_block(atoms["C3'"], atoms["O3'"], atoms["P"], c3_o3_p_ideal, c3_o3_p_sigma))
+    lines.append("")
+    for name, members, ideal, sigma, periodicity in RNA3P_DIHEDRALS:
+        lines.append(f"    # {name}")
+        lines.extend(build_dihedral_block([atoms[member] for member in members], ideal, sigma, periodicity))
+        lines.append("")
+    return lines
+
+
+def classify_backbone_links(
+    pdb_path: Path,
+    links: List[LinkRecord],
+) -> Tuple[Dict[int, Dict[str, AtomRef]], List[str]]:
+    """Find the standard 3'->5' backbone LINKs that get the Phenix rna3p restraints.
+
+    Returns {1-based LINK number: atoms from find_backbone_link_atoms} and terminal
+    report messages. Phosphates with more than one LINK-derived ligand (3'-to-3'
+    linkers, 5'-to-5' linkages) are left to the existing handling.
+    """
+    atom_index = read_pdb_atom_index(pdb_path)
+    previous_residue_by_key = read_previous_residue_map(pdb_path)
+
+    ligands_by_center: Dict[Tuple[str, int], Set[Tuple[str, int, str]]] = {}
+    for link in links:
+        endpoint = get_phosphate_link_endpoint(link)
+        if endpoint is not None:
+            p_atom, o_atom, _ = endpoint
+            ligands_by_center.setdefault((p_atom.chain_id, p_atom.res_seq), set()).add(o_atom.key())
+
+    backbone: Dict[int, Dict[str, AtomRef]] = {}
+    reports: List[str] = []
+    n_consecutive = 0
+    for link_number, link in enumerate(links, start=1):
+        endpoint = get_phosphate_link_endpoint(link)
+        if endpoint is None or endpoint[2] != "O3":
+            continue
+        p_atom = endpoint[0]
+        if len(ligands_by_center[(p_atom.chain_id, p_atom.res_seq)]) > 1:
+            continue
+        atoms, reason = find_backbone_link_atoms(link, atom_index, previous_residue_by_key)
+        if atoms is not None:
+            backbone[link_number] = atoms
+        elif reason == "consecutive":
+            n_consecutive += 1
+        else:
+            reports.append(
+                f"NOTE: LINK {link_number} keeps only its bond and P-centered angle restraints: {reason}."
+            )
+
+    if backbone:
+        reports.append(
+            f"Wrote Phenix rna3p backbone restraints for {len(backbone)} standard 3'-5' LINK(s) that "
+            "Phenix does not link itself: O3'-P bond, O3'-P-O5'/OP1/OP2 and C3'-O3'-P angles, "
+            "and epsilon/zeta/alpha torsions."
+        )
+    if n_consecutive:
+        reports.append(
+            f"Kept only the bond restraint for {n_consecutive} P-O3' LINK(s) between consecutive residues; "
+            "Phenix links those itself within link_distance_cutoff."
+        )
+    return backbone, reports
 
 
 def build_x33_internal_restraint_lines(
@@ -1165,10 +1343,15 @@ def build_params_text(
     x33_p_op_distance: float = X33_P_OP_DISTANCE,
     linker_resname: str = DEFAULT_LINKER_RESNAME,
     linker_3to3_residues: Optional[Set[Tuple[str, int]]] = None,
+    full_backbone_restraints: bool = True,
     return_reports: bool = False,
 ):
     """
     Build the text of a geometry_restraints .params file from a list of links.
+
+    With full_backbone_restraints (the default), standard 3'->5' backbone LINKs
+    that Phenix does not link itself get the Phenix rna3p restraint set; without
+    it the output is the V1.0 bond plus P-centered angles.
     """
     linker_resname = normalize_linker_resname(linker_resname)
     lines: List[str] = []
@@ -1182,6 +1365,11 @@ def build_params_text(
     else:
         linker_3to3_residues = set(linker_3to3_residues)
     has_3to3_linker_residues = bool(linker_3to3_residues)
+    if full_backbone_restraints:
+        backbone_links, backbone_reports = classify_backbone_links(pdb_path, links)
+    else:
+        backbone_links, backbone_reports = {}, []
+    rna3p_center_keys = {(atoms["P"].chain_id, atoms["P"].res_seq) for atoms in backbone_links.values()}
 
     lines.append("# geometry_restraints generated from LINK records")
     lines.append(f"# source PDB: {pdb_path.name}")
@@ -1198,12 +1386,19 @@ def build_params_text(
         lines.append(
             f"# Standalone {linker_resname} 3'-3' linker residues receive explicit internal P-OP1/P-OP2 bond and OP1-P-OP2 angle restraints."
         )
+    if backbone_links:
+        lines.append("# Standard 3'-5' backbone LINKs that Phenix does not link itself (strand closures,")
+        lines.append("# non-consecutive residues) get Phenix's rna3p restraints instead: the O3'-P bond,")
+        lines.append("# O3'-P-O5'/OP1/OP2 and C3'-O3'-P angles, and epsilon/zeta/alpha torsions.")
     lines.append("")
     lines.append("geometry_restraints {")
     lines.append("  edits {")
 
     for i, link in enumerate(links, start=1):
         ideal = guess_ideal_distance(link.atom_name_1, link.atom_name_2)
+        bond_sigma = sigma
+        if i in backbone_links:
+            ideal, bond_sigma = RNA3P_O3_P_BOND
 
         # Optional comment showing original LINK line and distance (if present)
         lines.append(f"    # LINK {i}: {link.raw_line}")
@@ -1211,6 +1406,8 @@ def build_params_text(
             lines.append(
                 f"    # original LINK distance (ignored for restraints): {link.original_distance:.3f} A"
             )
+        if i in backbone_links:
+            lines.append("    # standard 3'-5' backbone LINK: Phenix rna3p O3'-P bond")
 
         sel1 = (
             f"chain {link.chain_id_1} and resid {link.res_seq_1} "
@@ -1226,7 +1423,7 @@ def build_params_text(
         lines.append(f"      atom_selection_1 = {sel1}")
         lines.append(f"      atom_selection_2 = {sel2}")
         lines.append(f"      distance_ideal = {ideal:.3f}")
-        lines.append(f"      sigma = {sigma:.3f}")
+        lines.append(f"      sigma = {bond_sigma:.3f}")
         lines.append("    }")
         lines.append("")
 
@@ -1251,21 +1448,25 @@ def build_params_text(
         skip_phenix_builtin_angles=skip_phenix_builtin_angles,
         preexisting_angle_keys=x33_angle_keys,
         linker_resname=linker_resname,
+        rna3p_center_keys=rna3p_center_keys,
     )
     lines.extend(angle_lines)
+
+    for link_number, atoms in sorted(backbone_links.items()):
+        lines.extend(build_backbone_link_lines(link_number, atoms))
 
     lines.append("  }")
     lines.append("}")
 
     text = "\n".join(lines) + "\n"
     if return_reports:
-        return text, x33_reports + angle_reports
+        return text, x33_reports + angle_reports + backbone_reports
     return text
 
 
 GUIDANCE_TEXT = """Recommended Phenix workflow
 
-*_links.params adds custom geometry restraints from LINK records, including nonstandard P-O bonds and phosphate-centered angle restraints.
+*_links.params adds custom geometry restraints from LINK records, including nonstandard P-O bonds and phosphate-centered angle restraints. A standard 3'-5' LINK that Phenix does not link itself, such as a strand closure, gets the full Phenix rna3p backbone restraints (bond, angles including C3'-O3'-P, and epsilon/zeta/alpha torsions), so it relaxes like every other backbone link.
 
 *_junctions.params is the minimization atom-selection file. It replaces the older min_P_C5.params workflow for most re_helix outputs by keeping phosphate/backbone atoms movable globally, then adding extra sugar atoms only for residues listed in REMARK 950 RE_SCRIPT JUNCTION lines.
 
@@ -1508,6 +1709,7 @@ def generate_phenix_restraint_outputs(args) -> Dict[str, object]:
             x33_p_op_distance=args.x33_p_op_distance,
             linker_resname=linker_resname,
             linker_3to3_residues=linker_3to3_residues,
+            full_backbone_restraints=not getattr(args, "legacy_link_restraints", False),
             return_reports=True,
         )
         write_text_file(params_out, params_text)
@@ -1621,6 +1823,8 @@ def build_cli_command(program: str, args) -> str:
         parts.append("--no-linker-support-files")
     if args.include_phenix_builtin_angles:
         parts.append("--include-phenix-builtin-angles")
+    if getattr(args, "legacy_link_restraints", False):
+        parts.append("--legacy-link-restraints")
     if args.sigma != 0.02:
         parts.extend(["--sigma", str(args.sigma)])
     if args.angle_sigma != 3.0:
@@ -1661,6 +1865,7 @@ def run_gui(initial_path=None) -> int:
     angle_sigma_var = tk.StringVar(value="3.0")
     p_op_distance_var = tk.StringVar(value=f"{X33_P_OP_DISTANCE:.3f}")
     include_builtin_angles_var = tk.BooleanVar(value=False)
+    legacy_link_restraints_var = tk.BooleanVar(value=False)
 
     def derived_output_base(path_text: str) -> str:
         return str(default_output_base_path(Path(path_text))) if path_text else ""
@@ -1756,6 +1961,11 @@ def run_gui(initial_path=None) -> int:
         text="Include phosphate angles Phenix normally supplies",
         variable=include_builtin_angles_var,
     ).grid(row=3, column=1, sticky="w", padx=6, pady=3)
+    tk.Checkbutton(
+        advanced,
+        text="Legacy V1.0 backbone LINK restraints (no C3'-O3'-P angle or torsions)",
+        variable=legacy_link_restraints_var,
+    ).grid(row=4, column=1, sticky="w", padx=6, pady=3)
     advanced.grid_remove()
 
     note_widget = scrolledtext.ScrolledText(root, wrap="word", height=12)
@@ -1805,6 +2015,7 @@ def run_gui(initial_path=None) -> int:
                 angle_mixed=DEFAULT_MIXED_ANGLE,
                 angle_bridging=DEFAULT_BRIDGING_ANGLE,
                 include_phenix_builtin_angles=include_builtin_angles_var.get(),
+                legacy_link_restraints=legacy_link_restraints_var.get(),
                 x33_p_op_distance=float(p_op_distance_var.get()),
             )
 
@@ -1842,7 +2053,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Convert LINK records in a PDB file into Phenix geometry_restraints "
-            "bond edits plus phosphate angle edits (.params), including standalone linker "
+            "bond edits plus phosphate angle edits (.params), including the full Phenix "
+            "rna3p backbone restraints for standard 3'-5' closure LINKs, standalone linker "
             "restraints and optional junction-selection params, suitable for "
             "phenix.geometry_minimization."
         )
@@ -1877,13 +2089,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--sigma",
         type=float,
         default=0.02,
-        help="Sigma for all bond restraints (default: 0.02 A).",
+        help=(
+            "Sigma for LINK bond restraints (default: 0.02 A). Standard 3'-5' backbone LINKs "
+            "use the Phenix rna3p values unless --legacy-link-restraints is given."
+        ),
     )
     parser.add_argument(
         "--angle-sigma",
         type=float,
         default=3.0,
-        help="Sigma for phosphate angle restraints in degrees (default: 3.0).",
+        help=(
+            "Sigma for phosphate angle restraints in degrees (default: 3.0). Standard 3'-5' "
+            "backbone LINKs use the Phenix rna3p values unless --legacy-link-restraints is given."
+        ),
     )
     parser.add_argument(
         "--angle-nonbridging",
@@ -1909,6 +2127,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Also write phosphate angles that Phenix normally already has. "
             "This reproduces V2-style output for diagnostics but can trigger duplicate-angle errors."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-link-restraints",
+        action="store_true",
+        help=(
+            "Write V1.0 restraints for standard 3'-5' backbone LINKs such as strand closures: "
+            "the P-O3' bond and P-centered angles only, without the C3'-O3'-P angle and "
+            "epsilon/zeta/alpha torsions of the Phenix rna3p link."
         ),
     )
     parser.add_argument(

@@ -1,5 +1,16 @@
 # Changelog
 
+## Get Phenix Restraints V1.1 - 2026-10-11
+
+- Bumped the bundled Get Phenix Restraints tool to V1.1 while keeping the main `re_helix` application at V4.6.
+- Gave every standard 3'-5' P--O3' LINK that Phenix does not link by itself, such as a strand closure from `add_pdb_link_record.py` or a link between non-consecutive residues, the restraints Phenix applies to each ordinary backbone link (its `rna3p` chain link): the O3'-P bond (1.607 A, sigma 0.015), O3'-P-O5' (104.0, sigma 1.5), O3'-P-OP1/OP2 (108.0, sigma 3.0), the O3'-side angle C3'-O3'-P (120.2, sigma 1.5), and the epsilon, zeta and alpha torsions (-140/35/period 1, 172/30/period 3, -60/20/period 3).
+- Fixed the closure geometry this left behind. V1.0 wrote only the bond and the P-centered angles, so the unrestrained C3'-O3'-P angle absorbed the strain of the junction: in three minimized 210-bp closed duplexes it ended at 105-106 degrees, with O3'-P-O5' at 94-95, while the other 418 links sat at 118 and 101. With V1.1 both closures of each model match the other links.
+- Wrote the restraints as explicit `geometry_restraints.edits` bonds, angles, and periodic dihedrals rather than a `pdb_interpretation.apply_cif_link`. Phenix drops an `apply_cif_link` bond whenever the input O3'-P distance exceeds `link_distance_cutoff` (3.0 A unless a selection file raises it), which would silently unbond a widely gapped closure. The explicit edits minimize to the same coordinates as `apply_cif_link rna3p` (largest difference 0.001 A on the three test models).
+- Applied the new set only where it cannot duplicate Phenix's own restraints. LINKs between consecutive residues of one chain, which Phenix links itself, keep the V1.0 bond restraint. 3'-to-3' linker phosphates and 5'-to-5' linkages are unchanged. LINKs involving a nonstandard residue name or a missing backbone atom fall back to V1.0 output with a NOTE in the run summary.
+- Took the bond, angle, and torsion values for these LINKs from `rna3p`, so `--sigma`, `--angle-sigma`, and the `--angle-*` ideals now apply to the remaining LINK-derived restraints only.
+- Added `--legacy-link-restraints` and a matching checkbox under **Advanced restraint values** to write the V1.0 restraints. Its output is byte-identical to V1.0's on the three test models.
+- Added regression coverage for the restraint set, legacy output, the consecutive-residue, nonstandard-residue, missing-atom, 3'-to-3', and 5'-to-5' cases, legacy atom names, and the CLI flag. Each test was mutation-checked against a deliberately broken implementation.
+
 ## Bend Helix V2.8 - 2026-09-12
 
 - Bumped the bundled Bend Helix tool to V2.8 while keeping the main `re_helix` application at V4.6.

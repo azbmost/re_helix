@@ -4968,7 +4968,10 @@ geometry restraints.
 
 Reads the PDB LINK records and writes a <base>_links.params file holding
 geometry_restraints.edits bond restraints plus phosphate-centered angle
-restraints that preserve local 3D geometry at each linked phosphate.
+restraints that preserve local 3D geometry at each linked phosphate. A standard
+3'-5' LINK that Phenix does not link itself, such as a strand closure, also gets
+the C3'-O3'-P angle and epsilon/zeta/alpha torsions of Phenix's rna3p backbone
+link, so the closure relaxes like every other backbone link.
 
 Also written when applicable:
   <base>_junctions.params from REMARK 950 RE_SCRIPT JUNCTION lines, giving a

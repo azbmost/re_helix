@@ -406,6 +406,8 @@ Useful Generate Lattice options:
 
 The bundled Get Phenix Restraints tool is based on `link_to_geometry_restraintsV4.py`. It converts PDB `LINK` records into a `*_links.params` file containing Phenix `geometry_restraints.edits` bond restraints and phosphate-centered angle restraints. For standalone 3'-to-3' linker phosphate residues detected from two explicit P--O3' LINK records, it also writes internal P-OP1/P-OP2 bond and OP1-P-OP2 angle restraints.
 
+A standard 3'-5' P--O3' LINK that Phenix does not link by itself, such as a strand closure or a link between non-consecutive residues, gets the restraints Phenix applies to every ordinary backbone link (its `rna3p` chain link): the O3'-P bond, the O3'-P-O5'/OP1/OP2 angles, the O3'-side C3'-O3'-P angle, and the epsilon, zeta and alpha torsions, all with Phenix's ideals and sigmas. A closure therefore relaxes like the rest of the backbone. LINKs between consecutive residues are left to Phenix, and LINKs involving a nonstandard residue or a missing backbone atom keep the bond and P-centered angles only.
+
 Open its GUI directly:
 
 ```bash
@@ -438,6 +440,7 @@ Useful Get Phenix Restraints options:
 - `--no-junctions-params`: skip `*_junctions.params`. If you do this, use exactly one movement-selection file such as `min_P_C5.params` or a carefully prepared `min.params`.
 - `--no-linker-support-files`: skip writing `<resname>_phenix_atomtypes.cif` and `<resname>_safe_interpretation.params`.
 - `--include-phenix-builtin-angles`: diagnostic mode that can reproduce older duplicate-prone angle output.
+- `--legacy-link-restraints`: write the V1.0 restraints for standard 3'-5' backbone LINKs: the bond and P-centered angles only, without the C3'-O3'-P angle and torsions. The GUI has the same switch under **Advanced restraint values**.
 
 Use exactly one movement-selection file for `phenix.geometry_minimization`. Usually this should be `*_junctions.params`; do not combine it with `min_P_C5.params` or `min.params` unless you deliberately want to test which top-level `selection = ...` Phenix uses.
 
