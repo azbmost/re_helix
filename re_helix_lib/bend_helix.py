@@ -116,7 +116,7 @@ POST_REMARK_RECORDS = COORD_RECORDS | {
 CHAIN_ID_CANDIDATES = string.ascii_uppercase + string.ascii_lowercase + string.digits
 Point3D = Tuple[float, float, float]
 TOOL_NAME = "Bend Helix"
-VERSION = "V2.8"
+VERSION = "V2.9"
 APP_TITLE = f"{TOOL_NAME} {VERSION}"
 SCREEN_REFINEMENT_TOLERANCE_DEG = 1.0e-3
 SCREEN_REFINEMENT_TOLERANCE_A = 1.0e-3
@@ -223,23 +223,29 @@ SCREENING_GUI_HELP: Mapping[str, str] = {
         "_solNNN filenames. Each additional solution also receives an origin-overlay PDB."
     ),
     "endpoint1_atom": (
-        "Endpoint 1 overlay atom\n\n"
-        "Enter an atom from the origin-overlay PDB as CHAIN:RESIDUE:ATOM. The chain ID, "
+        "Endpoint 1 overlay atom(s)\n\n"
+        "Enter one or more atoms from the origin-overlay PDB as CHAIN:RESIDUE:ATOM, "
+        "separated by commas or semicolons. For multiple atoms, the endpoint is their "
+        "average XYZ position (equal weight per atom), recalculated for each candidate. "
+        "The chain ID, "
         "residue number, and atom name must match that overlay, not the input PDB's chain "
         "namespace. Endpoint order determines the sign in rotation mode.\n\n"
-        "Examples: A:36:P or C:36:O5'."
+        "Examples: A:36:P or A:36:P, A:37:P, A:38:P."
     ),
     "endpoint2_source": (
         "Endpoint 2 source\n\n"
-        "Choose Overlay atom to use another atom in the origin overlay, or XYZ point to "
+        "Choose Overlay atom to use one atom or the average XYZ position of multiple "
+        "atoms in the origin overlay, or XYZ point to "
         "use a fixed coordinate. Rotation mode also allows Phi-corrected pivot P, whose "
         "position is recomputed for every candidate phi value."
     ),
     "endpoint2_atom": (
-        "Endpoint 2 overlay atom\n\n"
-        "Enter the second origin-overlay atom as CHAIN:RESIDUE:ATOM. Its identity is "
-        "resolved in the candidate model on every coarse or refinement test.\n\n"
-        "Examples: B:24:P or D:24:O3'."
+        "Endpoint 2 overlay atom(s)\n\n"
+        "Enter one or more origin-overlay atoms as CHAIN:RESIDUE:ATOM, separated by "
+        "commas or semicolons. For multiple atoms, the endpoint is their average XYZ "
+        "position (equal weight per atom). Every atom is resolved in the candidate model "
+        "before averaging on each coarse or refinement test, for distance and rotation.\n\n"
+        "Examples: D:24:O3' or C:36:P, C:37:P, C:38:P."
     ),
     "endpoint2_xyz": (
         "Endpoint 2 XYZ\n\n"
@@ -457,7 +463,7 @@ class OverlayAtomSelector:
 
 @dataclass(frozen=True)
 class ScreeningPoint:
-    """A screening point: overlay atom, XYZ point, or phi-corrected pivot."""
+    """A screening point: overlay atom(s)' centroid, XYZ, or phi-corrected pivot."""
 
     kind: str
     value: object = None
@@ -1965,6 +1971,19 @@ def parse_overlay_atom_selector(value: object) -> OverlayAtomSelector:
     return OverlayAtomSelector(chain_text, residue_number, atom_text)
 
 
+def parse_overlay_atom_selectors(value: object) -> Tuple[OverlayAtomSelector, ...]:
+    """Parse one selector or comma/semicolon-separated selectors for a centroid."""
+    if not isinstance(value, str):
+        return (parse_overlay_atom_selector(value),)
+    parts = re.split(r"[,;]", value)
+    if any(not part.strip() for part in parts):
+        raise ValueError(
+            "Provide one or more overlay atoms as CHAIN:RESIDUE:ATOM, separated by "
+            "commas or semicolons, without empty entries."
+        )
+    return tuple(parse_overlay_atom_selector(part) for part in parts)
+
+
 def _overlay_source_atom(
     context: ScreeningContext,
     selector: object,
@@ -2013,10 +2032,23 @@ def _compile_screening_point(
         raise ValueError("Screening point must be a ScreeningPoint value.")
     kind = _normalized_screening_token(reference.kind)
     if kind in ("overlay_atom", "atom"):
-        atom, is_transformed = _overlay_source_atom(context, reference.value)
-        if is_transformed:
-            return lambda transform: transform.transform_coord(atom.coord)
-        return lambda _transform: atom.coord
+        atoms = tuple(
+            _overlay_source_atom(context, selector)
+            for selector in parse_overlay_atom_selectors(reference.value)
+        )
+        if len(atoms) == 1:
+            atom, is_transformed = atoms[0]
+            if is_transformed:
+                return lambda transform: transform.transform_coord(atom.coord)
+            return lambda _transform: atom.coord
+
+        def resolve_centroid(transform: BendTransform) -> Point3D:
+            return centroid([
+                transform.transform_coord(atom.coord) if is_transformed else atom.coord
+                for atom, is_transformed in atoms
+            ])
+
+        return resolve_centroid
     if kind in ("xyz", "xyz_point", "point"):
         point = _finite_point3d(reference.value, "XYZ screening point")
         return lambda _transform: point
@@ -3621,11 +3653,16 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             for var, axis_name in zip(values, ("x", "y", "z"))
         )  # type: ignore[return-value]
 
-    def gui_overlay_point(raw_value: str, label: str) -> ScreeningPoint:
+    def gui_overlay_point(
+        raw_value: str, label: str, *, allow_multiple: bool = False
+    ) -> ScreeningPoint:
         selector = raw_value.strip()
         if not selector:
             raise ValueError(f"Please provide {label} as CHAIN:RESIDUE:ATOM.")
-        parse_overlay_atom_selector(selector)
+        if allow_multiple:
+            parse_overlay_atom_selectors(selector)
+        else:
+            parse_overlay_atom_selector(selector)
         return ScreeningPoint("overlay_atom", selector)
 
     def screening_ranges_from_gui() -> List[ScreenAngleRange]:
@@ -3664,12 +3701,14 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             raise ValueError("Target distance cannot be negative.")
 
         point1 = gui_overlay_point(
-            screen_point1_atom_var.get(), "screening endpoint 1 overlay atom"
+            screen_point1_atom_var.get(), "screening endpoint 1 overlay atom(s)",
+            allow_multiple=True,
         )
         point2_source = screen_point2_source_var.get().strip()
         if point2_source == "Overlay atom":
             point2 = gui_overlay_point(
-                screen_point2_atom_var.get(), "screening endpoint 2 overlay atom"
+                screen_point2_atom_var.get(), "screening endpoint 2 overlay atom(s)",
+                allow_multiple=True,
             )
         elif point2_source == "XYZ point":
             point2 = ScreeningPoint(
@@ -4043,7 +4082,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             row=3, column=2, sticky="w", padx=6, pady=2
         )
 
-        ttk.Label(target_box, text="Endpoint 1 overlay atom").grid(
+        ttk.Label(target_box, text="Endpoint 1 overlay atom(s)").grid(
             row=4, column=0, sticky="w", pady=2
         )
         ttk.Entry(target_box, textvariable=screen_point1_atom_var, width=34).grid(
@@ -4051,7 +4090,10 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         )
         ttk.Label(
             target_box,
-            text="Use origin-overlay identity CHAIN:RESIDUE:ATOM, e.g. A:36:P or C:36:O5'.",
+            text=(
+                "Comma/semicolon-separated CHAIN:RESIDUE:ATOM.\n"
+                "Multiple atoms use their average XYZ position."
+            ),
         ).grid(row=4, column=2, sticky="w", padx=6, pady=2)
         screening_help_button(target_box, "endpoint1_atom").grid(
             row=4, column=3, sticky="w", padx=6, pady=2
@@ -4074,11 +4116,15 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         point2_host = ttk.Frame(target_box)
         point2_host.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(2, 6))
         point2_atom_frame = ttk.Frame(point2_host)
-        ttk.Label(point2_atom_frame, text="Endpoint 2 overlay atom").pack(side="left")
+        ttk.Label(point2_atom_frame, text="Endpoint 2 overlay atom(s)").pack(side="left")
         ttk.Entry(
             point2_atom_frame, textvariable=screen_point2_atom_var, width=34
         ).pack(side="left", padx=6)
         screening_help_button(point2_atom_frame, "endpoint2_atom").pack(side="left")
+        ttk.Label(
+            point2_atom_frame,
+            text="Comma/semicolon-separated atoms; average XYZ position.",
+        ).pack(side="left", padx=6)
 
         point2_xyz_frame = ttk.Frame(point2_host)
         ttk.Label(point2_xyz_frame, text="Endpoint 2 XYZ").pack(side="left")

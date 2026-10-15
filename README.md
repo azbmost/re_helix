@@ -109,7 +109,7 @@ This writes:
 
 ## Bend Helix Tool
 
-The bundled Bend Helix V2.8 tool bends a straight two-chain nucleic-acid helix at a selected phosphorus residue. It treats the helix as two rigid pieces: piece #1 stays fixed, while piece #2 is moved by an optional pivot shift, a beta bend, and an optional tau twist.
+The bundled Bend Helix V2.9 tool bends a straight two-chain nucleic-acid helix at a selected phosphorus residue. It treats the helix as two rigid pieces: piece #1 stays fixed, while piece #2 is moved by an optional pivot shift, a beta bend, and an optional tau twist.
 
 Open its GUI directly:
 
@@ -148,7 +148,7 @@ Automatic output names lead with a `Pv` block naming the pivot residue, then the
 Every output PDB — the bent model, the `-ori` overlay, and each screened solution — records how it was made, using the same `REMARK 950 RE_SCRIPT` convention as the other bundled tools:
 
 ```
-REMARK 950 RE_SCRIPT SOFTWARE name=bend_helix version=V2.8 developer=DiLiuLab
+REMARK 950 RE_SCRIPT SOFTWARE name=bend_helix version=V2.9 developer=DiLiuLab
 REMARK 950 RE_SCRIPT COMMAND text=python bend_helix.py --input A60-heli.pdb --pivot A36 --phi 0 --beta 30 --tau 0 --shift_axial 0 --shift_radial 0 --sep n --align y --origin n
 REMARK 950 RE_SCRIPT OUTPUT_STAGE name=bend_helix
 ```
@@ -190,6 +190,8 @@ The screening window provides two target modes:
 - **Screening for rotation** minimizes the circular difference from a requested signed angle in degrees around a defined axis. Define the endpoints as two atoms, one atom plus one XYZ point, or one atom plus the phi-corrected pivot P position. The latter is the pivot P position after applying the candidate's pivot shifts and phi correction, so it is recalculated for every candidate; note that it degenerates to a single phi-independent point when `radius + Sr` reaches 0.
 
 Atom selectors refer to the origin-overlay PDB, not to the chain IDs in the input PDB. Use `CHAIN:RESIDUE:ATOM` syntax, for example `A:36:P` or `C:36:O5'`. For a standard two-chain origin overlay, A and B identify the original model, while C and D identify the fully transformed model. Residue numbers and atom names remain those of the corresponding overlay atoms.
+
+Both **Endpoint 1 overlay atom(s)** and **Endpoint 2 overlay atom(s)** accept one or more atoms, separated by commas or semicolons. For example, enter `A:36:P, A:37:P, A:38:P` for endpoint 1 and `C:36:P, C:37:P, C:38:P` for endpoint 2. Each endpoint uses the arithmetic mean of its atoms' XYZ coordinates (equal weight per atom), recalculated after resolving every atom in each candidate's origin-overlay geometry. This works for both distance and rotation screening; the two endpoints may contain different numbers of atoms, and a group may span overlay chains. Single-atom entries and endpoint 2's XYZ/pivot choices continue to work as before.
 
 For rotation screening, the axis can be supplied geometrically with the same source choices used by the main tool's restrained-rotation mode: an XYZ point or overlay atom for the axis point, together with a direct vector, two XYZ points, two overlay atoms, or the right-hand normal to two vectors for its direction. Alternatively, choose **Local axis range(s)** and enter the range definitions directly in the screening popup; multiple definitions can be separated by semicolons. These popup-owned ranges override the main-window Local axis range(s) for candidate generation and for the best/additional screened outputs, so the evaluated and written geometries remain identical without copying values from the main window.
 

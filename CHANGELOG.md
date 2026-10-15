@@ -1,5 +1,11 @@
 # Changelog
 
+## Bend Helix V2.9 - 2026-10-14
+
+- Allowed multiple atoms in both screening endpoint overlay fields, separated by commas or semicolons. Each endpoint uses the arithmetic mean of its atoms' XYZ coordinates, with equal weight per atom, for both distance and signed-rotation screening.
+- Resolved each atom in every candidate's origin-overlay geometry before averaging, including groups that mix original and transformed overlay chains. Preserved single-atom entries and the XYZ/pivot endpoint choices.
+- Updated the endpoint labels, help, and README with the list syntax and averaging behavior, and added regression coverage for centroids, candidate-dependent screening, invalid lists, and existing selector formats.
+
 ## Get Phenix Restraints V1.1 - 2026-10-11
 
 - Bumped the bundled Get Phenix Restraints tool to V1.1 while keeping the main `re_helix` application at V4.6.

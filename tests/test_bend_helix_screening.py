@@ -124,6 +124,132 @@ class BendHelixScreeningTests(unittest.TestCase):
         self.assertAlmostEqual(result.beta_deg, 90.0)
         self.assertAlmostEqual(result.achieved_value, target, places=7)
 
+    def test_overlay_atom_lists_preserve_single_selector_formats(self):
+        expected = bend.OverlayAtomSelector("A", 1, "P")
+        for value in ("A:1:P", "A1:P", "1A:P", "A/1/P", ("A", 1, "P"),
+                      ["A", 1, "P"], expected):
+            with self.subTest(value=value):
+                self.assertEqual(bend.parse_overlay_atom_selectors(value), (expected,))
+        self.assertEqual(
+            bend.parse_overlay_atom_selectors(" A:1:P, A2:P ; 3B:C4* "),
+            (expected, bend.OverlayAtomSelector("A", 2, "P"),
+             bend.OverlayAtomSelector("B", 3, "C4*")),
+        )
+
+    def test_overlay_endpoint_centroids_follow_each_candidate(self):
+        context = self.context()
+        groups = (
+            ("A:1:P, A:2:C4', B:1:P", (0.0, 0.0, 2.0), (0.0, 0.0, 2.0)),
+            ("C:1:P; C:2:P", (1.0, 0.0, 1.0), (0.0, 1.0, 1.0)),
+            ("A:1:P, C:1:P, C:2:P", (1.0, 0.0, 2.0 / 3.0),
+             (1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0)),
+        )
+        for selector, expected_zero, expected_twist in groups:
+            # Reuse the compiled resolver to catch centroids frozen at compilation.
+            resolver = bend._compile_screening_point(context, self.atom(selector))
+            for tau, expected in ((0.0, expected_zero), (90.0, expected_twist)):
+                with self.subTest(selector=selector, tau=tau):
+                    transform = bend.build_bend_transform(
+                        context.preparation, 0.0, 0.0, tau, align_mode="n"
+                    )
+                    actual = resolver(transform)
+                    for actual_component, expected_component in zip(actual, expected):
+                        self.assertAlmostEqual(actual_component, expected_component, places=7)
+
+    def test_overlay_endpoint_centroids_include_shifts_bends_and_alignment(self):
+        context = self.context()
+        point = self.atom("A:1:P, C:1:P, D:1:C4*")
+        for align_mode in ("n", "y"):
+            with self.subTest(align_mode=align_mode):
+                transform = bend.build_bend_transform(
+                    context.preparation, 25.0, -35.0, 40.0,
+                    shift_axial=2.0, shift_radial=-0.5, align_mode=align_mode,
+                )
+                coords = (
+                    (1.0, 0.0, 0.0),
+                    transform.transform_coord((1.0, 0.0, 0.0)),
+                    transform.transform_coord((0.0, 0.0, 4.0)),
+                )
+                actual = bend.resolve_screening_point(context, point, transform)
+                for index, component in enumerate(actual):
+                    self.assertAlmostEqual(
+                        component, sum(coord[index] for coord in coords) / 3.0, places=7
+                    )
+
+    def test_overlay_endpoint_lists_reject_empty_invalid_and_missing_atoms(self):
+        for selector in ("", " ", ",", "A:1:P,", ";A:1:P", "A:1:P,,C:1:P",
+                         "A:1:P; ;C:1:P", "A:1:P,invalid", "A:1:P,C:bad:P",
+                         "A:1:P,C:1:"):
+            with self.subTest(selector=selector), self.assertRaises(ValueError):
+                bend.parse_overlay_atom_selectors(selector)
+        context = self.context()
+        for selector, error in (
+            ("A:1:P, C:999:P", "did not match any atom"),
+            ("A:1:P, X:1:P", "Overlay chain 'X' is not available"),
+        ):
+            with self.subTest(selector=selector), self.assertRaisesRegex(ValueError, error):
+                bend._compile_screening_point(context, self.atom(selector))
+
+    def test_distance_screening_uses_both_endpoint_centroids(self):
+        # The first group averages to (1, 0, 2), the second starts at (1, 0, 1).
+        # Their distance with an axial shift Sa is abs(Sa - 1).
+        context = self.context()
+        request = bend.ScreeningRequest(
+            mode="distance", target=1.35,
+            point1=self.atom("A:1:P, A:2:P, A:3:P"),
+            point2=self.atom("C:1:P; C:2:P"),
+        )
+        result = bend.screen_bend_angles(
+            context, {"phi": 0.0, "beta": 0.0, "tau": 0.0},
+            [bend.ScreenAngleRange("shift_axial", 1.0, 3.0, 1.0)],
+            request, align_mode="y",
+        )
+        self.assertAlmostEqual(result.shift_axial, 2.35, delta=0.001)
+        self.assertAlmostEqual(result.achieved_value, 1.35, delta=0.001)
+        self.assertLess(result.error, 0.001)
+        self.assertGreater(result.refinement_candidate_count, 0)
+
+    def test_distance_screening_supports_centroid_to_xyz(self):
+        result = bend.screen_bend_angles(
+            self.context(), {"phi": 0.0, "beta": 0.0, "tau": 0.0},
+            [bend.ScreenAngleRange("tau", 0.0, 90.0, 45.0)],
+            bend.ScreeningRequest(
+                mode="distance", target=0.0,
+                point1=self.atom("C:1:P, C:2:P"), point2=self.xyz(0.0, 1.0, 1.0),
+            ),
+            align_mode="n",
+        )
+        self.assertAlmostEqual(result.tau_deg, 90.0, places=7)
+        self.assertAlmostEqual(result.achieved_value, 0.0, places=7)
+
+    def test_rotation_screening_uses_both_endpoint_centroids(self):
+        # Endpoint 2 averages one original atom and two transformed atoms:
+        # ((1 + 2*cos(tau))/3, 2*sin(tau)/3, 2/3). Its angle is neither
+        # tau nor the average of the three individual atoms' angles.
+        for target in (-60.0, 60.0):
+            with self.subTest(target=target):
+                result = bend.screen_bend_angles(
+                    self.context(), {"phi": 0.0, "beta": 0.0, "tau": 0.0},
+                    [bend.ScreenAngleRange("tau", -90.0, 90.0, 45.0)],
+                    bend.ScreeningRequest(
+                        mode="rotation", target=target,
+                        point1=self.atom("A:1:P, A:2:P"),
+                        point2=self.atom("A:1:P; C:1:P; C:2:P"),
+                        axis=bend.ScreeningAxis(
+                            source="geometric", point=self.xyz(0.0, 0.0, 0.0),
+                            vector_source="direct_vector", vector=(0.0, 0.0, 1.0),
+                        ),
+                    ),
+                    align_mode="n",
+                )
+                expected_tau = target + math.degrees(
+                    math.asin(math.sin(math.radians(target)) / 2.0)
+                )
+                self.assertAlmostEqual(result.tau_deg, expected_tau, delta=0.001)
+                self.assertAlmostEqual(result.achieved_value, target, delta=0.001)
+                self.assertLess(result.error, 0.001)
+                self.assertGreater(result.refinement_candidate_count, 0)
+
     def test_distance_screening_rejects_negative_target(self):
         request = bend.ScreeningRequest(
             mode="distance",
@@ -717,7 +843,7 @@ class BendHelixScreeningTests(unittest.TestCase):
             completed.stdout.strip(),
             f"{bend.TOOL_NAME} {bend.VERSION}",
         )
-        self.assertEqual(bend.VERSION, "V2.8")
+        self.assertEqual(bend.VERSION, "V2.9")
 
     def test_screening_automatic_names_append_scr_before_optional_sep(self):
         self.assertEqual(
