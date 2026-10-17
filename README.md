@@ -109,7 +109,7 @@ This writes:
 
 ## Bend Helix Tool
 
-The bundled Bend Helix V2.9 tool bends a straight two-chain nucleic-acid helix at a selected phosphorus residue. It treats the helix as two rigid pieces: piece #1 stays fixed, while piece #2 is moved by an optional pivot shift, a beta bend, and an optional tau twist.
+The bundled Bend Helix V3.0 tool bends a straight two-chain nucleic-acid helix at one or more selected phosphorus residues. With one pivot it treats the helix as two rigid pieces: piece #1 stays fixed, while piece #2 is moved by an optional pivot shift, a beta bend, and an optional tau twist. With several pivots it bends in pivot order, each bend acting on the helix the previous bend generated; see [Bending at several pivots](#bending-at-several-pivots).
 
 Open its GUI directly:
 
@@ -129,31 +129,59 @@ Shift the movable piece before bending it:
 python3 re_helix_lib/bend_helix.py --input straight_helix.pdb --pivot A36 --phi 0 --beta 30 --shift_axial 2 --shift_radial -1.5
 ```
 
+Bend at two pivots, with per-pivot phi and tau and one beta for both:
+
+```bash
+python3 re_helix_lib/bend_helix.py --input straight_helix.pdb --pivot A20,A40 --phi 0,90 --beta 30 --tau -10,5
+```
+
 Useful Bend Helix options:
 
-- `--pivot A36`: P-bearing residue that marks the border between fixed piece #1 and movable piece #2.
+- `--pivot A36`: P-bearing residue that marks the border between fixed piece #1 and movable piece #2. Several pivots, such as `A20,A40`, are bent in the listed order.
 - `--phi 0`: hinge direction around the helix axis, in degrees.
 - `--beta 30`: bend angle for movable piece #2, in degrees.
 - `--tau 10`: optional twist of movable piece #2 around its bent axis, in degrees.
 - `--shift_axial 2` (`--sa`): shift of movable piece #2 along the helix axis before bending, in angstroms. Positive is forward, away from fixed piece #1.
 - `--shift_radial -1.5` (`--sr`): shift of movable piece #2 along the pivot radius before bending, in angstroms. Positive is outward, away from the helix axis.
 - `--axis_range A1-A35,B60-B26`: optional local-axis range for already-bent inputs.
-- `--sep y`: give movable piece #2 new chain IDs in the output.
-- `--origin y`: also write an origin-overlay PDB for comparing the original and transformed helix.
+- `--sep y`: give movable piece #2 new chain IDs in the output; with several pivots, every movable piece gets its own.
+- `--origin y`: also write an origin-overlay PDB for comparing the original and transformed helix; with several pivots, it holds every helix the bends generate.
+
+With several pivots, `--phi`, `--beta`, `--tau`, `--shift_axial`, and `--shift_radial` each take one value per pivot, in pivot order, or a single value used at every pivot.
 
 ### Output file names and provenance
 
 Automatic output names lead with a `Pv` block naming the pivot residue, then the angle block: `model_PvA36_P0B30T0.pdb`, or `model_PvA36_P0B30T0_sep.pdb` with `--sep y`. The pivot label comes from the residue as resolved in the input, so `A36`, `36A`, and `A.36` all produce the same file, and bends pivoted at different residues no longer overwrite one another. An explicit `-o`/**Save as** path is used as given.
 
+Several pivots are named in bending order. When every value is shared they lead one value block, as in `model_PvA20PvA40_P0B30T0.pdb`; when any value differs between pivots, each pivot carries its own block, as in `model_PvA20_P0B30Tm10_PvA40_P90B30T5.pdb`. A name that would pass 240 bytes, which many pivots with detailed values can reach, is shortened to the first and last pivot, the pivot count, and a 10-character digest of the full name, as in `model_PvA10-A140x14_5e3c1d9a0b.pdb`; the `COMMAND` record below still carries every value.
+
 Every output PDB — the bent model, the `-ori` overlay, and each screened solution — records how it was made, using the same `REMARK 950 RE_SCRIPT` convention as the other bundled tools:
 
 ```
-REMARK 950 RE_SCRIPT SOFTWARE name=bend_helix version=V2.9 developer=DiLiuLab
+REMARK 950 RE_SCRIPT SOFTWARE name=bend_helix version=V3.0 developer=DiLiuLab
 REMARK 950 RE_SCRIPT COMMAND text=python bend_helix.py --input A60-heli.pdb --pivot A36 --phi 0 --beta 30 --tau 0 --shift_axial 0 --shift_radial 0 --sep n --align y --origin n
 REMARK 950 RE_SCRIPT OUTPUT_STAGE name=bend_helix
 ```
 
-The `COMMAND` record holds the full equivalent CLI command, so a model carries the recipe that produced it and can be regenerated from the file alone. When the run came from the GUI, this is the same command string the GUI prints in its result pane. Records are placed after any existing `REMARK` lines and before the first structural record, so they never land among `LINK` or coordinate records, and re-running the tool on its own output appends a fresh block rather than replacing the old one.
+The `COMMAND` record holds the full equivalent CLI command, so a model carries the recipe that produced it and can be regenerated from the file alone. Several pivots and per-pivot values are recorded as comma lists, such as `--pivot A20,A40 --phi 0,90`, and a list starting with a minus sign is attached to its option, as in `--tau=-10,5`. When the run came from the GUI, this is the same command string the GUI prints in its result pane. Records are placed after any existing `REMARK` lines and before the first structural record, so they never land among `LINK` or coordinate records, and re-running the tool on its own output appends a fresh block rather than replacing the old one.
+
+### Bending at several pivots
+
+`--pivot` and the GUI **Pivot P residue(s)** field accept several residues separated by spaces, commas, or semicolons, for example `A20, A40`. The bends are applied in the order the pivots are listed:
+
+1. Bend 1 acts on the input helix at the first pivot, exactly like a single-pivot run. Conceptually it produces two full helices: the input helix, which supplies fixed piece #1, and a rigidly bent copy of the whole helix.
+2. Bend 2 acts on that generated full helix at the second pivot and produces the next full helix, and so on.
+3. Finally the pieces are linked: with n pivots the duplex splits into n + 1 pieces, piece #1 is taken from the input helix and piece #k + 1 from the helix bend k generated. The unused part of every generated helix is dropped, and the pieces keep their chain IDs and residue numbering, so the output is one continuous duplex.
+
+Because each bend acts on the helix the previous bend generated, every pivot after the first must lie in the movable piece of the bend before it, that is, after it along the helix axis. List the pivots from the fixed end toward the free end; a pivot that lies before the previous one, or two pivots on the same base pair (including the two residues of one pair), is rejected with an error that names both pivots.
+
+Each bend is built from its own pivot's frame on the helix it acts on: the local axis, the pivot P position, and the phi = 0 radial direction all travel with that helix. Phi, beta, tau, Sa, and Sr therefore mean exactly what they mean for a single bend, measured at that pivot, and the angle between two consecutive pieces' axes is that bend's beta. A generated helix is a rigid copy of the input, so carrying the input frame along gives the frame Bend Helix would fit to the generated helix itself; the regression suite checks this against a chain built with the single-pivot code alone, step by step, to within 1e-6 A.
+
+`--phi`, `--beta`, `--tau`, `--shift_axial`, and `--shift_radial` (and the matching GUI fields) each take either one value per pivot, in pivot order, or a single value used at every pivot. Any other count is an error. Omitted tau, Sa, and Sr are 0 at every pivot. On the command line, an option may also be repeated (`--pivot A20 --pivot A40`), and a list starting with a minus sign works as typed (`--tau -10,5`); positional arguments take lists too, but a negative list there needs the named option.
+
+`--align y` applies to every bend, so each pivot P returns to its (shifted) position on the helix that bend acts on, and the backbone stays connected at every junction. With `--axis_range`, each pivot uses the range containing it; the ranges must all run in the same start-to-end direction along the helix so that every pivot sees the same base-pair order. `--sep y` gives every movable piece its own new chain IDs, in piece order. `--origin y` writes the input helix and every generated full helix to the `-ori` PDB, in bend order: A/B input, C/D from bend 1, E/F from bend 2, and so on. The run summary lists every piece with its base-pair range and source helix, then every bend with its own axis, hinge, twist axis, and alignment translation.
+
+Screening still works with several pivots as long as phi, beta, tau, Sa, and Sr each hold a single value: every fixed value and every screened candidate is then applied at each pivot. Entering more than one value in any of these five fields turns screening off and clears the **Screen** checkboxes until every field holds one value again. Screening atom selectors use the larger overlay namespace (A/B input, C/D bend 1, E/F bend 2, ...); **Phi-corrected pivot P** and the **Local axis range(s)** rotation axis refer to the first pivot, whose bend acts on the input helix.
 
 ### Shifting the pivot
 

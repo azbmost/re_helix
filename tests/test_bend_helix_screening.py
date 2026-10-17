@@ -2,11 +2,13 @@ import inspect
 import math
 import re
 import shlex
+from collections import OrderedDict
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from re_helix_lib import bend_helix as bend
 
@@ -843,7 +845,7 @@ class BendHelixScreeningTests(unittest.TestCase):
             completed.stdout.strip(),
             f"{bend.TOOL_NAME} {bend.VERSION}",
         )
-        self.assertEqual(bend.VERSION, "V2.9")
+        self.assertEqual(bend.VERSION, "V3.0")
 
     def test_screening_automatic_names_append_scr_before_optional_sep(self):
         self.assertEqual(
@@ -1908,6 +1910,747 @@ class BendHelixRemarkTests(unittest.TestCase):
         self.assertIn(b"RE_SCRIPT SOFTWARE name=bend_helix", raw)
         self.assertNotIn(b"\r", raw)
         self.assertEqual(len(self.remark_lines(out_path)), 3)
+
+
+def _ideal_duplex_pdb(pair_count=16):
+    """Return an ideal straight B-like duplex with antiparallel numbering.
+
+    Chain A runs 1..n up the +z axis and chain B runs n..1 down it, so A(k)
+    pairs with B(n + 1 - k). Every residue has P, C4', and N1 atoms.
+    """
+    rise, twist = 3.38, math.radians(36.0)
+    lines = []
+    serial = 1
+    for chain_id, phase, z_offset in (
+        ("A", 0.0, 0.0),
+        ("B", math.radians(154.0), 0.4),
+    ):
+        for res_seq in range(1, pair_count + 1):
+            level = res_seq - 1 if chain_id == "A" else pair_count - res_seq
+            theta = level * twist + phase
+            z = level * rise + z_offset
+            for atom_name, radius, d_theta, d_z in (
+                ("P", 8.9, 0.0, 0.0),
+                ("C4'", 7.8, 0.25, -0.6),
+                ("N1", 2.5, 0.6, -1.0),
+            ):
+                lines.append(
+                    _atom_line(
+                        serial,
+                        atom_name,
+                        chain_id,
+                        res_seq,
+                        radius * math.cos(theta + d_theta),
+                        radius * math.sin(theta + d_theta),
+                        z + d_z,
+                    )
+                )
+                serial += 1
+        lines.append("TER\n")
+    lines.append("END\n")
+    return "".join(lines)
+
+
+def _residues_from_records(records):
+    """Group atom records into residues exactly as bend.read_pdb does."""
+    residues = OrderedDict()
+    for index, record in enumerate(records):
+        if not isinstance(record, bend.AtomRecord):
+            continue
+        key = (record.chain_id, record.res_seq)
+        if key not in residues:
+            residues[key] = bend.Residue(
+                chain_id=record.chain_id, res_seq=record.res_seq, first_seen=index
+            )
+        residues[key].atoms.append(record)
+        if record.atom_name == "P" and residues[key].p_atom is None:
+            residues[key].p_atom = record
+    return residues
+
+
+def _angle_deg(first, second):
+    cosine = bend.v_dot(bend.v_norm(first), bend.v_norm(second))
+    return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
+
+
+class BendHelixMultiPivotTests(unittest.TestCase):
+    """V3.0: several pivots, bent in order, each on the previous bend's helix."""
+
+    PIVOTS = ("A5", "A11")
+    # phi, beta, tau, Sa, Sr for each pivot.
+    VALUES = ((0.0, 30.0, 10.0, 0.0, 0.5), (75.0, -20.0, -5.0, 1.5, 0.0))
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.input_path = Path(self.temp_dir.name) / "duplex16.pdb"
+        self.input_path.write_text(_ideal_duplex_pdb(16), encoding="utf-8")
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def per_pivot(self, index):
+        return tuple(values[index] for values in self.VALUES)
+
+    def bend_in_memory(self, pivots, values, align_mode="y"):
+        records, residues = bend.read_pdb(str(self.input_path))
+        keys = tuple(
+            bend.resolve_selected_key(bend.parse_residue_token(token), residues)
+            for token in pivots
+        )
+        _out, info = bend.bend_structure(
+            records,
+            residues,
+            str(self.input_path),
+            keys,
+            *values,
+            align_mode=align_mode,
+        )
+        return records, info
+
+    def chain_by_hand(self, pivots, values, align_mode):
+        """Bend as the request describes it, with the single-pivot code only.
+
+        Each bend runs on the full helix the previous bend generated, re-fitting
+        that helix's own axis; then piece k is taken from helix k and the rest of
+        every generated helix is dropped.
+        """
+        records, residues = bend.read_pdb(str(self.input_path))
+        helices = [records]
+        for pivot, (phi, beta, tau, sa, sr) in zip(pivots, values):
+            helix_residues = _residues_from_records(helices[-1])
+            key = bend.resolve_selected_key(
+                bend.parse_residue_token(pivot), helix_residues
+            )
+            preparation = bend.prepare_bend_geometry(helix_residues, key)
+            transform = bend.build_bend_transform(
+                preparation, phi, beta, tau, sa, sr, align_mode=align_mode
+            )
+            generated = bend.clone_records(helices[-1])
+            for record in generated:
+                if isinstance(record, bend.AtomRecord):
+                    record.set_coord(transform.transform_coord(record.coord()))
+            helices.append(generated)
+
+        input_prep = [
+            bend.prepare_bend_geometry(
+                residues, bend.resolve_selected_key(bend.parse_residue_token(p), residues)
+            )
+            for p in pivots
+        ]
+        pair_index = {
+            key: index
+            for index, pair in enumerate(input_prep[0].pair_keys)
+            for key in pair
+        }
+        linked = []
+        for position, record in enumerate(records):
+            if not isinstance(record, bend.AtomRecord):
+                continue
+            piece = sum(
+                1
+                for prep in input_prep
+                if pair_index[(record.chain_id, record.res_seq)] >= prep.pair_idx
+            )
+            linked.append(helices[piece][position].coord())
+        return linked
+
+    def test_each_bend_acts_on_the_helix_the_previous_bend_generated(self):
+        values = tuple(zip(*self.VALUES))
+        for align_mode in ("y", "n"):
+            with self.subTest(align_mode=align_mode):
+                records, _info = self.bend_in_memory(
+                    self.PIVOTS, values, align_mode=align_mode
+                )
+                actual = [r.coord() for r in records if isinstance(r, bend.AtomRecord)]
+                expected = self.chain_by_hand(self.PIVOTS, self.VALUES, align_mode)
+                self.assertEqual(len(actual), len(expected))
+                worst = max(
+                    bend.v_len(bend.v_sub(got, want))
+                    for got, want in zip(actual, expected)
+                )
+                self.assertLess(worst, 1.0e-6)
+
+    def test_later_bends_kink_about_their_own_helix_axis(self):
+        """The angle between consecutive generated helices is that bend's |beta|.
+
+        A bend built on a global or uncarried axis tilts the next piece by some
+        other angle, so this pins the local frame of every later bend.
+        """
+        _out, info = bend.run_bending(
+            str(self.input_path),
+            "A5 A11",
+            phi_deg="0, 75",
+            beta_deg="30; -20",
+            tau_deg="10 -5",
+            origin_mode="y",
+        )
+        overlay_records, _residues = bend.read_pdb(info["origin_out_path"])
+        axes = []
+        for chain_map in info["origin_chain_maps"]:
+            model_records = [
+                record
+                for record in overlay_records
+                if isinstance(record, bend.AtomRecord)
+                and record.chain_id in chain_map.values()
+            ]
+            axes.append(
+                bend.build_duplex_data(_residues_from_records(model_records))["axis_dir"]
+            )
+        self.assertEqual(len(axes), 3)
+        self.assertAlmostEqual(_angle_deg(axes[0], axes[1]), 30.0, delta=0.01)
+        self.assertAlmostEqual(_angle_deg(axes[1], axes[2]), 20.0, delta=0.01)
+
+    def test_aligned_junctions_stay_connected(self):
+        source = {
+            (r.chain_id, r.res_seq): r.coord()
+            for r in bend.read_pdb(str(self.input_path))[0]
+            if isinstance(r, bend.AtomRecord) and r.atom_name == "P"
+        }
+        records, info = self.bend_in_memory(
+            ("A4", "A8", "A13"), ("0 120 -60", "25", "15 0 -15")
+        )
+        bent = {
+            (r.chain_id, r.res_seq): r.coord()
+            for r in records
+            if isinstance(r, bend.AtomRecord) and r.atom_name == "P"
+        }
+        for res_seq in range(1, 16):
+            with self.subTest(step=f"A{res_seq}-A{res_seq + 1}"):
+                self.assertAlmostEqual(
+                    bend.v_len(bend.v_sub(bent[("A", res_seq + 1)], bent[("A", res_seq)])),
+                    bend.v_len(bend.v_sub(source[("A", res_seq + 1)], source[("A", res_seq)])),
+                    places=9,
+                )
+        # Each pivot P sits where it sat on the helix the previous bend generated.
+        sequence = info["bend_sequence"]
+        for index, pivot in enumerate(info["pivots"]):
+            self.assertPointAlmostEqual(
+                bent[pivot], sequence.helix_coord(index, source[pivot])
+            )
+
+    def assertPointAlmostEqual(self, actual, expected, places=7):
+        for axis, (got, want) in enumerate(zip(actual, expected)):
+            self.assertAlmostEqual(got, want, places=places, msg=f"axis {axis}")
+
+    def test_pieces_come_from_their_own_helix(self):
+        records, info = self.bend_in_memory(self.PIVOTS, tuple(zip(*self.VALUES)))
+        source = [r.coord() for r in bend.read_pdb(str(self.input_path))[0] if isinstance(r, bend.AtomRecord)]
+        sequence = info["bend_sequence"]
+        self.assertEqual(
+            [(p["piece"], p["pair_start"], p["pair_end"], p["helix"]) for p in info["pieces"]],
+            [(1, 1, 4, 0), (2, 5, 10, 1), (3, 11, 16, 2)],
+        )
+        atoms = [r for r in records if isinstance(r, bend.AtomRecord)]
+        for atom, original in zip(atoms, source):
+            level = atom.res_seq if atom.chain_id == "A" else 17 - atom.res_seq
+            helix = 0 if level < 5 else (1 if level < 11 else 2)
+            self.assertPointAlmostEqual(atom.coord(), sequence.helix_coord(helix, original))
+
+    def test_a_single_value_is_used_at_every_pivot(self):
+        shared, _info = self.bend_in_memory(self.PIVOTS, ("15", "30", "0", "0", "0"))
+        listed, _info = self.bend_in_memory(
+            self.PIVOTS, ("15 15", "30, 30", "0;0", (0.0, 0.0), [0, 0])
+        )
+        self.assertEqual(
+            [r.coord() for r in shared if isinstance(r, bend.AtomRecord)],
+            [r.coord() for r in listed if isinstance(r, bend.AtomRecord)],
+        )
+
+    def test_a_null_later_bend_leaves_the_first_bend_alone(self):
+        """A zero second bend must reproduce the one-pivot model exactly."""
+        two, _info = self.bend_in_memory(self.PIVOTS, ("12.5 0", "30 0", "-7 0", "1 0", "-0.5 0"))
+        one, _info = self.bend_in_memory(("A5",), (12.5, 30.0, -7.0, 1.0, -0.5))
+        for got, want in zip(
+            [r.coord() for r in two if isinstance(r, bend.AtomRecord)],
+            [r.coord() for r in one if isinstance(r, bend.AtomRecord)],
+        ):
+            self.assertPointAlmostEqual(got, want, places=9)
+
+    def test_a_null_first_bend_equals_bending_at_the_later_pivot_alone(self):
+        two, _info = self.bend_in_memory(self.PIVOTS, ("0 40", "0 25", "0 9", "0", "0 2"))
+        one, _info = self.bend_in_memory(("A11",), (40.0, 25.0, 9.0, 0.0, 2.0))
+        for got, want in zip(
+            [r.coord() for r in two if isinstance(r, bend.AtomRecord)],
+            [r.coord() for r in one if isinstance(r, bend.AtomRecord)],
+        ):
+            self.assertPointAlmostEqual(got, want, places=9)
+
+    def test_pivots_must_follow_the_helix_in_bending_order(self):
+        _records, residues = bend.read_pdb(str(self.input_path))
+        for pivots, message in (
+            ((("A", 11), ("A", 5)), "does not fall on the helix generated by the previous bend at A11"),
+            ((("A", 5), ("A", 5)), "mark the same base-pair border"),
+            # B12 is A5's partner, so it names the same border.
+            ((("A", 5), ("B", 12)), "mark the same base-pair border"),
+        ):
+            with self.subTest(pivots=pivots), self.assertRaisesRegex(ValueError, message):
+                bend.prepare_bend_pivots(residues, pivots)
+        # A pivot named on the partner strand is fine when it lies further on.
+        preparations = bend.prepare_bend_pivots(residues, (("A", 5), ("B", 5)))
+        self.assertEqual([p.pair_idx for p in preparations], [4, 11])
+
+    def test_axis_ranges_must_order_the_pairs_alike(self):
+        _records, residues = bend.read_pdb(str(self.input_path))
+        same_way = bend.parse_axis_range_specs(["A1-A8,B16-B9", "A9-A16,B8-B1"])
+        preparations = bend.prepare_bend_pivots(
+            residues, (("A", 5), ("A", 11)), axis_range_defs=same_way
+        )
+        self.assertEqual(len(preparations), 2)
+        opposite = bend.parse_axis_range_specs(["A1-A8,B16-B9", "A16-A9,B1-B8"])
+        with self.assertRaisesRegex(ValueError, "order the base pairs differently"):
+            bend.prepare_bend_pivots(
+                residues, (("A", 5), ("A", 11)), axis_range_defs=opposite
+            )
+
+    def test_value_counts_must_match_the_pivots(self):
+        self.assertEqual(
+            bend.parse_parameter_set(3, phi="0", beta="30 20 10", tau=None, shift_axial="1;2;3", shift_radial=None),
+            {
+                "phi": (0.0,),
+                "beta": (30.0, 20.0, 10.0),
+                "tau": (0.0,),
+                "shift_axial": (1.0, 2.0, 3.0),
+                "shift_radial": (0.0,),
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "Phi has 2 values for 3 pivot"):
+            bend.parse_parameter_set(3, phi="0 90", beta="30")
+        with self.assertRaisesRegex(ValueError, "Please provide Beta"):
+            bend.parse_parameter_set(1, phi="0", beta=None)
+        before = set(Path(self.temp_dir.name).iterdir())
+        with self.assertRaisesRegex(ValueError, "Tau has 3 values for 2 pivot"):
+            bend.run_bending(str(self.input_path), "A5 A11", "0", "30", tau_deg="1 2 3")
+        self.assertEqual(set(Path(self.temp_dir.name).iterdir()), before)
+
+    def test_list_text_accepts_spaces_commas_and_semicolons(self):
+        for text in ("A5, A11", "A5 A11", "A5;A11", " A5 ,; A11 ", ["A5", "A11"]):
+            with self.subTest(text=text):
+                self.assertEqual(bend.parse_pivot_tokens(text), ("A5", "A11"))
+        self.assertEqual(bend.parse_pivot_tokens(["A5", "A11,B2"]), ("A5", "A11", "B2"))
+        self.assertEqual(
+            bend.parse_bend_values("0, -90;45 12.5", "Phi"), (0.0, -90.0, 45.0, 12.5)
+        )
+        self.assertEqual(bend.parse_bend_values(30, "Beta"), (30.0,))
+        self.assertEqual(
+            bend.parse_bend_values(["1", 2.5, "3 4"], "Tau"), (1.0, 2.5, 3.0, 4.0)
+        )
+        for bad, message in (
+            ("", "at least one pivot"),
+            (",;", "at least one pivot"),
+            ("A5, X", "Invalid residue token"),
+        ):
+            with self.subTest(pivots=bad), self.assertRaisesRegex(ValueError, message):
+                bend.parse_pivot_tokens(bad)
+        for bad, message in (
+            ("abc", "must be numeric"),
+            ("1, nan", "must be finite"),
+            ("inf", "must be finite"),
+            ("", "Please provide Phi"),
+            (True, "Please provide Phi"),
+        ):
+            with self.subTest(values=bad), self.assertRaisesRegex(ValueError, message):
+                bend.parse_bend_values(bad, "Phi")
+
+    def test_one_pivot_lists_reproduce_the_scalar_run_byte_for_byte(self):
+        scalar_path, _info = bend.run_bending(
+            str(self.input_path), "A5", 12.5, 30.0, tau_deg=-7.0,
+            shift_axial=2.0, shift_radial=-1.5, origin_mode="y",
+        )
+        scalar = Path(scalar_path).read_bytes()
+        scalar_origin = Path(_info["origin_out_path"]).read_bytes()
+        Path(scalar_path).unlink()
+        listed_path, info = bend.run_bending(
+            str(self.input_path), ["A5"], "12.5", ("30",), tau_deg="-7",
+            shift_axial=[2.0], shift_radial="-1.5", origin_mode="y",
+        )
+        self.assertEqual(listed_path, scalar_path)
+        self.assertEqual(Path(listed_path).read_bytes(), scalar)
+        self.assertEqual(Path(info["origin_out_path"]).read_bytes(), scalar_origin)
+
+    def test_overlay_holds_the_input_and_every_generated_helix(self):
+        out_path, info = bend.run_bending(
+            str(self.input_path), "A5, A11", "0 75", "30 -20", tau_deg="10 -5",
+            shift_axial="0 1.5", shift_radial="0.5 0", origin_mode="y",
+        )
+        self.assertEqual(
+            [dict(m) for m in info["origin_chain_maps"]],
+            [{"A": "A", "B": "B"}, {"A": "C", "B": "D"}, {"A": "E", "B": "F"}],
+        )
+        self.assertEqual(info["origin_chain_map_model1"], {"A": "A", "B": "B"})
+        self.assertEqual(info["origin_chain_map_model2"], {"A": "C", "B": "D"})
+        main = _p_coords(Path(out_path))
+        overlay = _p_coords(Path(info["origin_out_path"]))
+        source = _p_coords(self.input_path)
+        self.assertEqual(len(overlay), 3 * len(source))
+        for (chain, res_seq), xyz in source.items():
+            self.assertPointAlmostEqual(overlay[(chain, res_seq)], xyz, places=3)
+            level = res_seq if chain == "A" else 17 - res_seq
+            helix = 0 if level < 5 else (1 if level < 11 else 2)
+            overlay_chain = info["origin_chain_maps"][helix][chain]
+            # The overlay copy of a piece's own helix matches the linked model.
+            self.assertPointAlmostEqual(
+                overlay[(overlay_chain, res_seq)], main[(chain, res_seq)], places=3
+            )
+
+    def test_sep_gives_every_movable_piece_its_own_chain_ids(self):
+        out_path, info = bend.run_bending(
+            str(self.input_path), "A5 A11", "0", "30", sep_mode="y"
+        )
+        chains = {}
+        for line in Path(out_path).read_text(encoding="utf-8").splitlines():
+            if line.startswith("ATOM  "):
+                chains.setdefault(line[21], set()).add(int(line[22:26]))
+        self.assertEqual(chains["A"], set(range(1, 5)))
+        self.assertEqual(chains["C"], set(range(5, 11)))
+        self.assertEqual(chains["E"], set(range(11, 17)))
+        self.assertEqual(chains["B"], set(range(13, 17)))
+        self.assertEqual(chains["D"], set(range(7, 13)))
+        self.assertEqual(chains["F"], set(range(1, 7)))
+        self.assertEqual(
+            info["piece_chain_maps"], [{"A": "C", "B": "D"}, {"A": "E", "B": "F"}]
+        )
+        self.assertEqual(info["piece2_chain_map"], {"A": "C", "B": "D"})
+
+    def test_summary_reports_every_piece_and_bend(self):
+        out_path, info = bend.run_bending(
+            str(self.input_path), "A5 A11", "0 75", "30 -20", origin_mode="y", sep_mode="y"
+        )
+        summary = bend.format_run_summary(out_path, info)
+        for expected in (
+            "Bent at 2 pivots in the listed order: A5, A11.",
+            "Piece #1 is fixed: base-pair range 1..4 of 16 in axial order (input helix)",
+            "Piece #2 is movable: base-pair range 5..10 of 16 in axial order "
+            "(helix generated by bend 1 at A5)",
+            "Piece #3 is movable: base-pair range 11..16 of 16 in axial order "
+            "(helix generated by bend 2 at A11)",
+            "Bend 1 at pivot A5:",
+            "Bend 2 at pivot A11:",
+            "  Split base pair / pivot border: A11 / B6",
+            "  Phi 75.000000 deg, beta -20.000000 deg, tau 0.000000 deg",
+            "Separated piece chain IDs: piece #2 A->C, B->D; piece #3 A->E, B->F",
+            "model 1 [A, B] (input helix), model 2 [C, D] (bend 1), model 3 [E, F] (bend 2)",
+        ):
+            self.assertIn(expected, summary)
+        single_path, single_info = bend.run_bending(str(self.input_path), "A5", 0, 30)
+        single = bend.format_run_summary(single_path, single_info)
+        self.assertTrue(single.startswith(f"Wrote {single_path}\nSplit base pair / pivot border: A5 / B12"))
+        self.assertNotIn("Bent at", single)
+
+
+class BendHelixMultiPivotNamingAndCliTests(unittest.TestCase):
+    """Names, recorded commands, and the CLI for several pivots."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.input_path = Path(self.temp_dir.name) / "duplex16.pdb"
+        self.input_path.write_text(_ideal_duplex_pdb(16), encoding="utf-8")
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_names_share_one_block_or_give_each_pivot_its_own(self):
+        self.assertEqual(
+            bend.make_bend_output_name("model.pdb", ("A20", "A40"), (0.0,), (30.0,)),
+            "model_PvA20PvA40_P0B30T0.pdb",
+        )
+        self.assertEqual(
+            bend.make_output_name("model.pdb", 0.0, 30.0, 0.0, pivot="A20, A40"),
+            "model_PvA20PvA40_P0B30T0.pdb",
+        )
+        self.assertEqual(
+            bend.make_bend_output_name(
+                "model.pdb", (("A", 20), ("A", 40)), (0.0, 90.0), (30.0,),
+                (0.0, 5.0), (0.0,), (0.0, -1.5), sep_mode="y", screen_mode=True,
+            ),
+            "model_PvA20_P0B30T0_PvA40_P90B30T5Sa0Srm1p5_scr_sep.pdb",
+        )
+        # One pivot keeps the V2.8 name.
+        self.assertEqual(
+            bend.make_bend_output_name("model.pdb", (("A", 36),), (0.0,), (30.0,)),
+            "model_PvA36_P0B30T0.pdb",
+        )
+        solution = bend.ScreeningSolution(10.0, -20.0, 30.0, 5.0, 0.0)
+        self.assertEqual(
+            bend.make_screen_solution_output_name(
+                "model.pdb", solution, solution_index=2, pivot=(("A", 20), ("A", 40))
+            ),
+            "model_PvA20PvA40_P10Bm20T30_scr_sol002.pdb",
+        )
+
+    def test_overlong_names_fall_back_to_a_stable_digest(self):
+        pivots = tuple(("A", 10 * index) for index in range(1, 21))
+        betas = tuple(10.0 + index + 0.125 for index in range(20))
+        name = bend.make_bend_output_name(
+            "/some/dir/model.pdb", pivots, (0.0,), betas, (0.0,), (1.5,), (-2.25,)
+        )
+        self.assertEqual(Path(name).parent, Path("/some/dir"))
+        self.assertRegex(Path(name).name, r"^model_PvA10-A200x20_[0-9a-f]{10}\.pdb$")
+        self.assertLessEqual(len(Path(name).name.encode()), bend.MAX_AUTOMATIC_NAME_BYTES)
+        again = bend.make_bend_output_name(
+            "/some/dir/model.pdb", pivots, (0.0,), betas, (0.0,), (1.5,), (-2.25,)
+        )
+        self.assertEqual(again, name)
+        changed = bend.make_bend_output_name(
+            "/some/dir/model.pdb", pivots, (0.0,), betas[:-1] + (99.0,), (0.0,), (1.5,), (-2.25,)
+        )
+        self.assertNotEqual(changed, name)
+
+    def test_recorded_command_replays_negative_per_pivot_values(self):
+        out_path, info = bend.run_bending(
+            str(self.input_path), "A5 A11", "-30, 20", "30", tau_deg="-10 5",
+            shift_radial="-0.5",
+        )
+        command = info["command"]
+        self.assertIn(
+            "--pivot A5,A11 --phi=-30,20 --beta 30 --tau=-10,5 --shift_axial 0 "
+            "--shift_radial -0.5",
+            command,
+        )
+        first = Path(out_path).read_bytes()
+        Path(out_path).unlink()
+        completed = subprocess.run(
+            [sys.executable, str(Path(bend.__file__).resolve()), *shlex.split(command)[2:]],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(Path(out_path).read_bytes(), first)
+
+    def test_cli_takes_repeated_options_and_bare_negative_lists(self):
+        completed = subprocess.run(
+            [
+                sys.executable, str(Path(bend.__file__).resolve()),
+                "--input", str(self.input_path),
+                "--pivot", "A5", "--pivot", "A11",
+                "--phi", "-30,20",
+                "--beta", "30",
+                "--tau", "-10", "--tau", "5",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("Bent at 2 pivots in the listed order: A5, A11.", completed.stdout)
+        written = self.input_path.with_name(
+            "duplex16_PvA5_Pm30B30Tm10_PvA11_P20B30T5.pdb"
+        )
+        self.assertTrue(written.is_file(), completed.stdout)
+        expected_path, _info = bend.run_bending(
+            str(self.input_path), "A5,A11", (-30.0, 20.0), 30.0, tau_deg=(-10.0, 5.0),
+            output_pdb=str(Path(self.temp_dir.name) / "api.pdb"),
+        )
+        self.assertEqual(_p_coords(written), _p_coords(Path(expected_path)))
+
+    def test_cli_reports_value_count_and_pivot_conflicts(self):
+        script = str(Path(bend.__file__).resolve())
+        for argv, message in (
+            (["--input", str(self.input_path), "--pivot", "A5 A11", "--phi", "0 90 45", "--beta", "30"],
+             "Phi has 3 values for 2 pivot"),
+            ([str(self.input_path), "A5,A11", "0", "30", "--pivot", "A5"],
+             "Conflicting values were provided for pivot residue"),
+            (["--input", str(self.input_path), "--pivot", "A11,A5", "--phi", "0", "--beta", "30"],
+             "does not fall on the helix generated by the previous bend"),
+        ):
+            with self.subTest(argv=argv):
+                completed = subprocess.run(
+                    [sys.executable, script, *argv],
+                    check=False, capture_output=True, text=True,
+                )
+                self.assertEqual(completed.returncode, 1)
+                self.assertIn(message, completed.stderr)
+        positional = subprocess.run(
+            [sys.executable, script, str(self.input_path), "A5,A11", "0", "30,20"],
+            check=False, capture_output=True, text=True,
+        )
+        self.assertEqual(positional.returncode, 0, positional.stderr)
+        self.assertTrue(
+            self.input_path.with_name("duplex16_PvA5_P0B30T0_PvA11_P0B20T0.pdb").is_file()
+        )
+
+    def test_negative_lists_are_attached_to_every_bend_value_option(self):
+        self.assertEqual(
+            bend.attach_negative_list_values(
+                ["--phi", "-30,20", "--pivot", "A5", "--sr", "-1", "--", "--phi", "-2,3"],
+                bend.BEND_VALUE_OPTION_STRINGS,
+            ),
+            ["--phi=-30,20", "--pivot", "A5", "--sr=-1", "--", "--phi", "-2,3"],
+        )
+        parser = bend.build_arg_parser()
+        dests = ("phi_deg_opt", "beta_deg_opt", "tau_deg_opt", "shift_axial", "shift_radial")
+        for option in bend.BEND_VALUE_OPTION_STRINGS:
+            with self.subTest(option=option):
+                args = parser.parse_args(
+                    bend.attach_negative_list_values([option, "-1,2"], bend.BEND_VALUE_OPTION_STRINGS)
+                )
+                self.assertIn(["-1,2"], [getattr(args, dest) for dest in dests])
+
+
+class BendHelixMultiPivotScreeningTests(unittest.TestCase):
+    """Screening with several pivots: every value applies at each pivot."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.input_path = Path(self.temp_dir.name) / "duplex16.pdb"
+        self.input_path.write_text(_ideal_duplex_pdb(16), encoding="utf-8")
+        self.context = bend.prepare_screening_context(str(self.input_path), "A5, A11")
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_overlay_namespace_names_every_generated_helix(self):
+        self.assertEqual(self.context.selected_keys, (("A", 5), ("A", 11)))
+        self.assertEqual(
+            self.context.overlay_model_map,
+            {"A": ("A", 0), "B": ("B", 0), "C": ("A", 1), "D": ("B", 1), "E": ("A", 2), "F": ("B", 2)},
+        )
+        self.assertEqual(self.context.overlay_chain_map["E"], ("A", True))
+        single = bend.prepare_screening_context(str(self.input_path), "A5")
+        self.assertEqual(single.preparations, ())
+        self.assertEqual(single.pivot_preparations, (single.preparation,))
+        self.assertEqual(set(single.overlay_model_map), {"A", "B", "C", "D"})
+
+    def test_a_shared_screened_value_is_found_between_grid_steps(self):
+        sequence = bend.build_bend_sequence(self.context.pivot_preparations, (15.0,), (27.5,), (5.0,))
+        start = bend.ScreeningPoint("overlay_atom", "A:1:P")
+        end = bend.ScreeningPoint("overlay_atom", "E:16:P")
+        target = bend.distance_between_points(
+            bend.resolve_screening_point(self.context, start, sequence),
+            bend.resolve_screening_point(self.context, end, sequence),
+        )
+        result = bend.screen_bend_angles(
+            self.context,
+            {"phi": 15.0, "tau": 5.0},
+            [bend.ScreenAngleRange("beta", 0.0, 60.0, 6.0)],
+            bend.ScreeningRequest("distance", target, start, end),
+        )
+        self.assertAlmostEqual(result.beta_deg, 27.5, delta=2.0e-3)
+        # The written model is the screened geometry.
+        out_path, info = bend.run_bending(
+            str(self.input_path), "A5 A11", result.phi_deg, result.beta_deg,
+            tau_deg=result.tau_deg, origin_mode="y",
+        )
+        written_end = _p_coords(Path(out_path))[("A", 16)]
+        self.assertAlmostEqual(
+            bend.distance_between_points(_p_coords(self.input_path)[("A", 1)], written_end),
+            target,
+            delta=5.0e-3,
+        )
+
+    def test_pivot_point_and_local_axis_belong_to_the_first_pivot(self):
+        sequence = bend.build_bend_sequence(self.context.pivot_preparations, (40.0,), (20.0,))
+        self.assertEqual(
+            bend.resolve_screening_point(
+                self.context, bend.ScreeningPoint("phi_corrected_pivot"), sequence
+            ),
+            sequence.transforms[0].hinge_point,
+        )
+        self.assertEqual(
+            bend.resolve_screening_axis(self.context, bend.ScreeningAxis("local_axis"), sequence),
+            (self.context.preparation.axis_point, self.context.preparation.axis_dir),
+        )
+
+    def test_additional_solutions_are_named_for_every_pivot(self):
+        solution = bend.ScreeningSolution(0.0, 30.0, 0.0, 1.0, 0.0)
+        result = bend.ScreeningResult(
+            0.0, 25.0, 0.0, 1.0, 0.0, 1,
+            solutions=(bend.ScreeningSolution(0.0, 25.0, 0.0, 1.0, 0.0), solution),
+        )
+        written = bend.write_additional_screening_solution_outputs(
+            result=result,
+            input_pdb=str(self.input_path),
+            pivot_residue="A5 A11",
+            sep_mode="n",
+            align_mode="y",
+            pivot=self.context.selected_keys,
+        )
+        self.assertEqual(
+            [Path(path).name for path, _origin in written],
+            ["duplex16_PvA5PvA11_P0B30T0_scr_sol002.pdb"],
+        )
+        self.assertTrue(Path(written[0][1]).name.endswith("_scr_sol002-ori.pdb"))
+
+
+class BendHelixGuiScreeningSwitchTests(unittest.TestCase):
+    """More than one value in any bend field turns screening off in the GUI."""
+
+    def test_more_than_one_value_turns_screening_off(self):
+        try:
+            import tkinter as tk
+            from tkinter import messagebox, ttk
+        except ImportError:
+            self.skipTest("tkinter is unavailable")
+        try:
+            probe = tk.Tk()
+            probe.withdraw()
+            probe.destroy()
+        except tk.TclError:
+            self.skipTest("no display for Tk")
+
+        seen = {}
+
+        def widgets(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from widgets(child)
+
+        def drive(root):
+            root.withdraw()
+            all_widgets = list(widgets(root))
+
+            def in_row(label_text, widget_type, column):
+                label = next(
+                    w for w in all_widgets
+                    if isinstance(w, ttk.Label) and w.cget("text") == label_text
+                )
+                row = int(label.grid_info()["row"])
+                return next(
+                    w for w in all_widgets
+                    if isinstance(w, widget_type)
+                    and w.grid_info()
+                    and int(w.grid_info()["row"]) == row
+                    and int(w.grid_info()["column"]) == column
+                )
+
+            phi_var = str(in_row("Phi: hinge direction (degrees)", ttk.Entry, 1).cget("textvariable"))
+            beta_check = in_row("Beta: bend movable piece #2 (degrees)", ttk.Checkbutton, 2)
+            status_var = str(in_row("Screening target", ttk.Label, 2).cget("textvariable"))
+            checks = [w for w in all_widgets if isinstance(w, ttk.Checkbutton)]
+
+            def states():
+                return {str(w.cget("state")) for w in checks}
+
+            root.setvar(str(beta_check.cget("variable")), 1)
+            root.update()
+            seen["checked"] = bool(int(root.getvar(str(beta_check.cget("variable")))))
+            root.setvar(phi_var, "0, 90")
+            root.update()
+            seen["after_list"] = (
+                bool(int(root.getvar(str(beta_check.cget("variable"))))),
+                states(),
+                root.getvar(status_var),
+            )
+            root.setvar(phi_var, "0")
+            root.update()
+            seen["after_single"] = (states(), root.getvar(status_var))
+            root.destroy()
+
+        with mock.patch.object(tk.Tk, "mainloop", lambda self, n=0: drive(self)), \
+                mock.patch.object(messagebox, "showinfo"), \
+                mock.patch.object(messagebox, "showerror"):
+            bend.launch_gui(
+                {"input_pdb": str(Path(__file__)), "pivot_residue": "A5 A11", "phi_deg": "0", "beta_deg": "30"}
+            )
+
+        self.assertTrue(seen["checked"])
+        still_checked, states, status = seen["after_list"]
+        self.assertFalse(still_checked)
+        self.assertEqual(states, {"disabled"})
+        self.assertIn("Screening is off: Phi has more than one value", status)
+        states, status = seen["after_single"]
+        self.assertEqual(states, {"normal"})
+        self.assertNotIn("Screening is off", status)
 
 
 def _p_coords(path: Path):

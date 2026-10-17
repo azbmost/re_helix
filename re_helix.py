@@ -4855,9 +4855,16 @@ Main inputs:
 Sa and Sr are applied before any rotation, and the hinge and twist axis are then
 rebuilt from the shifted pivot. Both default to 0.
 
+Several pivots, e.g. A20, A40, are bent in the listed order. Each bend acts on
+the full helix the previous bend generated, so each pivot must lie after the
+previous one along the helix; the pieces are then linked into one duplex.
+phi/beta/tau/Sa/Sr take one value per pivot or one value for every pivot.
+
 The GUI can also screen one or two of phi/beta/tau/Sa/Sr over a grid to hit a
 target distance or signed rotation, and report every distinct solution within a
 tolerance. Angle grids are in degrees and shift grids are in angstroms.
+Screening needs a single value in each of those fields; with several pivots,
+each value then applies at every pivot.
 
 Options include a local-axis range for already-bent inputs, new chain IDs for
 piece #2, and an origin-overlay PDB for comparing before and after.
