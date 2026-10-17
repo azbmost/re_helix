@@ -1,5 +1,16 @@
 # Changelog
 
+## Bend Helix V3.1 - 2026-10-17
+
+- Bumped the bundled Bend Helix tool to V3.1 while keeping the main `re_helix` application at V4.6.
+- Named screening atoms in the final bent model by default. A new **Atom names** choice in the screening window offers **Final bent model**, where `A:150:P` is residue A150 where it ends up after every bend, by the written model's own chain IDs, and **Origin overlay helices**, the previous naming, where A/B is the unmoved input helix and each bend adds the two chains of the full helix it generates. With several pivots the overlay naming made a residue on a moved piece reachable only through the helix that supplies that piece, such as `E:150:P` for A150 behind pivots A118 and A149, while `A:150:P` silently named the unmoved input copy.
+- Followed `--sep y` in final-model names: a moved piece is named by the chain IDs the written model gives it, computed by the same routine that writes them, and a name on the wrong chain is refused with the right one, such as `use E:12:P`.
+- Refused a screen whose target cannot change: when both endpoints, and for rotation the axis, all stay on the unmoved input or all move rigidly with one helix, every candidate gives the same value and the screen could only report its first grid value. The error names the selector that follows the bent model, for example `use E:150:P, or name it in the final model as A:150:P`. A one-candidate grid only measures and is still allowed.
+- Kept refining a promising region below the 0.001-degree or 0.001-angstrom precision, down to 1e-6, while its residual is above the solution tolerance. One value shared by two pivots moves the target about twice as fast as one bend, so a tau screen of A150 against A91 behind pivots A118 and A149 stopped 0.0009 degree from the root, with a 0.0019-degree residual, and reported no solution within the 0.001-degree tolerance. It now reports tau = -3.71973 degrees within tolerance, and the written model puts A150 in register with A91 to 0.0001 degree. Regions that already meet the tolerance stop where they did before.
+- Listed, under the **Atom names** choice, which residues each piece holds and which chain names reach them, for example `#3 A149-A235, B1-B87`, for the current input, pivots, and `--sep` setting.
+- Renamed **Overlay atom** to **Atom** throughout the screening window, since atoms can now be named either way, and made selector parse errors name-neutral.
+- Added regression coverage for final-model names with and without `--sep y` against the written files, refused and allowed unchangeable targets, the corrected selector in the error, refinement to the tolerance for a value shared by two pivots, the piece descriptions in both namings, and a GUI run that screens with final-model names. Every new test was mutation-checked against a deliberately broken implementation. Stopped the GUI tests from creating a throwaway Tk root to probe for a display, after which a later root's `update()` can stall on macOS.
+
 ## Bend Helix V3.0 - 2026-10-16
 
 - Bumped the bundled Bend Helix tool to V3.0 while keeping the main `re_helix` application at V4.6.

@@ -4864,7 +4864,8 @@ The GUI can also screen one or two of phi/beta/tau/Sa/Sr over a grid to hit a
 target distance or signed rotation, and report every distinct solution within a
 tolerance. Angle grids are in degrees and shift grids are in angstroms.
 Screening needs a single value in each of those fields; with several pivots,
-each value then applies at every pivot.
+each value then applies at every pivot. Screening atoms are named where they
+end up in the final bent model, e.g. A:150:P, unless overlay names are chosen.
 
 Options include a local-axis range for already-bent inputs, new chain IDs for
 piece #2, and an origin-overlay PDB for comparing before and after.

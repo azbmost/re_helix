@@ -686,6 +686,7 @@ class BendHelixScreeningTests(unittest.TestCase):
             "target",
             "solution_tolerance",
             "write_all_solutions",
+            "atom_names",
             "endpoint1_atom",
             "endpoint2_source",
             "endpoint2_atom",
@@ -845,7 +846,7 @@ class BendHelixScreeningTests(unittest.TestCase):
             completed.stdout.strip(),
             f"{bend.TOOL_NAME} {bend.VERSION}",
         )
-        self.assertEqual(bend.VERSION, "V3.0")
+        self.assertEqual(bend.VERSION, "V3.1")
 
     def test_screening_automatic_names_append_scr_before_optional_sep(self):
         self.assertEqual(
@@ -2572,21 +2573,315 @@ class BendHelixMultiPivotScreeningTests(unittest.TestCase):
         self.assertTrue(Path(written[0][1]).name.endswith("_scr_sol002-ori.pdb"))
 
 
+class BendHelixAtomNameTests(unittest.TestCase):
+    """Screening atoms named in the final model or in the -ori overlay."""
+
+    PIVOTS = "A5, A11"
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.input_path = Path(self.temp_dir.name) / "duplex16.pdb"
+        self.input_path.write_text(_ideal_duplex_pdb(16), encoding="utf-8")
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def context(self, sep_mode="n"):
+        return bend.prepare_screening_context(
+            str(self.input_path), self.PIVOTS, sep_mode=sep_mode
+        )
+
+    def resolve(self, context, kind, selector, sequence):
+        return bend.resolve_screening_point(
+            context, bend.ScreeningPoint(kind, selector), sequence
+        )
+
+    def sequence(self, context):
+        return bend.build_bend_sequence(
+            context.pivot_preparations, (25.0, -40.0), (30.0, 20.0), (10.0, -5.0)
+        )
+
+    def test_final_model_names_follow_each_piece_to_its_helix(self):
+        context = self.context()
+        sequence = self.sequence(context)
+        # A2 stays in piece #1; A7 rides helix 1; A12 and its partner B5 ride helix 2.
+        for model, overlay in (
+            ("A:2:P", "A:2:P"),
+            ("A:7:P", "C:7:P"),
+            ("A:12:P", "E:12:P"),
+            ("B:5:P", "F:5:P"),
+            ("A:12:P, B:14:P", "E:12:P, B:14:P"),
+        ):
+            with self.subTest(model=model):
+                self.assertEqual(
+                    self.resolve(context, "model_atom", model, sequence),
+                    self.resolve(context, "overlay_atom", overlay, sequence),
+                )
+        with self.assertRaisesRegex(ValueError, "Chain 'C' is not in the written model"):
+            self.resolve(context, "model_atom", "C:7:P", sequence)
+
+    def test_final_model_names_use_the_separated_chain_ids(self):
+        context = self.context(sep_mode="y")
+        sequence = self.sequence(context)
+        self.assertEqual(
+            self.resolve(context, "model_atom", "E:12:P", sequence),
+            self.resolve(context, "overlay_atom", "E:12:P", sequence),
+        )
+        self.assertEqual(
+            self.resolve(context, "model_atom", "A:2:P", sequence),
+            self.resolve(context, "overlay_atom", "A:2:P", sequence),
+        )
+        for wrong in ("A:12:P", "C:12:P"):
+            with self.subTest(selector=wrong), self.assertRaisesRegex(
+                ValueError, "writes as chain E; use E:12:P"
+            ):
+                self.resolve(context, "model_atom", wrong, sequence)
+        # The names are the ones the written model really carries.
+        out_path, _info = bend.run_bending(
+            str(self.input_path), self.PIVOTS, "25 -40", "30 20", tau_deg="10 -5", sep_mode="y"
+        )
+        written = _p_coords(Path(out_path))
+        for selector, key in (("E:12:P", ("E", 12)), ("C:7:P", ("C", 7)), ("B:16:P", ("B", 16))):
+            with self.subTest(written=selector):
+                for got, want in zip(self.resolve(context, "model_atom", selector, sequence), written[key]):
+                    self.assertAlmostEqual(got, want, places=3)
+
+    def test_an_unchangeable_target_is_refused_with_the_right_name(self):
+        context = self.context()
+        grid = [bend.ScreenAngleRange("tau", -30.0, 30.0, 6.0)]
+        fixed = {"phi": 0.0, "beta": 0.0}
+        input_only = bend.ScreeningRequest(
+            "rotation", 0.0,
+            bend.ScreeningPoint("overlay_atom", "A:1:P"),
+            bend.ScreeningPoint("overlay_atom", "A:12:P"),
+            bend.ScreeningAxis("local_axis"),
+        )
+        with self.assertRaisesRegex(ValueError, "cannot change") as caught:
+            bend.screen_bend_angles(context, fixed, grid, input_only)
+        self.assertIn("use E:12:P", str(caught.exception))
+        self.assertIn("name it in the final model as A:12:P", str(caught.exception))
+        same_piece = bend.ScreeningRequest(
+            "distance", 5.0,
+            bend.ScreeningPoint("model_atom", "A:6:P"),
+            bend.ScreeningPoint("model_atom", "A:9:P"),
+        )
+        with self.assertRaisesRegex(ValueError, "move rigidly with the helix bend 1 generates"):
+            bend.screen_bend_angles(context, fixed, grid, same_piece)
+        # A one-candidate grid only measures, so it is allowed.
+        measured = bend.screen_bend_angles(
+            context, {"phi": 0.0, "beta": 0.0, "tau": 0.0},
+            [bend.ScreenAngleRange("tau", 0.0, 0.0, 1.0)], input_only,
+        )
+        self.assertEqual(measured.candidate_count, 1)
+        # Points on different pieces are fine, and so is the candidate-made pivot.
+        for point2 in (
+            bend.ScreeningPoint("model_atom", "A:12:P"),
+            bend.ScreeningPoint("phi_corrected_pivot"),
+        ):
+            bend.reject_unchangeable_screening_target(
+                context,
+                bend.ScreeningRequest(
+                    "rotation", 0.0, bend.ScreeningPoint("model_atom", "A:1:P"),
+                    point2, bend.ScreeningAxis("local_axis"),
+                ),
+            )
+
+    def test_a_value_shared_by_two_pivots_still_meets_the_tolerance(self):
+        """Two shared twists double the target's slope; refinement must go finer."""
+        context = self.context()
+        request = bend.ScreeningRequest(
+            "rotation", 0.0,
+            bend.ScreeningPoint("model_atom", "A:1:P"),
+            bend.ScreeningPoint("model_atom", "A:12:P"),
+            bend.ScreeningAxis("local_axis"),
+        )
+
+        def rotation(tau):
+            sequence = bend.build_bend_sequence(
+                context.pivot_preparations, (0.0,), (0.0,), (tau,)
+            )
+            return bend.signed_projected_angle_deg(
+                self.resolve(context, "model_atom", "A:1:P", sequence),
+                self.resolve(context, "model_atom", "A:12:P", sequence),
+                context.preparation.axis_point,
+                context.preparation.axis_dir,
+            )
+
+        result = bend.screen_bend_angles(
+            context, {"phi": 0.0, "beta": 0.0},
+            [bend.ScreenAngleRange("tau", -180.0, 180.0, 2.0)], request,
+            solution_tolerance=1.0e-4,
+        )
+        self.assertTrue(result.target_tolerance_met)
+        self.assertLessEqual(result.error, 1.0e-4)
+        self.assertLessEqual(abs(rotation(result.tau_deg)), 1.0e-4)
+
+    def test_descriptions_list_every_piece_in_both_namings(self):
+        self.assertEqual(bend._residue_runs_text("A", [9, 5, 7, 8]), "A5, A7-A9")
+        context = self.context()
+        self.assertEqual(
+            [bend.piece_residue_text(context, index) for index in range(3)],
+            ["A1-A4, B13-B16", "A5-A10, B7-B12", "A11-A16, B1-B6"],
+        )
+        self.assertEqual(
+            bend.describe_screening_atom_names(context, "model"),
+            "Atom names follow the final written model. Pieces: #1 A1-A4, B13-B16; "
+            "#2 A5-A10, B7-B12; #3 A11-A16, B1-B6. For example, residue A11 where it "
+            "ends up is A:11:P. Screened values apply at every pivot.",
+        )
+        self.assertIn(
+            "#3 A11-A16, B1-B6 as chains E/F. For example, residue A11 where it ends "
+            "up is E:11:P.",
+            bend.describe_screening_atom_names(self.context(sep_mode="y"), "model"),
+        )
+        overlay = bend.describe_screening_atom_names(context, "overlay")
+        self.assertIn(
+            "helix from bend 2 at A11 [E ← input A, F ← input B] supplies piece #3 "
+            "(A11-A16, B1-B6)",
+            overlay,
+        )
+        self.assertIn("e.g. E:11:P for A11", overlay)
+        single = bend.prepare_screening_context(str(self.input_path), "A5")
+        self.assertTrue(
+            bend.describe_screening_atom_names(single, "overlay").startswith(
+                "Origin overlay: original model [A ← input A, B ← input B] supplies "
+                "piece #1 (A1-A4, B13-B16); transformed model [C ← input A, D ← input B] "
+                "supplies piece #2 (A5-A16, B1-B12)."
+            )
+        )
+
+
+def _tk_modules_or_skip(test):
+    try:
+        import tkinter as tk
+        from tkinter import messagebox, ttk
+    except ImportError:
+        test.skipTest("tkinter is unavailable")
+    return tk, messagebox, ttk
+
+
+def _launch_gui_or_skip(test, defaults):
+    """Run launch_gui with its event loop patched by the caller.
+
+    It returns 1 when Tk cannot open a display. No separate probe root is
+    made first: on macOS a later root's update() can stall after one.
+    """
+    if bend.launch_gui(defaults) == 1:
+        test.skipTest("no display for Tk")
+
+
+def _all_widgets(widget):
+    for child in widget.winfo_children():
+        yield child
+        yield from _all_widgets(child)
+
+
 class BendHelixGuiScreeningSwitchTests(unittest.TestCase):
-    """More than one value in any bend field turns screening off in the GUI."""
+    """GUI behavior of screening with several pivots."""
+
+    def test_screening_window_names_atoms_in_the_final_model_by_default(self):
+        tk, messagebox, ttk = _tk_modules_or_skip(self)
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        input_path = Path(temp_dir.name) / "duplex16.pdb"
+        input_path.write_text(_ideal_duplex_pdb(16), encoding="utf-8")
+        seen = {}
+
+        def drive(root):
+            root.withdraw()
+            main = list(_all_widgets(root))
+            tau_row = next(
+                w for w in main
+                if isinstance(w, ttk.Label)
+                and w.cget("text") == "Tau: twist movable piece #2 (degrees)"
+            ).grid_info()["row"]
+            tau_check = next(
+                w for w in main
+                if isinstance(w, ttk.Checkbutton) and w.grid_info().get("row") == tau_row
+            )
+            root.setvar(str(tau_check.cget("variable")), 1)
+            root.update()
+            next(
+                w for w in main
+                if isinstance(w, ttk.Button) and w.cget("text") == "Screening to achieve..."
+            ).invoke()
+            root.update()
+            dialog = next(w for w in root.winfo_children() if isinstance(w, tk.Toplevel))
+            dialog.withdraw()
+            names_label = next(
+                w for w in _all_widgets(dialog)
+                if isinstance(w, ttk.Label) and w.cget("text") == "Atom names"
+            )
+            siblings = names_label.master.winfo_children()
+            combo = next(w for w in siblings if isinstance(w, ttk.Combobox))
+            text_var = next(
+                str(w.cget("textvariable"))
+                for w in siblings
+                if isinstance(w, ttk.Label) and str(w.cget("textvariable"))
+            )
+            seen["default"] = (combo.get(), root.getvar(text_var))
+            combo.set("Origin overlay helices")
+            combo.event_generate("<<ComboboxSelected>>")
+            root.update()
+            seen["overlay"] = root.getvar(text_var)
+            combo.set("Final bent model")
+            combo.event_generate("<<ComboboxSelected>>")
+
+            # A1 stays put and A12 rides the last piece, so in final-model names
+            # this target moves with tau; read as overlay names it could not.
+            inside = list(_all_widgets(dialog))
+
+            def entry_beside(label_text):
+                label = next(
+                    w for w in inside
+                    if isinstance(w, ttk.Label) and w.cget("text") == label_text
+                )
+                return next(
+                    w for w in label.master.winfo_children()
+                    if isinstance(w, ttk.Entry)
+                    and (not w.grid_info() or w.grid_info().get("row") == label.grid_info().get("row"))
+                )
+
+            entry_beside("Target distance (angstroms)").delete(0, "end")
+            entry_beside("Target distance (angstroms)").insert(0, f"{target:.9f}")
+            entry_beside("Endpoint 1 atom(s)").insert(0, "A:1:P")
+            entry_beside("Endpoint 2 atom(s)").insert(0, "A:12:P")
+            next(
+                w for w in inside
+                if isinstance(w, ttk.Button) and w.cget("text") == "Save settings"
+            ).invoke()
+            root.update()
+            next(
+                w for w in main if isinstance(w, ttk.Button) and w.cget("text") == "Run"
+            ).invoke()
+            # Run finishes inside invoke(); only redraws are left.
+            root.update_idletasks()
+            root.destroy()
+
+        context = bend.prepare_screening_context(str(input_path), "A5 A11")
+        sequence = bend.build_bend_sequence(context.pivot_preparations, (0.0,), (30.0,), (12.0,))
+        target = bend.distance_between_points(
+            bend.resolve_screening_point(context, bend.ScreeningPoint("model_atom", "A:1:P"), sequence),
+            bend.resolve_screening_point(context, bend.ScreeningPoint("model_atom", "A:12:P"), sequence),
+        )
+        with mock.patch.object(tk.Tk, "mainloop", lambda self, n=0: drive(self)), \
+                mock.patch.object(messagebox, "showinfo") as info, \
+                mock.patch.object(messagebox, "showerror") as error:
+            _launch_gui_or_skip(
+                self,
+                {"input_pdb": str(input_path), "pivot_residue": "A5 A11", "phi_deg": "0", "beta_deg": "30"},
+            )
+
+        choice, text = seen["default"]
+        self.assertEqual(choice, "Final bent model")
+        self.assertTrue(text.startswith("Atom names follow the final written model."))
+        self.assertIn("#3 A11-A16, B1-B6", text)
+        self.assertTrue(seen["overlay"].startswith("Origin overlay: input helix"))
+        error.assert_not_called()
+        self.assertTrue(info.call_args.args[1].startswith("Wrote "), info.call_args)
 
     def test_more_than_one_value_turns_screening_off(self):
-        try:
-            import tkinter as tk
-            from tkinter import messagebox, ttk
-        except ImportError:
-            self.skipTest("tkinter is unavailable")
-        try:
-            probe = tk.Tk()
-            probe.withdraw()
-            probe.destroy()
-        except tk.TclError:
-            self.skipTest("no display for Tk")
+        tk, messagebox, ttk = _tk_modules_or_skip(self)
 
         seen = {}
 
@@ -2639,8 +2934,9 @@ class BendHelixGuiScreeningSwitchTests(unittest.TestCase):
         with mock.patch.object(tk.Tk, "mainloop", lambda self, n=0: drive(self)), \
                 mock.patch.object(messagebox, "showinfo"), \
                 mock.patch.object(messagebox, "showerror"):
-            bend.launch_gui(
-                {"input_pdb": str(Path(__file__)), "pivot_residue": "A5 A11", "phi_deg": "0", "beta_deg": "30"}
+            _launch_gui_or_skip(
+                self,
+                {"input_pdb": str(Path(__file__)), "pivot_residue": "A5 A11", "phi_deg": "0", "beta_deg": "30"},
             )
 
         self.assertTrue(seen["checked"])
