@@ -1845,10 +1845,17 @@ def run_gui(initial_path=None) -> int:
         sys.stderr.write("ERROR: Tkinter is not available in this Python installation.\n")
         return 1
 
+    try:
+        from re_helix_lib import azbmost_ui as ui
+    except ImportError:  # pragma: no cover - direct script execution fallback
+        import azbmost_ui as ui
+    from tkinter import ttk
+
     root = tk.Tk()
     root.title(f"{TOOL_NAME} {VERSION}")
     apply_optional_icon(root, __file__)
-    root.geometry("980x760")
+    ui.tool_window(root, TOOL_NAME, tool="phenix_restraints", version=VERSION)
+    root.geometry("980x880")
     root.minsize(900, 680)
 
     input_var = tk.StringVar(value=initial_path or "")
@@ -1906,30 +1913,39 @@ def run_gui(initial_path=None) -> int:
         if path:
             output_base_var.set(path)
 
-    root.columnconfigure(1, weight=1)
+    # The run buttons sit in the bottom bar; the fields are grouped in cards.
+    footer = ui.Footer(root)
+    footer.pack(side="bottom", fill="x")
+    body = ttk.Frame(root, padding=(18, 12, 18, 12))
+    body.pack(side="top", fill="both", expand=True)
+    body.columnconfigure(1, weight=1)
 
-    header = tk.Label(root, text=f"{TOOL_NAME} {VERSION}", font=("TkDefaultFont", 15, "bold"))
-    header.grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=(10, 6))
+    files = ui.Card(body, "Input and output")
+    files.grid(row=1, column=0, columnspan=3, sticky="we", pady=(0, 10))
+    files.columnconfigure(1, weight=1)
+    settings = ui.Card(body, "Options")
+    settings.grid(row=3, column=0, columnspan=3, sticky="we", pady=(0, 10))
+    settings.columnconfigure(1, weight=1)
 
-    tk.Label(root, text="Input PDB:", anchor="e").grid(row=1, column=0, sticky="e", padx=8, pady=4)
-    tk.Entry(root, textvariable=input_var, width=68).grid(row=1, column=1, sticky="we", padx=8, pady=4)
-    tk.Button(root, text="Browse", command=choose_input).grid(row=1, column=2, sticky="we", padx=8, pady=4)
+    ttk.Label(files, text="Input PDB:", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=3)
+    ui.Entry(files, textvariable=input_var, width=68).grid(row=1, column=1, sticky="we", pady=3)
+    ui.Button(files, text="Browse", command=choose_input).grid(row=1, column=2, sticky="we", padx=(8, 0), pady=3)
 
-    tk.Label(root, text="Output base:", anchor="e").grid(row=2, column=0, sticky="e", padx=8, pady=4)
-    tk.Entry(root, textvariable=output_base_var, width=68).grid(row=2, column=1, sticky="we", padx=8, pady=4)
-    tk.Button(root, text="Browse", command=choose_output_base).grid(row=2, column=2, sticky="we", padx=8, pady=4)
+    ttk.Label(files, text="Output base:", style="Field.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=3)
+    ui.Entry(files, textvariable=output_base_var, width=68).grid(row=2, column=1, sticky="we", pady=3)
+    ui.Button(files, text="Browse", command=choose_output_base).grid(row=2, column=2, sticky="we", padx=(8, 0), pady=3)
 
-    tk.Label(root, text="3'-3' linker resName:", anchor="e").grid(row=3, column=0, sticky="e", padx=8, pady=4)
-    tk.Entry(root, textvariable=linker_var, width=10).grid(row=3, column=1, sticky="w", padx=8, pady=4)
+    ttk.Label(settings, text="3'-3' linker resName:", style="Field.TLabel").grid(row=3, column=0, sticky="w", padx=(0, 12), pady=3)
+    ui.Entry(settings, textvariable=linker_var, width=10).grid(row=3, column=1, sticky="w", pady=3)
 
-    tk.Label(root, text="link_distance_cutoff:", anchor="e").grid(row=4, column=0, sticky="e", padx=8, pady=4)
-    tk.Entry(root, textvariable=cutoff_var, width=10).grid(row=4, column=1, sticky="w", padx=8, pady=4)
+    ttk.Label(settings, text="link_distance_cutoff:", style="Field.TLabel").grid(row=4, column=0, sticky="w", padx=(0, 12), pady=3)
+    ui.Entry(settings, textvariable=cutoff_var, width=10).grid(row=4, column=1, sticky="w", pady=3)
 
-    tk.Checkbutton(root, text="Generate *_junctions.params", variable=generate_junctions_var).grid(
-        row=5, column=1, sticky="w", padx=8, pady=(8, 2)
+    ui.Checkbutton(settings, text="Generate *_junctions.params", variable=generate_junctions_var).grid(
+        row=5, column=1, sticky="w", pady=(6, 2)
     )
-    tk.Checkbutton(root, text="Generate linker atomtypes CIF and safe interpretation params", variable=generate_support_var).grid(
-        row=6, column=1, sticky="w", padx=8, pady=2
+    ui.Checkbutton(settings, text="Generate linker atomtypes CIF and safe interpretation params", variable=generate_support_var).grid(
+        row=6, column=1, sticky="w", pady=2
     )
 
     advanced_visible = tk.BooleanVar(value=False)
@@ -1944,39 +1960,51 @@ def run_gui(initial_path=None) -> int:
             advanced_visible.set(True)
             advanced_button.configure(text="Hide Advanced restraint values")
 
-    advanced_button = tk.Button(root, text="Show Advanced restraint values", command=toggle_advanced)
-    advanced_button.grid(row=7, column=1, sticky="w", padx=8, pady=(8, 4))
+    advanced_button = ui.Button(settings, text="Show Advanced restraint values", command=toggle_advanced, style="Ghost.TButton")
+    advanced_button.grid(row=7, column=1, sticky="w", pady=(6, 0))
 
-    advanced = tk.LabelFrame(root, text="Advanced restraint values", padx=8, pady=6)
-    advanced.grid(row=8, column=0, columnspan=3, sticky="we", padx=8, pady=(2, 4))
+    advanced = ui.Card(body, "Advanced restraint values")
+    advanced.grid(row=8, column=0, columnspan=3, sticky="we", pady=(0, 10))
     advanced.columnconfigure(1, weight=1)
-    tk.Label(advanced, text="Bond sigma:").grid(row=0, column=0, sticky="e", padx=6, pady=3)
-    tk.Entry(advanced, textvariable=sigma_var, width=10).grid(row=0, column=1, sticky="w", padx=6, pady=3)
-    tk.Label(advanced, text="Angle sigma:").grid(row=1, column=0, sticky="e", padx=6, pady=3)
-    tk.Entry(advanced, textvariable=angle_sigma_var, width=10).grid(row=1, column=1, sticky="w", padx=6, pady=3)
-    tk.Label(advanced, text="Linker P-OP distance:").grid(row=2, column=0, sticky="e", padx=6, pady=3)
-    tk.Entry(advanced, textvariable=p_op_distance_var, width=10).grid(row=2, column=1, sticky="w", padx=6, pady=3)
-    tk.Checkbutton(
+    ttk.Label(advanced, text="Bond sigma:", style="Field.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=3)
+    ui.Entry(advanced, textvariable=sigma_var, width=10).grid(row=0, column=1, sticky="w", pady=3)
+    ttk.Label(advanced, text="Angle sigma:", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=3)
+    ui.Entry(advanced, textvariable=angle_sigma_var, width=10).grid(row=1, column=1, sticky="w", pady=3)
+    ttk.Label(advanced, text="Linker P-OP distance:", style="Field.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=3)
+    ui.Entry(advanced, textvariable=p_op_distance_var, width=10).grid(row=2, column=1, sticky="w", pady=3)
+    ui.Checkbutton(
         advanced,
         text="Include phosphate angles Phenix normally supplies",
         variable=include_builtin_angles_var,
-    ).grid(row=3, column=1, sticky="w", padx=6, pady=3)
-    tk.Checkbutton(
+    ).grid(row=3, column=1, sticky="w", pady=3)
+    ui.Checkbutton(
         advanced,
         text="Legacy V1.0 backbone LINK restraints (no C3'-O3'-P angle or torsions)",
         variable=legacy_link_restraints_var,
-    ).grid(row=4, column=1, sticky="w", padx=6, pady=3)
+    ).grid(row=4, column=1, sticky="w", pady=3)
     advanced.grid_remove()
 
-    note_widget = scrolledtext.ScrolledText(root, wrap="word", height=12)
-    note_widget.grid(row=9, column=0, columnspan=3, sticky="nsew", padx=8, pady=(8, 4))
+    note_view = ui.LogView(body, wrap="word", height=10)
+    note_view.grid(row=9, column=0, columnspan=3, sticky="nsew", pady=(0, 10))
+    note_widget = note_view.text
     note_widget.insert("1.0", GUIDANCE_TEXT)
     note_widget.configure(state="disabled")
 
-    log_widget = scrolledtext.ScrolledText(root, wrap="word", height=8)
-    log_widget.grid(row=10, column=0, columnspan=3, sticky="nsew", padx=8, pady=(4, 8))
-    root.rowconfigure(9, weight=1)
-    root.rowconfigure(10, weight=1)
+    log_view = ui.LogView(body, wrap="word", height=8)
+    log_view.grid(row=10, column=0, columnspan=3, sticky="nsew")
+    log_widget = log_view.text
+    body.rowconfigure(9, weight=1)
+    body.rowconfigure(10, weight=1)
+
+    # Line the inputs of the three field cards up in one column.
+    root.update_idletasks()
+    label_width = 12 + max(
+        widget.winfo_reqwidth()
+        for card in (files, settings, advanced)
+        for widget in card.grid_slaves(column=0)
+    )
+    for card in (files, settings, advanced):
+        card.columnconfigure(0, minsize=label_width)
 
     def append_log(text: str) -> None:
         log_widget.insert("end", text)
@@ -2037,13 +2065,8 @@ def run_gui(initial_path=None) -> int:
             append_log(f"Error: {exc}\n\n")
             messagebox.showerror("Error", str(exc))
 
-    button_row = tk.Frame(root)
-    button_row.grid(row=11, column=0, columnspan=3, sticky="we", padx=8, pady=(0, 12))
-    button_row.columnconfigure(0, weight=1)
-    tk.Button(button_row, text="Generate Phenix restraints", command=run_processing, height=2).grid(
-        row=0, column=0, sticky="we", padx=(0, 6)
-    )
-    tk.Button(button_row, text="Close", command=root.destroy, height=2).grid(row=0, column=1, sticky="e")
+    footer.add_button("Close", root.destroy)
+    footer.add_button("Generate Phenix restraints", run_processing, primary=True)
 
     root.mainloop()
     return 0

@@ -708,7 +708,7 @@ class BendHelixScreeningTests(unittest.TestCase):
         self.assertEqual(set(bend.SCREENING_GUI_HELP), expected_help_keys)
         for key in expected_help_keys:
             self.assertIn(f'"{key}"', launch_gui_source)
-        self.assertIn('bg="#d9ecff"', launch_gui_source)
+        self.assertIn("ui.HelpButton(", launch_gui_source)
         # Column headers carry no unit; each row label supplies its own, because
         # the two pivot shifts are angstroms while the three angles are degrees.
         self.assertIn('(1, "From")', launch_gui_source)
@@ -737,7 +737,7 @@ class BendHelixScreeningTests(unittest.TestCase):
             self.assertIn(f'screen_select_vars["{key}"]', launch_gui_source)
 
             entry_row = re.search(
-                rf"{key}_entry = ttk\.Entry\(root, textvariable={key}_var\)\s*\n"
+                rf"{key}_entry = ttk\.Entry\(bend_card, textvariable={key}_var\)\s*\n"
                 rf"\s*{key}_entry\.grid\(row=(\d+),",
                 launch_gui_source,
             )

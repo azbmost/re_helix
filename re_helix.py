@@ -2,6 +2,14 @@
 """
 re_helix.py
 
+V4.7 update (2026-11-19):
+- Redesign the GUI in the shared AZBMOST look (azbmost_ui): a header with the
+  module icon and version, the inputs and options in cards on the left, the
+  Other tools list (icon, name, purpose, round ? help) and the run log beside
+  them on the right, and Run/Close in a footer. Every field, option, help text
+  and command is unchanged; the run log is now always in view.
+- Give every bundled tool window the same look.
+
 V4.6 update (2026-09-05):
 - Add Check Clashes to the GUI Other tools area. The bundled
   re_helix_lib/check_pdb_clashes.py tool counts close heavy-atom contacts in
@@ -433,10 +441,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V4.6"
+SOFTWARE_VERSION = "V4.7"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V4.6: AZBMOST Package Module #2 - "
+    "re_helix V4.7: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -5419,19 +5427,18 @@ def _build_equivalent_cli_command(
 def _launch_gui() -> None:
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox, scrolledtext, ttk
+        from tkinter import filedialog, messagebox, ttk
     except Exception as exc:
         raise RuntimeError(
             "GUI mode requires tkinter, but it could not be imported on this system."
         ) from exc
+    from re_helix_lib import azbmost_ui as ui
 
     root = tk.Tk()
     root.title(APP_TITLE)
-    root.geometry("1320x930")
-
-    gui_style = ttk.Style(root)
-    gui_style.configure("Title.TLabel", font=("TkDefaultFont", 15, "bold"))
-    gui_style.configure("Section.TLabelframe.Label", font=("TkDefaultFont", 10, "bold"))
+    ui.apply_theme(root, "re_helix")
+    root.geometry("1440x980")
+    root.minsize(1120, 700)
 
     script_dir = Path(__file__).resolve().parent
     icon_candidates = [
@@ -5495,19 +5502,7 @@ def _launch_gui() -> None:
         messagebox.showinfo(title, message)
 
     def make_help_button(parent, title: str, key: str):
-        return tk.Button(
-            parent,
-            text="?",
-            width=2,
-            padx=0,
-            pady=0,
-            bg="#d9ecff",
-            activebackground="#c4e0ff",
-            highlightbackground="#d9ecff",
-            relief="raised",
-            bd=1,
-            command=lambda: show_help(title, _GUI_HELP_TEXT[key]),
-        )
+        return ui.HelpButton(parent, command=lambda: show_help(title, _GUI_HELP_TEXT[key]))
 
     def refresh_default_output_base(*_args) -> None:
         new_default = _default_output_base_from_pdb_path(pdb_var.get())
@@ -5522,61 +5517,36 @@ def _launch_gui() -> None:
 
     pdb_var.trace_add("write", refresh_default_output_base)
 
-    root.rowconfigure(0, weight=1)
-    root.columnconfigure(0, weight=1)
-
-    canvas_host = ttk.Frame(root)
-    canvas_host.grid(row=0, column=0, sticky="nsew")
-    canvas_host.rowconfigure(0, weight=1)
-    canvas_host.columnconfigure(0, weight=1)
-
-    content_canvas = tk.Canvas(canvas_host, highlightthickness=0, borderwidth=0)
-    content_canvas.grid(row=0, column=0, sticky="nsew")
-
-    canvas_scrollbar = ttk.Scrollbar(
-        canvas_host,
-        orient="vertical",
-        command=content_canvas.yview,
+    # --- Header, footer and the two panes --------------------------------------
+    header = ui.Header(
+        root,
+        "re_helix",
+        version=SOFTWARE_VERSION,
+        subtitle="Align helices and perform reciprocal exchanges  ·  AZBMOST module 2 of 3",
     )
-    content_canvas.configure(yscrollcommand=canvas_scrollbar.set)
+    header.pack(side="top", fill="x")
+    ui.hairline(root).pack(side="top", fill="x")
+    footer = ui.Footer(root, text="Run aligns the helices, then applies the reciprocal exchanges.")
+    footer.pack(side="bottom", fill="x")
+    ui.hairline(root).pack(side="bottom", fill="x")
+    footer.add_button("Close", root.destroy)
+    run_button = footer.add_button("Run", None, primary=True)
 
-    scroll_root = ttk.Frame(content_canvas)
-    scroll_window = content_canvas.create_window((0, 0), window=scroll_root, anchor="nw")
-
-    scroll_state = {"visible": False, "pending": False}
-
-    def refresh_scrollbar() -> None:
-        scroll_state["pending"] = False
-        if not root.winfo_exists():
-            return
-        root.update_idletasks()
-        canvas_width = max(content_canvas.winfo_width(), 1)
-        content_canvas.itemconfigure(scroll_window, width=canvas_width)
-        content_width = max(scroll_root.winfo_reqwidth(), outer.winfo_reqwidth(), canvas_width)
-        content_height = max(scroll_root.winfo_reqheight(), outer.winfo_reqheight())
-        content_canvas.configure(scrollregion=(0, 0, content_width, content_height))
-        viewport_height = max(content_canvas.winfo_height(), 0)
-        need_scrollbar = content_height > viewport_height + 2
-        if need_scrollbar and not scroll_state["visible"]:
-            canvas_scrollbar.grid(row=0, column=1, sticky="ns")
-            scroll_state["visible"] = True
-        elif (not need_scrollbar) and scroll_state["visible"]:
-            canvas_scrollbar.grid_remove()
-            content_canvas.yview_moveto(0.0)
-            scroll_state["visible"] = False
+    body = ttk.Frame(root)
+    body.pack(side="top", fill="both", expand=True)
+    body.rowconfigure(0, weight=1)
+    body.columnconfigure(0, weight=1, minsize=640)
+    form_area = ui.ScrollFrame(body)
+    form_area.grid(row=0, column=0, sticky="nsew")
+    ui.hairline(body, orient="vertical").grid(row=0, column=1, sticky="ns")
+    side = ttk.Frame(body, padding=(14, 12, 20, 14), width=440)
+    side.grid(row=0, column=2, sticky="nsew")
+    side.grid_propagate(False)
+    side.columnconfigure(0, weight=1)
+    side.rowconfigure(1, weight=1)
 
     def schedule_scrollbar_refresh(*_args) -> None:
-        if scroll_state["pending"]:
-            return
-        scroll_state["pending"] = True
-        root.after_idle(refresh_scrollbar)
-
-    def _on_canvas_configure(event) -> None:
-        content_canvas.itemconfigure(scroll_window, width=max(event.width, 1))
-        schedule_scrollbar_refresh()
-
-    content_canvas.bind("<Configure>", _on_canvas_configure)
-    scroll_root.bind("<Configure>", schedule_scrollbar_refresh)
+        form_area.refresh()
 
     def _coerce_gui_count(raw_value: str, minimum: int, maximum: int) -> Optional[int]:
         value_text = str(raw_value).strip()
@@ -5593,24 +5563,19 @@ def _launch_gui() -> None:
 
     validate_count_cmd = (root.register(_validate_count_text), "%P")
 
-    outer = ttk.Frame(scroll_root, padding=10)
-    outer.pack(fill="both", expand=True)
+    outer = form_area.body
+    outer.configure(padding=(20, 16, 18, 20))
+    outer.columnconfigure(0, weight=1)
+    card_gap = {"fill": "x", "pady": (0, 12)}
+    row_pad = 4
 
-    title_label = ttk.Label(
-        outer,
-        text=APP_TITLE,
-        style="Title.TLabel",
-        wraplength=1100,
-        justify="left",
-    )
-    title_label.pack(fill="x", padx=2, pady=(0, 8))
+    # Inputs -----------------------------------------------------------------------
+    basics = ui.Card(outer, "Inputs")
+    basics.pack(**card_gap)
 
-    basics = ttk.LabelFrame(outer, text="Inputs", padding=10, style="Section.TLabelframe")
-    basics.pack(fill="x", padx=2, pady=4)
-
-    ttk.Label(basics, text="Input PDB file").grid(row=0, column=0, sticky="w")
-    pdb_entry = ttk.Entry(basics, textvariable=pdb_var, width=84)
-    pdb_entry.grid(row=0, column=1, sticky="ew", padx=4)
+    ttk.Label(basics, text="Input PDB file", style="Field.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 14), pady=row_pad)
+    pdb_entry = ttk.Entry(basics, textvariable=pdb_var, width=60)
+    pdb_entry.grid(row=0, column=1, sticky="ew", pady=row_pad)
 
     def browse_pdb() -> None:
         path = filedialog.askopenfilename(
@@ -5620,95 +5585,95 @@ def _launch_gui() -> None:
         if path:
             pdb_var.set(path)
 
-    ttk.Button(basics, text="Browse", command=browse_pdb).grid(row=0, column=2, padx=4)
-    make_help_button(basics, "Input PDB", "pdb_in").grid(row=0, column=3, padx=(0, 4), sticky="w")
+    ttk.Button(basics, text="Browse", command=browse_pdb).grid(row=0, column=2, padx=(8, 0), pady=row_pad)
+    make_help_button(basics, "Input PDB", "pdb_in").grid(row=0, column=3, padx=(8, 0), sticky="w", pady=row_pad)
 
-    ttk.Label(basics, text="Helix defs").grid(row=1, column=0, sticky="w", pady=(6, 0))
-    ttk.Entry(basics, textvariable=helix_defs_var, width=84).grid(
-        row=1, column=1, columnspan=2, sticky="ew", padx=4, pady=(6, 0)
+    ttk.Label(basics, text="Helix defs", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 14), pady=row_pad)
+    ttk.Entry(basics, textvariable=helix_defs_var, width=60).grid(
+        row=1, column=1, columnspan=2, sticky="ew", pady=row_pad
     )
     make_help_button(basics, "Helix defs", "helix_defs").grid(
-        row=1, column=3, padx=(0, 4), pady=(6, 0), sticky="w"
+        row=1, column=3, padx=(8, 0), pady=row_pad, sticky="w"
     )
 
-    ttk.Label(basics, text="Output base").grid(row=2, column=0, sticky="w", pady=(6, 0))
-    ttk.Entry(basics, textvariable=output_var, width=84).grid(
-        row=2, column=1, columnspan=2, sticky="ew", padx=4, pady=(6, 0)
+    ttk.Label(basics, text="Output base", style="Field.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 14), pady=row_pad)
+    ttk.Entry(basics, textvariable=output_var, width=60).grid(
+        row=2, column=1, columnspan=2, sticky="ew", pady=row_pad
     )
     make_help_button(basics, "Output base", "output").grid(
-        row=2, column=3, padx=(0, 4), pady=(6, 0), sticky="w"
+        row=2, column=3, padx=(8, 0), pady=row_pad, sticky="w"
     )
 
     basics.columnconfigure(1, weight=1)
 
-    options = ttk.LabelFrame(outer, text="Options", padding=10, style="Section.TLabelframe")
-    options.pack(fill="x", padx=2, pady=4)
+    # Options ------------------------------------------------------------------------
+    options = ui.Card(outer, "Options")
+    options.pack(**card_gap)
+    for col in (1, 4, 7):
+        options.columnconfigure(col, weight=1)
 
-    ttk.Label(options, text="axis_dist (Å)").grid(row=0, column=0, sticky="w")
-    ttk.Entry(options, textvariable=axis_dist_var, width=12).grid(row=0, column=1, sticky="w", padx=4)
-    make_help_button(options, "axis_dist", "axis_dist").grid(row=0, column=2, sticky="w")
+    def option_label(text: str, row: int, column: int) -> None:
+        ttk.Label(options, text=text, style="Field.TLabel").grid(
+            row=row, column=column, sticky="w", padx=(0 if column == 0 else 22, 8), pady=row_pad
+        )
 
-    ttk.Label(options, text="axis_parallel").grid(row=0, column=3, sticky="w", padx=(12, 0))
+    option_label("axis_dist (Å)", 0, 0)
+    ttk.Entry(options, textvariable=axis_dist_var, width=10).grid(row=0, column=1, sticky="we", pady=row_pad)
+    make_help_button(options, "axis_dist", "axis_dist").grid(row=0, column=2, sticky="w", padx=(6, 0))
+
+    option_label("axis_parallel", 0, 3)
     ttk.Combobox(
         options,
         textvariable=axis_parallel_var,
         values=("y", "n"),
         width=6,
         state="readonly",
-    ).grid(row=0, column=4, sticky="w", padx=4)
-    make_help_button(options, "axis_parallel", "axis_parallel").grid(row=0, column=5, sticky="w")
+    ).grid(row=0, column=4, sticky="we", pady=row_pad)
+    make_help_button(options, "axis_parallel", "axis_parallel").grid(row=0, column=5, sticky="w", padx=(6, 0))
 
-    ttk.Label(options, text="fix chain ID").grid(row=0, column=6, sticky="w", padx=(12, 0))
-    ttk.Entry(options, textvariable=fix_chain_var, width=8).grid(row=0, column=7, sticky="w", padx=4)
-    make_help_button(options, "fix chain", "fix").grid(row=0, column=8, sticky="w")
+    option_label("fix chain ID", 0, 6)
+    ttk.Entry(options, textvariable=fix_chain_var, width=8).grid(row=0, column=7, sticky="we", pady=row_pad)
+    make_help_button(options, "fix chain", "fix").grid(row=0, column=8, sticky="w", padx=(6, 0))
 
-    ttk.Checkbutton(options, text="replicate", variable=replicate_var).grid(
-        row=0, column=9, sticky="w", padx=(12, 0)
-    )
-    make_help_button(options, "replicate", "replicate").grid(row=0, column=10, sticky="w")
+    option_label("cir_shift (nt; c=close)", 1, 0)
+    ttk.Entry(options, textvariable=cir_shift_var, width=8).grid(row=1, column=1, sticky="we", pady=row_pad)
+    make_help_button(options, "cir_shift", "cir_shift").grid(row=1, column=2, sticky="w", padx=(6, 0))
 
-    ttk.Checkbutton(options, text="RE only", variable=re_only_var).grid(
-        row=0, column=11, sticky="w", padx=(12, 0)
-    )
-    make_help_button(options, "RE only", "re_only").grid(row=0, column=12, sticky="w")
-
-    ttk.Label(options, text="cir_shift (nt; c=close)").grid(row=0, column=13, sticky="w", padx=(12, 0))
-    ttk.Entry(options, textvariable=cir_shift_var, width=8).grid(row=0, column=14, sticky="w", padx=4)
-    make_help_button(options, "cir_shift", "cir_shift").grid(row=0, column=15, sticky="w")
-
-    ttk.Label(options, text="3'-3' P resname").grid(row=1, column=0, sticky="w", pady=(6, 0))
+    option_label("3'-3' P resname", 1, 3)
     ttk.Combobox(
         options,
         textvariable=linker_phosphate_resname_var,
         values=("X33", "DA"),
         width=8,
         state="normal",
-    ).grid(row=1, column=1, sticky="w", padx=4, pady=(6, 0))
+    ).grid(row=1, column=4, sticky="we", pady=row_pad)
     make_help_button(options, "3'-3' P resname", "linker_phosphate_resname").grid(
         row=1,
-        column=2,
+        column=5,
         sticky="w",
-        pady=(6, 0),
+        padx=(6, 0),
     )
 
+    checks = ttk.Frame(options)
+    checks.grid(row=2, column=0, columnspan=9, sticky="w", pady=(8, 0))
+    ttk.Checkbutton(checks, text="replicate", variable=replicate_var).pack(side="left")
+    make_help_button(checks, "replicate", "replicate").pack(side="left", padx=(6, 22))
+    ttk.Checkbutton(checks, text="RE only", variable=re_only_var).pack(side="left")
+    make_help_button(checks, "RE only", "re_only").pack(side="left", padx=(6, 22))
     ttk.Checkbutton(
-        options,
+        checks,
         text="Min LINK records",
         variable=min_link_records_var,
-    ).grid(row=1, column=3, sticky="w", padx=(12, 0), pady=(6, 0))
-    make_help_button(options, "Min LINK records", "min_link_records").grid(
-        row=1,
-        column=4,
-        sticky="w",
-        pady=(6, 0),
-    )
+    ).pack(side="left")
+    make_help_button(checks, "Min LINK records", "min_link_records").pack(side="left", padx=(6, 0))
 
-    pairs_box = ttk.LabelFrame(outer, text="Exchange pairs", padding=10, style="Section.TLabelframe")
-    pairs_box.pack(fill="x", padx=2, pady=4)
+    # Exchange pairs -------------------------------------------------------------------
+    pairs_box = ui.Card(outer, "Exchange pairs")
+    pairs_box.pack(**card_gap)
     pairs_header = ttk.Frame(pairs_box)
     pairs_header.pack(fill="x")
-    ttk.Label(pairs_header, text="Rows").pack(side="left")
-    tk.Spinbox(
+    ttk.Label(pairs_header, text="Rows", style="Field.TLabel").pack(side="left")
+    ttk.Spinbox(
         pairs_header,
         from_=1,
         to=30,
@@ -5717,37 +5682,39 @@ def _launch_gui() -> None:
         validate="key",
         validatecommand=validate_count_cmd,
         command=lambda: schedule_pair_rows(),
-    ).pack(side="left", padx=6)
+    ).pack(side="left", padx=8)
     make_help_button(pairs_header, "Exchange pairs", "pairs").pack(side="left")
     ttk.Label(
         pairs_header,
         text="Endpoints: 30A/A30 or A(x,y,z)/(x,y,z)A; virtual runs ignore d/s/b.",
-    ).pack(side="left", padx=8)
+        style="Hint.TLabel",
+    ).pack(side="left", padx=12)
     pair_rows_frame = ttk.Frame(pairs_box)
-    pair_rows_frame.pack(fill="x", pady=(8, 0))
+    pair_rows_frame.pack(fill="x", pady=(10, 0))
     ttk.Label(pair_rows_frame, text="").grid(row=0, column=0, sticky="w")
-    ttk.Label(pair_rows_frame, text="pos1 (real or virtual)").grid(row=0, column=1, sticky="w", padx=4)
-    ttk.Label(pair_rows_frame, text="pos2 (real or virtual)").grid(row=0, column=2, sticky="w", padx=4)
-    ttk.Label(pair_rows_frame, text="beta angle (deg, optional)").grid(row=0, column=3, sticky="w", padx=4)
-    ttk.Label(pair_rows_frame, text="kind").grid(row=0, column=4, sticky="w", padx=4)
+    ttk.Label(pair_rows_frame, text="pos1 (real or virtual)", style="Hint.TLabel").grid(row=0, column=1, sticky="w", padx=4)
+    ttk.Label(pair_rows_frame, text="pos2 (real or virtual)", style="Hint.TLabel").grid(row=0, column=2, sticky="w", padx=4)
+    ttk.Label(pair_rows_frame, text="beta angle (deg, optional)", style="Hint.TLabel").grid(row=0, column=3, sticky="w", padx=4)
+    ttk.Label(pair_rows_frame, text="kind", style="Hint.TLabel").grid(row=0, column=4, sticky="w", padx=4)
 
     pair_args_frame = ttk.Frame(pairs_box)
-    pair_args_frame.pack(fill="x", pady=(8, 0))
-    ttk.Label(pair_args_frame, text="CLI pair args").pack(side="left")
-    ttk.Entry(pair_args_frame, textvariable=pair_args_var, width=100).pack(
+    pair_args_frame.pack(fill="x", pady=(10, 0))
+    ttk.Label(pair_args_frame, text="CLI pair args", style="Field.TLabel").pack(side="left")
+    ttk.Entry(pair_args_frame, textvariable=pair_args_var, width=60).pack(
         side="left",
         fill="x",
         expand=True,
-        padx=4,
+        padx=8,
     )
     make_help_button(pair_args_frame, "CLI pair args", "pair_args").pack(side="left")
 
-    axis_box = ttk.LabelFrame(outer, text="Axis definitions", padding=10, style="Section.TLabelframe")
-    axis_box.pack(fill="x", padx=2, pady=4)
+    # Axis definitions -------------------------------------------------------------------
+    axis_box = ui.Card(outer, "Axis definitions")
+    axis_box.pack(**card_gap)
     axis_header = ttk.Frame(axis_box)
     axis_header.pack(fill="x")
-    ttk.Label(axis_header, text="Rows").pack(side="left")
-    axis_count_spinbox = tk.Spinbox(
+    ttk.Label(axis_header, text="Rows", style="Field.TLabel").pack(side="left")
+    axis_count_spinbox = ttk.Spinbox(
         axis_header,
         from_=0,
         to=30,
@@ -5757,12 +5724,12 @@ def _launch_gui() -> None:
         validatecommand=validate_count_cmd,
         command=lambda: schedule_axis_rows(),
     )
-    axis_count_spinbox.pack(side="left", padx=6)
+    axis_count_spinbox.pack(side="left", padx=8)
     make_help_button(axis_header, "Axis definitions", "axis_range").pack(side="left")
-    ttk.Label(axis_header, text="Axis: A,B or B26-B60,A1-A35; move: C,D or C1-C50,D").pack(side="left", padx=8)
+    ttk.Label(axis_header, text="Axis: A,B or B26-B60,A1-A35; move: C,D or C1-C50,D", style="Hint.TLabel").pack(side="left", padx=12)
 
     user_axis_frame = ttk.Frame(axis_box)
-    user_axis_frame.pack(fill="x", pady=(8, 0))
+    user_axis_frame.pack(fill="x", pady=(10, 0))
     user_axis_check = ttk.Checkbutton(
         user_axis_frame,
         text="Use direction + point axis",
@@ -5770,48 +5737,44 @@ def _launch_gui() -> None:
         command=lambda: refresh_user_axis_state(),
     )
     user_axis_check.pack(side="left")
-    make_help_button(user_axis_frame, "Direction + point axis", "user_axis").pack(side="left", padx=(4, 8))
-    ttk.Label(user_axis_frame, text="dir").pack(side="left")
+    make_help_button(user_axis_frame, "Direction + point axis", "user_axis").pack(side="left", padx=(6, 14))
+    ttk.Label(user_axis_frame, text="dir", style="Field.TLabel").pack(side="left")
     for idx, label_text in enumerate(("x", "y", "z")):
-        ttk.Label(user_axis_frame, text=label_text).pack(side="left", padx=(6 if idx == 0 else 2, 0))
-        entry = ttk.Entry(user_axis_frame, textvariable=user_axis_dir_vars[idx], width=9)
-        entry.pack(side="left", padx=(2, 0))
+        ttk.Label(user_axis_frame, text=label_text, style="Hint.TLabel").pack(side="left", padx=(8 if idx == 0 else 4, 0))
+        entry = ttk.Entry(user_axis_frame, textvariable=user_axis_dir_vars[idx], width=6)
+        entry.pack(side="left", padx=(3, 0))
         user_axis_input_widgets.append(entry)
-    ttk.Label(user_axis_frame, text="point").pack(side="left", padx=(12, 0))
+    ttk.Label(user_axis_frame, text="point", style="Field.TLabel").pack(side="left", padx=(16, 0))
     for idx, label_text in enumerate(("x", "y", "z")):
-        ttk.Label(user_axis_frame, text=label_text).pack(side="left", padx=(6 if idx == 0 else 2, 0))
-        entry = ttk.Entry(user_axis_frame, textvariable=user_axis_point_vars[idx], width=9)
-        entry.pack(side="left", padx=(2, 0))
+        ttk.Label(user_axis_frame, text=label_text, style="Hint.TLabel").pack(side="left", padx=(8 if idx == 0 else 4, 0))
+        entry = ttk.Entry(user_axis_frame, textvariable=user_axis_point_vars[idx], width=6)
+        entry.pack(side="left", padx=(3, 0))
         user_axis_input_widgets.append(entry)
 
     axis_rows_frame = ttk.Frame(axis_box)
-    axis_rows_frame.pack(fill="x", pady=(8, 0))
+    axis_rows_frame.pack(fill="x", pady=(10, 0))
     ttk.Label(axis_rows_frame, text="").grid(row=0, column=0, sticky="w")
-    ttk.Label(axis_rows_frame, text="axis definition").grid(row=0, column=1, sticky="w", padx=4)
-    ttk.Label(axis_rows_frame, text="move with axis").grid(row=0, column=2, sticky="w", padx=4)
+    ttk.Label(axis_rows_frame, text="axis definition", style="Hint.TLabel").grid(row=0, column=1, sticky="w", padx=4)
+    ttk.Label(axis_rows_frame, text="move with axis", style="Hint.TLabel").grid(row=0, column=2, sticky="w", padx=4)
 
     axis_line_frame = ttk.Frame(axis_box)
-    axis_line_frame.pack(fill="x", pady=(8, 0))
-    ttk.Label(axis_line_frame, text="Axis definitions line").pack(side="left")
+    axis_line_frame.pack(fill="x", pady=(10, 0))
+    ttk.Label(axis_line_frame, text="Axis definitions line", style="Field.TLabel").pack(side="left")
     axis_line_entry = ttk.Entry(
         axis_line_frame,
         textvariable=axis_definition_line_var,
-        width=100,
+        width=60,
     )
-    axis_line_entry.pack(side="left", fill="x", expand=True, padx=4)
+    axis_line_entry.pack(side="left", fill="x", expand=True, padx=8)
     make_help_button(axis_line_frame, "Axis definitions line", "axis_line").pack(side="left")
 
-    alignment_mode_box = ttk.LabelFrame(
-        outer,
-        text="Alignment mode",
-        padding=10,
-        style="Section.TLabelframe",
-    )
-    alignment_mode_box.pack(fill="x", padx=2, pady=4)
+    # Alignment mode ---------------------------------------------------------------------
+    alignment_mode_box = ui.Card(outer, "Alignment mode")
+    alignment_mode_box.pack(**card_gap)
 
     restrained_header = ttk.Frame(alignment_mode_box)
     restrained_header.pack(fill="x")
-    ttk.Label(restrained_header, text="Mode").pack(side="left")
+    ttk.Label(restrained_header, text="Mode", style="Field.TLabel").pack(side="left")
     alignment_mode_combo = ttk.Combobox(
         restrained_header,
         textvariable=alignment_mode_var,
@@ -5819,7 +5782,7 @@ def _launch_gui() -> None:
         width=24,
         state="readonly",
     )
-    alignment_mode_combo.pack(side="left", padx=(4, 12))
+    alignment_mode_combo.pack(side="left", padx=(8, 8))
     alignment_mode_combo.bind(
         "<<ComboboxSelected>>",
         lambda _event: refresh_alignment_mode_state(),
@@ -5831,7 +5794,7 @@ def _launch_gui() -> None:
     ).pack(side="left")
 
     restrained_rotation_point_header = ttk.Frame(alignment_mode_box)
-    ttk.Label(restrained_rotation_point_header, text="Axis point source").pack(
+    ttk.Label(restrained_rotation_point_header, text="Axis point source", style="Field.TLabel").pack(
         side="left"
     )
     restrained_rotation_point_source_combo = ttk.Combobox(
@@ -5841,7 +5804,7 @@ def _launch_gui() -> None:
         width=20,
         state="readonly",
     )
-    restrained_rotation_point_source_combo.pack(side="left", padx=4)
+    restrained_rotation_point_source_combo.pack(side="left", padx=8)
     restrained_rotation_point_source_combo.bind(
         "<<ComboboxSelected>>",
         lambda _event: refresh_alignment_mode_state(),
@@ -5853,31 +5816,32 @@ def _launch_gui() -> None:
     ).pack(side="left")
 
     restrained_rotation_xyz_point_frame = ttk.Frame(alignment_mode_box)
-    ttk.Label(restrained_rotation_xyz_point_frame, text="Axis point").pack(
+    ttk.Label(restrained_rotation_xyz_point_frame, text="Axis point", style="Field.TLabel").pack(
         side="left"
     )
     for idx, label_text in enumerate(("x", "y", "z")):
-        ttk.Label(restrained_rotation_xyz_point_frame, text=label_text).pack(
-            side="left", padx=(8 if idx == 0 else 4, 0)
+        ttk.Label(restrained_rotation_xyz_point_frame, text=label_text, style="Hint.TLabel").pack(
+            side="left", padx=(10 if idx == 0 else 6, 0)
         )
         ttk.Entry(
             restrained_rotation_xyz_point_frame,
             textvariable=restrained_rotation_point_vars[idx],
-            width=10,
-        ).pack(side="left", padx=(2, 0))
+            width=9,
+        ).pack(side="left", padx=(3, 0))
 
     restrained_rotation_atom_point_frame = ttk.Frame(alignment_mode_box)
-    ttk.Label(restrained_rotation_atom_point_frame, text="Axis point atom").pack(
+    ttk.Label(restrained_rotation_atom_point_frame, text="Axis point atom", style="Field.TLabel").pack(
         side="left"
     )
     ttk.Entry(
         restrained_rotation_atom_point_frame,
         textvariable=restrained_rotation_point_atom_var,
         width=24,
-    ).pack(side="left", padx=4)
+    ).pack(side="left", padx=8)
     ttk.Label(
         restrained_rotation_atom_point_frame,
         text="selector: #123, A:30:P, A30:P, or 30A:P",
+        style="Hint.TLabel",
     ).pack(side="left", padx=(8, 0))
     restrained_rotation_point_frames = {
         "xyz_point": restrained_rotation_xyz_point_frame,
@@ -5888,6 +5852,7 @@ def _launch_gui() -> None:
     restrained_direction_label = ttk.Label(
         restrained_direction_header,
         text="Direction source",
+        style="Field.TLabel",
     )
     restrained_direction_label.pack(side="left")
     restrained_translation_source_combo = ttk.Combobox(
@@ -5902,7 +5867,7 @@ def _launch_gui() -> None:
         width=20,
         state="readonly",
     )
-    restrained_translation_source_combo.pack(side="left", padx=4)
+    restrained_translation_source_combo.pack(side="left", padx=8)
     restrained_translation_source_combo.bind(
         "<<ComboboxSelected>>",
         lambda _event: refresh_alignment_mode_state(),
@@ -5914,69 +5879,71 @@ def _launch_gui() -> None:
     ).pack(side="left")
 
     vector_frame = ttk.Frame(alignment_mode_box)
-    ttk.Label(vector_frame, text="Vector").pack(side="left")
+    ttk.Label(vector_frame, text="Vector", style="Field.TLabel").pack(side="left")
     for idx, label_text in enumerate(("x", "y", "z")):
-        ttk.Label(vector_frame, text=label_text).pack(
-            side="left", padx=(8 if idx == 0 else 4, 0)
+        ttk.Label(vector_frame, text=label_text, style="Hint.TLabel").pack(
+            side="left", padx=(10 if idx == 0 else 6, 0)
         )
         entry = ttk.Entry(
             vector_frame,
             textvariable=restrained_translation_vector_vars[idx],
-            width=10,
+            width=9,
         )
-        entry.pack(side="left", padx=(2, 0))
+        entry.pack(side="left", padx=(3, 0))
 
     points_frame = ttk.Frame(alignment_mode_box)
     point_var_index = 0
     for point_number in (1, 2):
-        ttk.Label(points_frame, text=f"Point {point_number}").pack(
-            side="left", padx=(0 if point_number == 1 else 14, 0)
+        ttk.Label(points_frame, text=f"Point {point_number}", style="Field.TLabel").pack(
+            side="left", padx=(0 if point_number == 1 else 16, 0)
         )
         for label_text in ("x", "y", "z"):
-            ttk.Label(points_frame, text=label_text).pack(side="left", padx=(4, 0))
+            ttk.Label(points_frame, text=label_text, style="Hint.TLabel").pack(side="left", padx=(6, 0))
             entry = ttk.Entry(
                 points_frame,
                 textvariable=restrained_translation_point_vars[point_var_index],
-                width=10,
+                width=8,
             )
-            entry.pack(side="left", padx=(2, 0))
+            entry.pack(side="left", padx=(3, 0))
             point_var_index += 1
 
     atoms_frame = ttk.Frame(alignment_mode_box)
     for atom_index in range(2):
-        ttk.Label(atoms_frame, text=f"Atom {atom_index + 1}").pack(
-            side="left", padx=(0 if atom_index == 0 else 14, 0)
+        ttk.Label(atoms_frame, text=f"Atom {atom_index + 1}", style="Field.TLabel").pack(
+            side="left", padx=(0 if atom_index == 0 else 16, 0)
         )
         entry = ttk.Entry(
             atoms_frame,
             textvariable=restrained_translation_atom_vars[atom_index],
-            width=24,
+            width=20,
         )
-        entry.pack(side="left", padx=4)
+        entry.pack(side="left", padx=8)
     ttk.Label(
         atoms_frame,
         text="selectors: #123, A:30:P, A30:P, or 30A:P",
+        style="Hint.TLabel",
     ).pack(side="left", padx=(8, 0))
 
     normal_vectors_frame = ttk.Frame(alignment_mode_box)
     normal_vector_index = 0
     for vector_number in (1, 2):
-        ttk.Label(normal_vectors_frame, text=f"Vector {vector_number}").pack(
-            side="left", padx=(0 if vector_number == 1 else 14, 0)
+        ttk.Label(normal_vectors_frame, text=f"Vector {vector_number}", style="Field.TLabel").pack(
+            side="left", padx=(0 if vector_number == 1 else 16, 0)
         )
         for label_text in ("x", "y", "z"):
-            ttk.Label(normal_vectors_frame, text=label_text).pack(
-                side="left", padx=(4, 0)
+            ttk.Label(normal_vectors_frame, text=label_text, style="Hint.TLabel").pack(
+                side="left", padx=(6, 0)
             )
             ttk.Entry(
                 normal_vectors_frame,
                 textvariable=restrained_normal_vector_vars[normal_vector_index],
-                width=10,
-            ).pack(side="left", padx=(2, 0))
+                width=8,
+            ).pack(side="left", padx=(3, 0))
             normal_vector_index += 1
     ttk.Label(
         normal_vectors_frame,
         text="normal = vector 1 × vector 2",
+        style="Hint.TLabel",
     ).pack(side="left", padx=(12, 0))
     restrained_translation_frames = {
         "vector": vector_frame,
@@ -5985,57 +5952,54 @@ def _launch_gui() -> None:
         "normal_to_two_vectors": normal_vectors_frame,
     }
 
-    other_tools_box = ttk.LabelFrame(outer, text="Other tools", padding=10, style="Section.TLabelframe")
-    other_tools_box.pack(fill="x", padx=2, pady=4)
-    other_tools_row1 = ttk.Frame(other_tools_box)
-    other_tools_row1.pack(fill="x")
-    other_tools_row2 = ttk.Frame(other_tools_box)
-    other_tools_row2.pack(fill="x", pady=(6, 0))
-    def add_tool_button(parent, label: str, help_key: str, first: bool = False):
-        """Pack one Other tools button followed by its light-blue ? button."""
-        tool_button = ttk.Button(parent, text=label)
-        tool_button.pack(side="left", padx=(0, 0) if first else (12, 0))
-        make_help_button(parent, label, help_key).pack(side="left", padx=(2, 0))
-        return tool_button
+    def add_tool_button(parent, label: str, help_key: str, icon: str = "generic", first: bool = False):
+        """One Other tools entry (icon, name, purpose) followed by its ? help."""
+        return parent.add(
+            label,
+            description=ui.tool_description(icon),
+            icon=f"tool:{icon}",
+            help_command=lambda: show_help(label, _GUI_HELP_TEXT[help_key]),
+        )
 
+    # --- Other tools frame ---
+    other_tools_box = ui.ToolList(side, title="Other tools")
+    other_tools_box.grid(row=0, column=0, sticky="we")
     bend_helix_button = add_tool_button(
-        other_tools_row1, "Bend Helix", "tool_bend_helix", first=True
+        other_tools_box, "Bend Helix", "tool_bend_helix", icon="bend_helix", first=True
     )
     do_symmetry_button = add_tool_button(
-        other_tools_row1, "Do Symmetry", "tool_do_symmetry"
+        other_tools_box, "Do Symmetry", "tool_do_symmetry", icon="do_symmetry"
     )
     add_pdb_link_button = add_tool_button(
-        other_tools_row1, "Add PDB LINK Record", "tool_add_pdb_link"
+        other_tools_box, "Add PDB LINK Record", "tool_add_pdb_link", icon="add_link"
     )
     insert_virtual_resi_button = add_tool_button(
-        other_tools_row1, "Insert Virtual Resi", "tool_insert_virtual_resi"
+        other_tools_box, "Insert Virtual Resi", "tool_insert_virtual_resi", icon="insert_virtual_resi"
     )
     permute_chain_button = add_tool_button(
-        other_tools_row1, "Permute Chain", "tool_permute_chain"
+        other_tools_box, "Permute Chain", "tool_permute_chain", icon="permute_chain"
     )
     generate_lattice_button = add_tool_button(
-        other_tools_row2, "Generate Lattice", "tool_generate_lattice", first=True
+        other_tools_box, "Generate Lattice", "tool_generate_lattice", icon="generate_lattice", first=True
     )
     get_phenix_restraints_button = add_tool_button(
-        other_tools_row2, "Get Phenix Restraints", "tool_get_phenix_restraints"
+        other_tools_box, "Get Phenix Restraints", "tool_get_phenix_restraints", icon="phenix_restraints"
     )
     reverse_strand_direction_button = add_tool_button(
-        other_tools_row2, "Reverse Strand Direction", "tool_reverse_strand_direction"
+        other_tools_box, "Reverse Strand Direction", "tool_reverse_strand_direction", icon="reverse_strand"
     )
     check_clashes_button = add_tool_button(
-        other_tools_row2, "Check Clashes", "tool_check_clashes"
+        other_tools_box, "Check Clashes", "tool_check_clashes", icon="check_clashes"
     )
 
-    buttons = ttk.Frame(outer)
-    buttons.pack(fill="x", padx=2, pady=4)
-    run_button = ttk.Button(buttons, text="Run")
-    run_button.pack(side="left")
-    ttk.Button(buttons, text="Close", command=root.destroy).pack(side="left", padx=6)
-
-    log_box = ttk.LabelFrame(outer, text="Run log", padding=10, style="Section.TLabelframe")
-    log_box.pack(fill="both", expand=True, padx=2, pady=4)
-    log_widget = scrolledtext.ScrolledText(log_box, wrap="word", height=24)
-    log_widget.pack(fill="both", expand=True)
+    log_box = ttk.Frame(side)
+    log_box.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
+    log_box.columnconfigure(0, weight=1)
+    log_box.rowconfigure(1, weight=1)
+    ttk.Label(log_box, text="Run log", style="Section.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+    log_view = ui.LogView(log_box, wrap="word", height=12)
+    log_view.grid(row=1, column=0, sticky="nsew")
+    log_widget = log_view.text
 
     def append_log(message: str) -> None:
         log_widget.insert("end", message)

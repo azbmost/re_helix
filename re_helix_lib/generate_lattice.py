@@ -529,11 +529,16 @@ def run_gui(initial_path=None):
         sys.stderr.write("ERROR: Tkinter is not available in this Python installation.\n")
         return 1
 
+    try:
+        from re_helix_lib import azbmost_ui as ui
+    except ImportError:  # pragma: no cover - direct script execution fallback
+        import azbmost_ui as ui
+    from tkinter import ttk
+
     root = tk.Tk()
     root.title("{} {}".format(TOOL_NAME, VERSION))
     apply_optional_icon(root, __file__)
-    root.geometry("860x720")
-    root.minsize(820, 680)
+    ui.tool_window(root, TOOL_NAME, tool="generate_lattice", version=VERSION)
 
     input_var = tk.StringVar(value=initial_path or "")
     output_var = tk.StringVar()
@@ -572,45 +577,59 @@ def run_gui(initial_path=None):
         if path:
             output_var.set(path)
 
-    def add_label_entry(row, label, var, width=48):
-        tk.Label(root, text=label, anchor="e").grid(row=row, column=0, sticky="e", padx=8, pady=4)
-        entry = tk.Entry(root, textvariable=var, width=width)
-        entry.grid(row=row, column=1, sticky="we", padx=8, pady=4)
+    # The run button sits in the bottom bar; the fields are grouped in cards.
+    footer = ui.Footer(root)
+    footer.pack(side="bottom", fill="x")
+    body = ttk.Frame(root, padding=(18, 12, 18, 12))
+    body.pack(side="top", fill="both", expand=True)
+    body.columnconfigure(0, weight=1)
+
+    files = ui.Card(body, "Input and output")
+    files.grid(row=0, column=0, sticky="we", pady=(0, 10))
+    lattice = ui.Card(body, "Lattice vectors")
+    lattice.grid(row=1, column=0, sticky="we", pady=(0, 10))
+    options = ui.Card(body, "Options")
+    options.grid(row=2, column=0, sticky="we", pady=(0, 10))
+    for card in (files, lattice, options):
+        card.columnconfigure(1, weight=1)
+
+    def add_label_entry(parent, row, label, var, width=48):
+        ttk.Label(parent, text=label, style="Field.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 12), pady=3)
+        entry = ui.Entry(parent, textvariable=var, width=width)
+        entry.grid(row=row, column=1, sticky="we", pady=3)
         return entry
 
-    root.columnconfigure(1, weight=1)
+    ttk.Label(files, text="Input PDB:", style="Field.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=3)
+    ui.Entry(files, textvariable=input_var, width=48).grid(row=0, column=1, sticky="we", pady=3)
+    ui.Button(files, text="Browse", command=choose_input).grid(row=0, column=2, padx=(8, 0), pady=3)
 
-    tk.Label(root, text="Input PDB:", anchor="e").grid(row=0, column=0, sticky="e", padx=8, pady=4)
-    tk.Entry(root, textvariable=input_var, width=48).grid(row=0, column=1, sticky="we", padx=8, pady=4)
-    tk.Button(root, text="Browse", command=choose_input).grid(row=0, column=2, padx=8, pady=4)
+    ttk.Label(files, text="Output PDB:", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=3)
+    ui.Entry(files, textvariable=output_var, width=48).grid(row=1, column=1, sticky="we", pady=3)
+    ui.Button(files, text="Browse", command=choose_output).grid(row=1, column=2, padx=(8, 0), pady=3)
 
-    tk.Label(root, text="Output PDB:", anchor="e").grid(row=1, column=0, sticky="e", padx=8, pady=4)
-    tk.Entry(root, textvariable=output_var, width=48).grid(row=1, column=1, sticky="we", padx=8, pady=4)
-    tk.Button(root, text="Browse", command=choose_output).grid(row=1, column=2, padx=8, pady=4)
-
-    tk.Label(root, text="Direction vectors are normalized before multiplying by distances.", anchor="w").grid(
-        row=2, column=1, sticky="w", padx=8, pady=(10, 4)
+    ttk.Label(lattice, text="Direction vectors are normalized before multiplying by distances.", style="Hint.TLabel").grid(
+        row=2, column=1, sticky="w", pady=(0, 6)
     )
 
-    add_label_entry(3, "u1 / a direction, x y z:", u1_var)
-    add_label_entry(4, "u2 / b direction, x y z:", u2_var)
-    add_label_entry(5, "u3 / c direction, x y z:", u3_var)
+    add_label_entry(lattice, 3, "u1 / a direction, x y z:", u1_var)
+    add_label_entry(lattice, 4, "u2 / b direction, x y z:", u2_var)
+    add_label_entry(lattice, 5, "u3 / c direction, x y z:", u3_var)
 
-    add_label_entry(6, "d1 / a distance:", d1_var)
-    add_label_entry(7, "d2 / b distance:", d2_var)
-    add_label_entry(8, "d3 / c distance:", d3_var)
+    add_label_entry(lattice, 6, "d1 / a distance:", d1_var)
+    add_label_entry(lattice, 7, "d2 / b distance:", d2_var)
+    add_label_entry(lattice, 8, "d3 / c distance:", d3_var)
 
-    tk.Checkbutton(root, text="Rotate coordinates to standard CRYST1 frame", variable=rotate_to_cryst_frame_var).grid(
-        row=9, column=1, sticky="w", padx=8, pady=(12, 2)
+    ui.Checkbutton(options, text="Rotate coordinates to standard CRYST1 frame", variable=rotate_to_cryst_frame_var).grid(
+        row=9, column=0, columnspan=2, sticky="w", pady=2
     )
-    tk.Checkbutton(root, text="Write/update CRYST1 as P 1", variable=update_cryst1_var).grid(
-        row=10, column=1, sticky="w", padx=8, pady=2
+    ui.Checkbutton(options, text="Write/update CRYST1 as P 1", variable=update_cryst1_var).grid(
+        row=10, column=0, columnspan=2, sticky="w", pady=2
     )
-    tk.Checkbutton(root, text="Allow reflection if lattice-vector handedness is reversed", variable=allow_reflection_var).grid(
-        row=11, column=1, sticky="w", padx=8, pady=2
+    ui.Checkbutton(options, text="Allow reflection if lattice-vector handedness is reversed", variable=allow_reflection_var).grid(
+        row=11, column=0, columnspan=2, sticky="w", pady=2
     )
-    tk.Checkbutton(root, text="Drop CONECT records", variable=drop_conect_var).grid(
-        row=12, column=1, sticky="w", padx=8, pady=2
+    ui.Checkbutton(options, text="Drop CONECT records", variable=drop_conect_var).grid(
+        row=12, column=0, columnspan=2, sticky="w", pady=2
     )
 
     note = (
@@ -619,9 +638,19 @@ def run_gui(initial_path=None):
         "Rotation is performed about the global origin; choosing a different rotation center would only add "
         "a constant translation and would not change lattice-axis alignment or continuity."
     )
-    tk.Label(root, text=note, wraplength=610, justify="left", anchor="w").grid(
-        row=13, column=1, sticky="we", padx=8, pady=(12, 4)
+    ttk.Label(body, text=note, wraplength=780, justify="left", style="Muted.TLabel").grid(
+        row=13, column=0, sticky="we", pady=(2, 0)
     )
+
+    # Line the inputs of the two field cards up in one column.
+    root.update_idletasks()
+    label_width = 12 + max(
+        widget.winfo_reqwidth()
+        for card in (files, lattice)
+        for widget in card.grid_slaves(column=0)
+    )
+    for card in (files, lattice):
+        card.columnconfigure(0, minsize=label_width)
 
     def run_processing():
         try:
@@ -660,9 +689,12 @@ def run_gui(initial_path=None):
             print("Error: {}".format(exc), flush=True)
             messagebox.showerror("Error", str(exc))
 
-    tk.Button(root, text="Write P1 crystallographic PDB", command=run_processing, height=2).grid(
-        row=14, column=1, sticky="we", padx=8, pady=16
-    )
+    footer.add_button("Write P1 crystallographic PDB", run_processing, primary=True)
+
+    # Open at the height the cards need, and never smaller.
+    root.update_idletasks()
+    root.minsize(820, root.winfo_reqheight())
+    root.geometry("860x%d" % root.winfo_reqheight())
 
     root.mainloop()
     return 0

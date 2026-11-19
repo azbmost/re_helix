@@ -874,49 +874,64 @@ def _detected_chains(path: Path) -> List[Tuple[str, int, int, int]]:
 def run_gui(initial_path: Optional[str] = None) -> int:
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox, scrolledtext, ttk
+        from tkinter import filedialog, messagebox, ttk
     except Exception as exc:
         print(f"Error: GUI mode requires tkinter ({exc}).", file=sys.stderr)
         return 1
+    try:
+        from re_helix_lib import azbmost_ui as ui
+    except ImportError:  # pragma: no cover - direct script execution fallback
+        import azbmost_ui as ui
 
     root = tk.Tk()
     root.title(f"{TOOL_NAME} V{VERSION}")
     apply_optional_icon(root, __file__)
-    root.geometry("820x620")
+    ui.tool_window(root, TOOL_NAME, tool="reverse_strand", version=f"V{VERSION}")
+    root.geometry("840x700")
 
     input_var = tk.StringVar(value=initial_path or "")
     output_var = tk.StringVar()
     status_var = tk.StringVar(value="Choose an input PDB and at least one strand.")
     chain_vars: Dict[str, tk.BooleanVar] = {}
 
-    outer = ttk.Frame(root, padding=10)
-    outer.pack(fill="both", expand=True)
-    outer.columnconfigure(1, weight=1)
-    outer.rowconfigure(5, weight=1)
-    ttk.Label(outer, text=f"{TOOL_NAME} V{VERSION}", font=("TkDefaultFont", 12, "bold")).grid(
-        row=0, column=0, columnspan=3, sticky="w", pady=(0, 8)
+    # The status line and the buttons share the bottom bar.
+    footer = ui.Footer(root, textvariable=status_var)
+    footer.status.configure(wraplength=420, justify="left")
+    footer.status.bind(
+        "<Configure>",
+        lambda event: footer.status.configure(wraplength=max(240, event.width)),
+        add="+",
     )
+    footer.pack(side="bottom", fill="x")
 
-    ttk.Label(outer, text="Input PDB").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
-    ttk.Entry(outer, textvariable=input_var, width=72).grid(row=1, column=1, sticky="ew", pady=4)
-    ttk.Label(outer, text="Output PDB").grid(row=2, column=0, sticky="e", padx=(0, 6), pady=4)
-    ttk.Entry(outer, textvariable=output_var, width=72).grid(row=2, column=1, sticky="ew", pady=4)
+    outer = ttk.Frame(root, padding=(18, 12, 18, 12))
+    outer.pack(fill="both", expand=True)
+    outer.columnconfigure(0, weight=1)
+    outer.rowconfigure(5, weight=1)
 
-    chain_box = ttk.LabelFrame(outer, text="Strands to reverse", padding=8)
-    chain_box.grid(row=3, column=0, columnspan=3, sticky="ew", pady=8)
+    files = ui.Card(outer, "Input and output")
+    files.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+    files.columnconfigure(1, weight=1)
+    ttk.Label(files, text="Input PDB", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=3)
+    ttk.Entry(files, textvariable=input_var, width=72).grid(row=1, column=1, sticky="ew", pady=3)
+    ttk.Label(files, text="Output PDB", style="Field.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=3)
+    ttk.Entry(files, textvariable=output_var, width=72).grid(row=2, column=1, sticky="ew", pady=3)
+
+    # The height only shows while no strands are listed, so the empty
+    # card keeps its title.
+    chain_box = ui.Card(outer, "Strands to reverse", height=46)
+    chain_box.grid(row=3, column=0, sticky="ew", pady=(0, 6))
     explanation = (
         "Complete residue blocks are reversed and renumbered; coordinates are unchanged. "
         "This changes PDB serialization, not molecular geometry or base identity."
     )
-    ttk.Label(outer, text=explanation, wraplength=780, justify="left").grid(
-        row=4, column=0, columnspan=3, sticky="w", pady=(0, 6)
+    ttk.Label(outer, text=explanation, wraplength=780, justify="left", style="Hint.TLabel").grid(
+        row=4, column=0, sticky="w", pady=(0, 10)
     )
 
-    log = scrolledtext.ScrolledText(outer, wrap="word", height=17)
-    log.grid(row=5, column=0, columnspan=3, sticky="nsew", pady=6)
-    ttk.Label(outer, textvariable=status_var).grid(row=6, column=0, columnspan=3, sticky="w")
-    buttons = ttk.Frame(outer)
-    buttons.grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
+    log_view = ui.LogView(outer, wrap="word", height=12)
+    log_view.grid(row=5, column=0, sticky="nsew")
+    log = log_view.text
 
     def append(message: str) -> None:
         log.insert("end", message)
@@ -975,8 +990,8 @@ def run_gui(initial_path: Optional[str] = None) -> int:
         if selected:
             output_var.set(selected)
 
-    ttk.Button(outer, text="Browse", command=browse_input).grid(row=1, column=2, padx=(6, 0))
-    ttk.Button(outer, text="Browse", command=browse_output).grid(row=2, column=2, padx=(6, 0))
+    ttk.Button(files, text="Browse", command=browse_input).grid(row=1, column=2, padx=(8, 0), pady=3)
+    ttk.Button(files, text="Browse", command=browse_output).grid(row=2, column=2, padx=(8, 0), pady=3)
 
     def run() -> None:
         selected_chains = [chain for chain, variable in chain_vars.items() if variable.get()]
@@ -1008,9 +1023,9 @@ def run_gui(initial_path: Optional[str] = None) -> int:
         print(summary, flush=True)
         status_var.set(f"Wrote {result.output_path}")
 
-    ttk.Button(buttons, text="Reverse selected strands", command=run).pack(side="left")
-    ttk.Button(buttons, text="Refresh strands", command=refresh_chains).pack(side="left", padx=6)
-    ttk.Button(buttons, text="Close", command=root.destroy).pack(side="left")
+    footer.add_button("Refresh strands", refresh_chains)
+    footer.add_button("Close", root.destroy)
+    footer.add_button("Reverse selected strands", run, primary=True)
 
     if input_var.get().strip():
         refresh_chains()

@@ -4452,7 +4452,7 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
 
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox, scrolledtext, ttk
+        from tkinter import filedialog, messagebox, ttk
     except Exception as exc:  # pragma: no cover - environment dependent
         print(f"Error: GUI mode requires tkinter ({exc}).", file=sys.stderr)
         return 1
@@ -4465,10 +4465,21 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
 
     root.title(APP_TITLE)
     apply_optional_icon(root, __file__)
-    root.geometry("1020x900")
+    try:
+        from re_helix_lib import azbmost_ui as ui
+    except ImportError:  # pragma: no cover - direct script execution fallback
+        import azbmost_ui as ui
+    ui.tool_window(root, TOOL_NAME, tool="bend_helix", version=VERSION)
+    root.geometry("1100x900")
     root.resizable(True, True)
-    root.columnconfigure(1, weight=1)
-    root.rowconfigure(14, weight=1)
+    # The footer is packed before the form so the run buttons stay visible
+    # when the window is made small.
+    footer = ui.Footer(root)
+    footer.pack(side="bottom", fill="x")
+    body = ttk.Frame(root, padding=(18, 12, 18, 12))
+    body.pack(side="top", fill="both", expand=True)
+    body.columnconfigure(0, weight=1)
+    body.rowconfigure(4, weight=1)
 
     input_var = tk.StringVar(value=defaults.get("input_pdb", ""))
     output_var = tk.StringVar(value=defaults.get("output_pdb", ""))
@@ -4711,32 +4722,45 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
     def show_help(key: str) -> None:
         messagebox.showinfo(f"{APP_TITLE} help", help_text[key], parent=root)
 
+    # The fields sit in three cards but keep the grid rows they always had, so
+    # one row number still names one field; help_button() finds the card from
+    # the row.
+    row_cards: Dict[int, object] = {}
+
+    def form_card(position: int, title: str, rows: Iterable[int]):
+        card = ui.Card(body, title)
+        card.grid(row=position, column=0, sticky="ew", pady=(0, 8))
+        card.columnconfigure(1, weight=1)
+        for row in rows:
+            row_cards[row] = card
+        return card
+
+    def field_label(parent, row: int, text: str, sticky: str = "w"):
+        label = ttk.Label(parent, text=text, style="Field.TLabel")
+        label.grid(row=row, column=0, sticky=sticky, padx=(0, 12), pady=2)
+        return label
+
     def help_button(row: int, key: str):
-        btn = tk.Button(
-            root,
-            text="?",
-            command=lambda k=key: show_help(k),
-            bg="#d9ecff",
-            activebackground="#c4e0ff",
-            highlightbackground="#d9ecff",
-            width=2,
-            relief="raised",
-        )
-        btn.grid(row=row, column=3, sticky="w", padx=(0, 8), pady=4)
+        btn = ui.HelpButton(row_cards[row], command=lambda k=key: show_help(k))
+        btn.grid(row=row, column=3, sticky="e", padx=(8, 0), pady=2)
         return btn
 
     ttk.Label(
-        root,
+        body,
         text=(
             "Bend helix: Piece #1 is fixed; each pivot starts a movable piece, bent in "
             "pivot order."
         ),
-        font=("TkDefaultFont", 10, "bold"),
-    ).grid(row=0, column=0, columnspan=4, sticky="w", padx=8, pady=(8, 6))
+        style="Muted.TLabel",
+    ).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
-    ttk.Label(root, text="Input PDB file").grid(row=1, column=0, sticky="w", padx=8, pady=4)
-    input_entry = ttk.Entry(root, textvariable=input_var)
-    input_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=4)
+    files_card = form_card(1, "Input and output", (1, 2))
+    bend_card = form_card(2, "Pivot and bend", range(3, 10))
+    options_card = form_card(3, "Local axis and output options", range(10, 14))
+
+    field_label(files_card, 1, "Input PDB file")
+    input_entry = ttk.Entry(files_card, textvariable=input_var)
+    input_entry.grid(row=1, column=1, sticky="ew", pady=2)
 
     def browse_input_file() -> None:
         path = filedialog.askopenfilename(
@@ -4746,11 +4770,11 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         if path:
             input_var.set(path)
 
-    ttk.Button(root, text="Browse...", command=browse_input_file).grid(row=1, column=2, sticky="ew", padx=(0, 8), pady=4)
+    ttk.Button(files_card, text="Browse...", command=browse_input_file).grid(row=1, column=2, sticky="w", padx=(8, 0), pady=2)
     help_button(1, "input")
 
-    ttk.Label(root, text="Output PDB file (optional)").grid(row=2, column=0, sticky="w", padx=8, pady=4)
-    ttk.Entry(root, textvariable=output_var).grid(row=2, column=1, sticky="ew", padx=8, pady=4)
+    field_label(files_card, 2, "Output PDB file (optional)")
+    ttk.Entry(files_card, textvariable=output_var).grid(row=2, column=1, sticky="ew", pady=2)
 
     def browse_output_file() -> None:
         path = filedialog.asksaveasfilename(
@@ -4761,57 +4785,57 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         if path:
             output_var.set(path)
 
-    ttk.Button(root, text="Save as...", command=browse_output_file).grid(row=2, column=2, sticky="ew", padx=(0, 8), pady=4)
+    ttk.Button(files_card, text="Save as...", command=browse_output_file).grid(row=2, column=2, sticky="w", padx=(8, 0), pady=2)
     help_button(2, "output")
 
-    ttk.Label(root, text="Pivot P residue(s), in bending order").grid(row=3, column=0, sticky="w", padx=8, pady=4)
-    ttk.Entry(root, textvariable=pivot_var).grid(row=3, column=1, sticky="ew", padx=8, pady=4)
-    ttk.Label(root, text="Example: A36 or A20, A40").grid(row=3, column=2, sticky="w", padx=(0, 8), pady=4)
+    field_label(bend_card, 3, "Pivot P residue(s), in bending order")
+    ttk.Entry(bend_card, textvariable=pivot_var).grid(row=3, column=1, sticky="ew", pady=2)
+    ttk.Label(bend_card, text="Example: A36 or A20, A40", style="Hint.TLabel").grid(row=3, column=2, sticky="w", padx=(8, 0), pady=2)
     help_button(3, "pivot")
 
-    ttk.Label(root, text="Phi: hinge direction (degrees)").grid(row=4, column=0, sticky="w", padx=8, pady=4)
-    phi_entry = ttk.Entry(root, textvariable=phi_var)
-    phi_entry.grid(row=4, column=1, sticky="ew", padx=8, pady=4)
+    field_label(bend_card, 4, "Phi: hinge direction (degrees)")
+    phi_entry = ttk.Entry(bend_card, textvariable=phi_var)
+    phi_entry.grid(row=4, column=1, sticky="ew", pady=2)
     phi_screen_check = ttk.Checkbutton(
-        root, text="Screen", variable=screen_select_vars["phi"]
+        bend_card, text="Screen", variable=screen_select_vars["phi"]
     )
-    phi_screen_check.grid(row=4, column=2, sticky="w", padx=(0, 8), pady=4)
+    phi_screen_check.grid(row=4, column=2, sticky="w", padx=(8, 0), pady=2)
     help_button(4, "phi")
 
-    ttk.Label(root, text="Beta: bend movable piece #2 (degrees)").grid(row=5, column=0, sticky="w", padx=8, pady=4)
-    beta_entry = ttk.Entry(root, textvariable=beta_var)
-    beta_entry.grid(row=5, column=1, sticky="ew", padx=8, pady=4)
+    field_label(bend_card, 5, "Beta: bend movable piece #2 (degrees)")
+    beta_entry = ttk.Entry(bend_card, textvariable=beta_var)
+    beta_entry.grid(row=5, column=1, sticky="ew", pady=2)
     beta_screen_check = ttk.Checkbutton(
-        root, text="Screen", variable=screen_select_vars["beta"]
+        bend_card, text="Screen", variable=screen_select_vars["beta"]
     )
-    beta_screen_check.grid(row=5, column=2, sticky="w", padx=(0, 8), pady=4)
+    beta_screen_check.grid(row=5, column=2, sticky="w", padx=(8, 0), pady=2)
     help_button(5, "beta")
 
-    ttk.Label(root, text="Tau: twist movable piece #2 (degrees)").grid(row=6, column=0, sticky="w", padx=8, pady=4)
-    tau_entry = ttk.Entry(root, textvariable=tau_var)
-    tau_entry.grid(row=6, column=1, sticky="ew", padx=8, pady=4)
+    field_label(bend_card, 6, "Tau: twist movable piece #2 (degrees)")
+    tau_entry = ttk.Entry(bend_card, textvariable=tau_var)
+    tau_entry.grid(row=6, column=1, sticky="ew", pady=2)
     tau_screen_check = ttk.Checkbutton(
-        root, text="Screen", variable=screen_select_vars["tau"]
+        bend_card, text="Screen", variable=screen_select_vars["tau"]
     )
-    tau_screen_check.grid(row=6, column=2, sticky="w", padx=(0, 8), pady=4)
+    tau_screen_check.grid(row=6, column=2, sticky="w", padx=(8, 0), pady=2)
     help_button(6, "tau")
 
-    ttk.Label(root, text="Sa: shift pivot along axis (A)").grid(row=7, column=0, sticky="w", padx=8, pady=4)
-    shift_axial_entry = ttk.Entry(root, textvariable=shift_axial_var)
-    shift_axial_entry.grid(row=7, column=1, sticky="ew", padx=8, pady=4)
+    field_label(bend_card, 7, "Sa: shift pivot along axis (A)")
+    shift_axial_entry = ttk.Entry(bend_card, textvariable=shift_axial_var)
+    shift_axial_entry.grid(row=7, column=1, sticky="ew", pady=2)
     shift_axial_screen_check = ttk.Checkbutton(
-        root, text="Screen", variable=screen_select_vars["shift_axial"]
+        bend_card, text="Screen", variable=screen_select_vars["shift_axial"]
     )
-    shift_axial_screen_check.grid(row=7, column=2, sticky="w", padx=(0, 8), pady=4)
+    shift_axial_screen_check.grid(row=7, column=2, sticky="w", padx=(8, 0), pady=2)
     help_button(7, "shift_axial")
 
-    ttk.Label(root, text="Sr: shift pivot along radius (A)").grid(row=8, column=0, sticky="w", padx=8, pady=4)
-    shift_radial_entry = ttk.Entry(root, textvariable=shift_radial_var)
-    shift_radial_entry.grid(row=8, column=1, sticky="ew", padx=8, pady=4)
+    field_label(bend_card, 8, "Sr: shift pivot along radius (A)")
+    shift_radial_entry = ttk.Entry(bend_card, textvariable=shift_radial_var)
+    shift_radial_entry.grid(row=8, column=1, sticky="ew", pady=2)
     shift_radial_screen_check = ttk.Checkbutton(
-        root, text="Screen", variable=screen_select_vars["shift_radial"]
+        bend_card, text="Screen", variable=screen_select_vars["shift_radial"]
     )
-    shift_radial_screen_check.grid(row=8, column=2, sticky="w", padx=(0, 8), pady=4)
+    shift_radial_screen_check.grid(row=8, column=2, sticky="w", padx=(8, 0), pady=2)
     help_button(8, "shift_radial")
 
     variable_entries = {
@@ -4829,48 +4853,72 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         "shift_radial": shift_radial_screen_check,
     }
 
-    ttk.Label(root, text="Screening target").grid(
-        row=9, column=0, sticky="w", padx=8, pady=4
-    )
-    screening_button = ttk.Button(root, text="Screening to achieve...", state="disabled")
-    screening_button.grid(row=9, column=1, sticky="w", padx=8, pady=4)
-    ttk.Label(root, textvariable=screen_status_var, wraplength=300).grid(
-        row=9, column=2, sticky="w", padx=(0, 8), pady=4
+    field_label(bend_card, 9, "Screening target")
+    screening_button = ttk.Button(bend_card, text="Screening to achieve...", state="disabled")
+    screening_button.grid(row=9, column=1, sticky="w", pady=2)
+    ttk.Label(bend_card, textvariable=screen_status_var, wraplength=300, style="Hint.TLabel").grid(
+        row=9, column=2, sticky="w", padx=(8, 0), pady=2
     )
     help_button(9, "screening")
 
-    ttk.Label(root, text="Local axis range(s), one per line").grid(row=10, column=0, sticky="nw", padx=8, pady=4)
-    axis_range_text = tk.Text(root, height=3, width=48, wrap="none")
-    axis_range_text.grid(row=10, column=1, sticky="ew", padx=8, pady=4)
+    field_label(options_card, 10, "Local axis range(s), one per line", sticky="nw")
+    axis_range_text = tk.Text(
+        options_card,
+        height=3,
+        width=48,
+        wrap="none",
+        font="AzbBody",
+        padx=7,
+        pady=4,
+        highlightbackground=ui.C.BORDER_INPUT,
+        highlightcolor=ui.C.ACCENT,
+    )
+    axis_range_text.grid(row=10, column=1, sticky="ew", pady=2)
     axis_default = defaults.get("axis_ranges", "")
     if axis_default:
         axis_range_text.insert("1.0", axis_default)
-    ttk.Label(root, text="Example: A1-A35,B60-B26").grid(row=10, column=2, sticky="w", padx=(0, 8), pady=4)
-    help_button(10, "axis_range")
+    ttk.Label(options_card, text="Example: A1-A35,B60-B26", style="Hint.TLabel").grid(row=10, column=2, sticky="nw", padx=(8, 0), pady=(7, 2))
+    help_button(10, "axis_range").grid_configure(sticky="ne", pady=(6, 2))
 
-    ttk.Label(root, text="Separate piece #2 chain IDs (--sep)").grid(row=11, column=0, sticky="w", padx=8, pady=4)
-    sep_box = ttk.Combobox(root, textvariable=sep_var, values=("n", "y"), state="readonly", width=6)
-    sep_box.grid(row=11, column=1, sticky="w", padx=8, pady=4)
+    field_label(options_card, 11, "Separate piece #2 chain IDs (--sep)")
+    sep_box = ttk.Combobox(options_card, textvariable=sep_var, values=("n", "y"), state="readonly", width=6)
+    sep_box.grid(row=11, column=1, sticky="w", pady=2)
     sep_box.set(sep_var.get())
     help_button(11, "sep")
 
-    ttk.Label(root, text="Realign pivot P after bending (--align)").grid(row=12, column=0, sticky="w", padx=8, pady=4)
-    align_box = ttk.Combobox(root, textvariable=align_var, values=("y", "n"), state="readonly", width=6)
-    align_box.grid(row=12, column=1, sticky="w", padx=8, pady=4)
+    field_label(options_card, 12, "Realign pivot P after bending (--align)")
+    align_box = ttk.Combobox(options_card, textvariable=align_var, values=("y", "n"), state="readonly", width=6)
+    align_box.grid(row=12, column=1, sticky="w", pady=2)
     align_box.set(align_var.get())
     help_button(12, "align")
 
-    ttk.Label(root, text="Write origin overlay PDB (--origin)").grid(row=13, column=0, sticky="w", padx=8, pady=4)
-    origin_box = ttk.Combobox(root, textvariable=origin_var, values=("n", "y"), state="readonly", width=6)
-    origin_box.grid(row=13, column=1, sticky="w", padx=8, pady=4)
+    field_label(options_card, 13, "Write origin overlay PDB (--origin)")
+    origin_box = ttk.Combobox(options_card, textvariable=origin_var, values=("n", "y"), state="readonly", width=6)
+    origin_box.grid(row=13, column=1, sticky="w", pady=2)
     origin_box.set(origin_var.get())
     help_button(13, "origin")
 
-    result_text = scrolledtext.ScrolledText(root, height=14, width=90, wrap="word")
-    result_text.grid(row=14, column=0, columnspan=4, sticky="nsew", padx=8, pady=(8, 4))
+    result_view = ui.LogView(body, wrap="word", height=8)
+    result_view.grid(row=4, column=0, sticky="nsew")
+    result_text = result_view.text
 
-    button_frame = ttk.Frame(root)
-    button_frame.grid(row=15, column=0, columnspan=4, sticky="e", padx=8, pady=(4, 8))
+    def align_form_columns() -> None:
+        """Give the label and side columns one width in all three cards."""
+        root.update_idletasks()
+        cards = (files_card, bend_card, options_card)
+        for column, pad, least in ((0, 12, 0), (2, 8, 308)):
+            width = max(
+                [least]
+                + [
+                    child.winfo_reqwidth() + pad
+                    for card in cards
+                    for child in card.grid_slaves(column=column)
+                ]
+            )
+            for card in cards:
+                card.columnconfigure(column, minsize=width)
+
+    align_form_columns()
 
     def get_axis_range_specs_from_gui() -> List[str]:
         text = axis_range_text.get("1.0", tk.END)
@@ -5198,44 +5246,143 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         ]
         dialog.title(f"{APP_TITLE} - Screening to achieve...")
         apply_optional_icon(dialog, __file__)
-        dialog.geometry("1000x820")
+        dialog.geometry("1060x860")
         dialog.minsize(920, 700)
         dialog.transient(root)
         dialog.grab_set()
-        dialog.columnconfigure(0, weight=1)
-        dialog.rowconfigure(0, weight=1)
 
         def screening_help_button(parent, key: str):
-            return tk.Button(
+            return ui.HelpButton(
                 parent,
-                text="?",
                 command=lambda: messagebox.showinfo(
                     f"{APP_TITLE} - Screening help",
                     SCREENING_GUI_HELP[key],
                     parent=dialog,
                 ),
-                bg="#d9ecff",
-                activebackground="#c4e0ff",
-                highlightbackground="#d9ecff",
-                width=2,
-                relief="raised",
             )
 
-        outer = ttk.Frame(dialog, padding=10)
-        outer.grid(row=0, column=0, sticky="nsew")
+        # Rotation mode can be taller than the screen, so the settings scroll
+        # above a fixed button bar. ui.ScrollFrame is not used here: it embeds
+        # its body in a canvas, and on macOS a canvas window inside a transient
+        # dialog whose owner is withdrawn keeps update() from ever returning.
+        # Moving a placed frame scrolls the same way without that.
+        dialog_footer = ui.Footer(dialog)
+        dialog_footer.pack(side="bottom", fill="x")
+        settings_area = ttk.Frame(dialog)
+        settings_area.pack(side="top", fill="both", expand=True)
+        settings_area.columnconfigure(0, weight=1)
+        settings_area.rowconfigure(0, weight=1)
+        settings_view = ttk.Frame(settings_area)
+        settings_view.grid(row=0, column=0, sticky="nsew")
+        outer = ttk.Frame(settings_view, padding=(18, 14, 18, 10))
+        outer.place(x=0, y=0, relwidth=1)
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(3, weight=1)
+        settings_scroll = {"offset": 0, "shown": False}
+
+        def refresh_settings_scroll(_event=None) -> None:
+            view_height = settings_view.winfo_height()
+            body_height = outer.winfo_reqheight()
+            spare = max(0, body_height - view_height)
+            offset = min(max(settings_scroll["offset"], 0), spare)
+            settings_scroll["offset"] = offset
+            outer.place_configure(y=-offset)
+            if spare and not settings_scroll["shown"]:
+                settings_scrollbar.grid(row=0, column=1, sticky="ns")
+                settings_scroll["shown"] = True
+            elif not spare and settings_scroll["shown"]:
+                settings_scrollbar.grid_remove()
+                settings_scroll["shown"] = False
+            if body_height > 0:
+                settings_scrollbar.set(
+                    offset / body_height,
+                    min(1.0, (offset + view_height) / body_height),
+                )
+
+        def scroll_settings(*args) -> None:
+            if not args:
+                return
+            body_height = max(1, outer.winfo_reqheight())
+            if args[0] == "moveto":
+                settings_scroll["offset"] = int(float(args[1]) * body_height)
+            elif args[0] == "scroll":
+                step = (
+                    int(settings_view.winfo_height() * 0.9)
+                    if str(args[2]).startswith("page")
+                    else 24
+                )
+                settings_scroll["offset"] += int(float(args[1])) * step
+            refresh_settings_scroll()
+
+        def wheel_settings(event) -> None:
+            try:
+                if event.widget.winfo_class() in ("Text", "Listbox", "TCombobox"):
+                    return
+            except Exception:
+                return
+            if getattr(event, "num", None) in (4, 5):
+                units = -1 if event.num == 4 else 1
+            elif sys.platform == "darwin":
+                units = -int(event.delta)
+            else:
+                units = -int(event.delta / 120) or (-1 if event.delta > 0 else 1)
+            if settings_scroll["shown"] and units:
+                scroll_settings("scroll", units, "units")
+
+        settings_scrollbar = ttk.Scrollbar(
+            settings_area, orient="vertical", command=scroll_settings
+        )
+        settings_view.bind("<Configure>", refresh_settings_scroll, add="+")
+        outer.bind("<Configure>", refresh_settings_scroll, add="+")
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            dialog.bind(sequence, wheel_settings, add="+")
+
+        # One label column for every card, so all the inputs line up.
+        label_font = ui.ensure_fonts(root)["AzbBody"]
+        label_column = 12 + max(
+            label_font.measure(text)
+            for text in (
+                "Solution tolerance (angstroms)",
+                "Target distance (angstroms)",
+                "Additional solution files",
+                "Axis vector source",
+                *(screen_variable_gui_label(name) for name in selected),
+            )
+        )
+        # Long notes re-wrap to the width the dialog gives them.
+        wrapped_labels: List[Tuple[object, int]] = []
+
+        def rewrap_labels(event) -> None:
+            for label, inset in wrapped_labels:
+                label.configure(wraplength=max(320, event.width - inset))
+
+        outer.bind("<Configure>", rewrap_labels, add="+")
+
+        def xyz_entries(parent, variables, width: int):
+            frame = ttk.Frame(parent)
+            for index, (label, variable) in enumerate(zip(("x", "y", "z"), variables)):
+                ttk.Label(frame, text=label, style="Field.TLabel").pack(
+                    side="left", padx=(0 if index == 0 else 12, 5)
+                )
+                ttk.Entry(frame, textvariable=variable, width=width).pack(side="left")
+            return frame
+
+        def sub_form(parent):
+            frame = ttk.Frame(parent)
+            frame.columnconfigure(0, minsize=label_column)
+            frame.columnconfigure(2, weight=1)
+            return frame
 
         ttk.Label(
             outer,
             text="Screening "
             + " and ".join(SCREEN_VARIABLE_LABELS[name] for name in selected),
-            font=("TkDefaultFont", 11, "bold"),
+            style="Title.TLabel",
         ).grid(row=0, column=0, sticky="w")
         names_frame = ttk.Frame(outer)
-        names_frame.grid(row=1, column=0, sticky="ew", pady=(3, 8))
+        names_frame.grid(row=1, column=0, sticky="ew", pady=(8, 12))
+        names_frame.columnconfigure(0, minsize=label_column + 15)
         names_frame.columnconfigure(3, weight=1)
-        ttk.Label(names_frame, text="Atom names").grid(row=0, column=0, sticky="w")
+        ttk.Label(names_frame, text="Atom names", style="Field.TLabel").grid(row=0, column=0, sticky="w")
         atom_names_combo = ttk.Combobox(
             names_frame,
             textvariable=screen_atom_names_var,
@@ -5243,23 +5390,28 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             state="readonly",
             width=24,
         )
-        atom_names_combo.grid(row=0, column=1, sticky="w", padx=6)
+        atom_names_combo.grid(row=0, column=1, sticky="w")
         screening_help_button(names_frame, "atom_names").grid(
-            row=0, column=2, sticky="w"
+            row=0, column=2, sticky="w", padx=(8, 0)
         )
         atom_names_text_var = tk.StringVar(value=atom_names_summary())
-        ttk.Label(
+        atom_names_text = ttk.Label(
             names_frame,
             textvariable=atom_names_text_var,
             wraplength=920,
-        ).grid(row=1, column=0, columnspan=4, sticky="ew", pady=(3, 0))
+            style="Muted.TLabel",
+        )
+        atom_names_text.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 0))
+        wrapped_labels.append((atom_names_text, 40))
 
         ranges_box = ttk.LabelFrame(
-            outer, text="Coarse candidate variable grid", padding=8
+            outer, text="Coarse candidate variable grid"
         )
-        ranges_box.grid(row=2, column=0, sticky="ew", pady=(0, 8))
-        ttk.Label(ranges_box, text="Variable").grid(
-            row=0, column=0, sticky="w", padx=(0, 8)
+        ranges_box.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        ranges_box.columnconfigure(0, minsize=label_column)
+        ranges_box.columnconfigure(7, weight=1)
+        ttk.Label(ranges_box, text="Variable", style="Hint.TLabel").grid(
+            row=0, column=0, sticky="w"
         )
         # Column headers carry no unit because the two pivot shifts are
         # angstroms while the three angles are degrees; each row label says which.
@@ -5268,12 +5420,12 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             (3, "To"),
             (5, "Step"),
         ):
-            ttk.Label(ranges_box, text=label).grid(
-                row=0, column=column, sticky="w", padx=(0, 8)
+            ttk.Label(ranges_box, text=label, style="Hint.TLabel").grid(
+                row=0, column=column, sticky="w"
             )
         for row_index, name in enumerate(selected, start=1):
-            ttk.Label(ranges_box, text=screen_variable_gui_label(name)).grid(
-                row=row_index, column=0, sticky="w", padx=(0, 8), pady=2
+            ttk.Label(ranges_box, text=screen_variable_gui_label(name), style="Field.TLabel").grid(
+                row=row_index, column=0, sticky="w", padx=(0, 12), pady=3
             )
             values = screen_range_vars[name]
             for column, key, help_key in (
@@ -5283,15 +5435,15 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             ):
                 ttk.Entry(
                     ranges_box, textvariable=values[key], width=14
-                ).grid(row=row_index, column=column, sticky="w", padx=(0, 8), pady=2)
+                ).grid(row=row_index, column=column, sticky="w", pady=3)
                 screening_help_button(ranges_box, help_key).grid(
                     row=row_index,
                     column=column + 1,
                     sticky="w",
-                    padx=(0, 10),
-                    pady=2,
+                    padx=(6, 22),
+                    pady=3,
                 )
-        ttk.Label(
+        grid_note = ttk.Label(
             ranges_box,
             text="From, To, and Step use each row's own unit: degrees for phi, beta, and "
             "tau; angstroms for the two pivot shifts. Both endpoints are tested; Step is a "
@@ -5299,26 +5451,32 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             "between steps to 0.001° or 0.001 A. Descending ranges are allowed. Maximum "
             "coarse grid: 250,000 candidates.",
             wraplength=840,
-        ).grid(
+            style="Hint.TLabel",
+        )
+        grid_note.grid(
             row=len(selected) + 1,
             column=0,
-            columnspan=7,
+            columnspan=8,
             sticky="w",
-            pady=(5, 0),
+            pady=(8, 0),
         )
+        wrapped_labels.append((grid_note, 80))
         screen_grid_preview_var = tk.StringVar()
-        ttk.Label(
+        grid_preview = ttk.Label(
             ranges_box,
             textvariable=screen_grid_preview_var,
             wraplength=840,
-            foreground="#335f85",
-        ).grid(
+            foreground=ui.mix(ui.C.ACCENT, "#000000", 0.35),
+            font="AzbSmall",
+        )
+        grid_preview.grid(
             row=len(selected) + 2,
             column=0,
-            columnspan=7,
+            columnspan=8,
             sticky="w",
             pady=(6, 0),
         )
+        wrapped_labels.append((grid_preview, 80))
 
         def refresh_grid_preview(*_args) -> None:
             try:
@@ -5334,11 +5492,13 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                 grid_trace_handles.append((variable, trace_id))
         refresh_grid_preview()
 
-        target_box = ttk.LabelFrame(outer, text="Target", padding=8)
-        target_box.grid(row=3, column=0, sticky="nsew", pady=(0, 8))
-        target_box.columnconfigure(1, weight=1)
+        # Target and Rotation axis rows share one layout: label | input | note | ?
+        target_box = ttk.LabelFrame(outer, text="Target")
+        target_box.grid(row=3, column=0, sticky="nsew", pady=(0, 10))
+        target_box.columnconfigure(0, minsize=label_column)
+        target_box.columnconfigure(2, weight=1)
 
-        ttk.Label(target_box, text="Mode").grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Label(target_box, text="Mode", style="Field.TLabel").grid(row=0, column=0, sticky="w", pady=3)
         mode_combo = ttk.Combobox(
             target_box,
             textvariable=screen_mode_var,
@@ -5346,48 +5506,48 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             state="readonly",
             width=28,
         )
-        mode_combo.grid(row=0, column=1, sticky="w", padx=6, pady=2)
+        mode_combo.grid(row=0, column=1, sticky="w", pady=3)
         screening_help_button(target_box, "mode").grid(
-            row=0, column=2, sticky="w", padx=6, pady=2
+            row=0, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
-        target_label = ttk.Label(target_box, text="Target distance (angstroms)")
-        target_label.grid(row=1, column=0, sticky="w", pady=2)
+        target_label = ttk.Label(target_box, text="Target distance (angstroms)", style="Field.TLabel")
+        target_label.grid(row=1, column=0, sticky="w", pady=3)
         ttk.Entry(target_box, textvariable=screen_target_var, width=18).grid(
-            row=1, column=1, sticky="w", padx=6, pady=2
+            row=1, column=1, sticky="w", pady=3
         )
         screening_help_button(target_box, "target").grid(
-            row=1, column=2, sticky="w", padx=6, pady=2
+            row=1, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
         solution_tolerance_label = ttk.Label(
-            target_box, text="Solution tolerance (angstroms)"
+            target_box, text="Solution tolerance (angstroms)", style="Field.TLabel"
         )
-        solution_tolerance_label.grid(row=2, column=0, sticky="w", pady=2)
+        solution_tolerance_label.grid(row=2, column=0, sticky="w", pady=3)
         ttk.Entry(
             target_box, textvariable=screen_solution_tolerance_var, width=18
-        ).grid(row=2, column=1, sticky="w", padx=6, pady=2)
+        ).grid(row=2, column=1, sticky="w", pady=3)
         screening_help_button(target_box, "solution_tolerance").grid(
-            row=2, column=2, sticky="w", padx=6, pady=2
+            row=2, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
-        ttk.Label(target_box, text="Additional solution files").grid(
-            row=3, column=0, sticky="w", pady=2
+        ttk.Label(target_box, text="Additional solution files", style="Field.TLabel").grid(
+            row=3, column=0, sticky="w", pady=3
         )
         ttk.Checkbutton(
             target_box,
             text="Write all reported solutions",
             variable=screen_write_all_solutions_var,
-        ).grid(row=3, column=1, sticky="w", padx=6, pady=2)
+        ).grid(row=3, column=1, sticky="w", pady=3)
         screening_help_button(target_box, "write_all_solutions").grid(
-            row=3, column=2, sticky="w", padx=6, pady=2
+            row=3, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
-        ttk.Label(target_box, text="Endpoint 1 atom(s)").grid(
-            row=4, column=0, sticky="w", pady=2
+        ttk.Label(target_box, text="Endpoint 1 atom(s)", style="Field.TLabel").grid(
+            row=4, column=0, sticky="w", pady=3
         )
         ttk.Entry(target_box, textvariable=screen_point1_atom_var, width=34).grid(
-            row=4, column=1, sticky="w", padx=6, pady=2
+            row=4, column=1, sticky="w", pady=3
         )
         ttk.Label(
             target_box,
@@ -5395,13 +5555,14 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                 "Comma/semicolon-separated CHAIN:RESIDUE:ATOM.\n"
                 "Multiple atoms use their average XYZ position."
             ),
-        ).grid(row=4, column=2, sticky="w", padx=6, pady=2)
+            style="Hint.TLabel",
+        ).grid(row=4, column=2, sticky="w", padx=(12, 0), pady=3)
         screening_help_button(target_box, "endpoint1_atom").grid(
-            row=4, column=3, sticky="w", padx=6, pady=2
+            row=4, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
-        ttk.Label(target_box, text="Endpoint 2 source").grid(
-            row=5, column=0, sticky="w", pady=2
+        ttk.Label(target_box, text="Endpoint 2 source", style="Field.TLabel").grid(
+            row=5, column=0, sticky="w", pady=3
         )
         point2_source_combo = ttk.Combobox(
             target_box,
@@ -5409,48 +5570,55 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             state="readonly",
             width=28,
         )
-        point2_source_combo.grid(row=5, column=1, sticky="w", padx=6, pady=2)
+        point2_source_combo.grid(row=5, column=1, sticky="w", pady=3)
         screening_help_button(target_box, "endpoint2_source").grid(
-            row=5, column=2, sticky="w", padx=6, pady=2
+            row=5, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
         point2_host = ttk.Frame(target_box)
-        point2_host.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(2, 6))
-        point2_atom_frame = ttk.Frame(point2_host)
-        ttk.Label(point2_atom_frame, text="Endpoint 2 atom(s)").pack(side="left")
+        point2_host.grid(row=6, column=0, columnspan=4, sticky="ew")
+        point2_atom_frame = sub_form(point2_host)
+        ttk.Label(point2_atom_frame, text="Endpoint 2 atom(s)", style="Field.TLabel").grid(
+            row=0, column=0, sticky="w", pady=3
+        )
         ttk.Entry(
             point2_atom_frame, textvariable=screen_point2_atom_var, width=34
-        ).pack(side="left", padx=6)
-        screening_help_button(point2_atom_frame, "endpoint2_atom").pack(side="left")
+        ).grid(row=0, column=1, sticky="w", pady=3)
+        screening_help_button(point2_atom_frame, "endpoint2_atom").grid(
+            row=0, column=3, sticky="e", padx=(8, 0), pady=3
+        )
         ttk.Label(
             point2_atom_frame,
             text="Comma/semicolon-separated atoms; average XYZ position.",
-        ).pack(side="left", padx=6)
+            style="Hint.TLabel",
+        ).grid(row=0, column=2, sticky="w", padx=(12, 0), pady=3)
 
-        point2_xyz_frame = ttk.Frame(point2_host)
-        ttk.Label(point2_xyz_frame, text="Endpoint 2 XYZ").pack(side="left")
-        for label, variable in zip(("x", "y", "z"), screen_point2_xyz_vars):
-            ttk.Label(point2_xyz_frame, text=label).pack(side="left", padx=(6, 0))
-            ttk.Entry(point2_xyz_frame, textvariable=variable, width=12).pack(
-                side="left", padx=(2, 0)
-            )
-        screening_help_button(point2_xyz_frame, "endpoint2_xyz").pack(
-            side="left", padx=(8, 0)
+        point2_xyz_frame = sub_form(point2_host)
+        ttk.Label(point2_xyz_frame, text="Endpoint 2 XYZ", style="Field.TLabel").grid(
+            row=0, column=0, sticky="w", pady=3
+        )
+        xyz_entries(point2_xyz_frame, screen_point2_xyz_vars, 12).grid(
+            row=0, column=1, columnspan=2, sticky="w", pady=3
+        )
+        screening_help_button(point2_xyz_frame, "endpoint2_xyz").grid(
+            row=0, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
-        point2_pivot_frame = ttk.Frame(point2_host)
+        point2_pivot_frame = sub_form(point2_host)
         ttk.Label(
             point2_pivot_frame,
             text="Endpoint 2 is the candidate-dependent phi-corrected pivot P position.",
-        ).pack(side="left")
-        screening_help_button(point2_pivot_frame, "endpoint2_pivot").pack(
-            side="left", padx=(8, 0)
+            style="Muted.TLabel",
+        ).grid(row=0, column=1, columnspan=2, sticky="w", pady=6)
+        screening_help_button(point2_pivot_frame, "endpoint2_pivot").grid(
+            row=0, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
-        axis_box = ttk.LabelFrame(target_box, text="Rotation axis", padding=8)
-        axis_box.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(5, 0))
-        axis_box.columnconfigure(1, weight=1)
-        ttk.Label(axis_box, text="Axis source").grid(row=0, column=0, sticky="w", pady=2)
+        axis_box = ttk.LabelFrame(outer, text="Rotation axis")
+        axis_box.grid(row=4, column=0, sticky="ew", pady=(0, 10))
+        axis_box.columnconfigure(0, minsize=label_column)
+        axis_box.columnconfigure(2, weight=1)
+        ttk.Label(axis_box, text="Axis source", style="Field.TLabel").grid(row=0, column=0, sticky="w", pady=3)
         axis_source_combo = ttk.Combobox(
             axis_box,
             textvariable=screen_axis_source_var,
@@ -5458,42 +5626,42 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             state="readonly",
             width=28,
         )
-        axis_source_combo.grid(row=0, column=1, sticky="w", padx=6, pady=2)
+        axis_source_combo.grid(row=0, column=1, sticky="w", pady=3)
         ttk.Label(
             axis_box,
             text="Local axis range(s) is defined independently below.",
-        ).grid(row=0, column=2, sticky="w", padx=6, pady=2)
+            style="Hint.TLabel",
+        ).grid(row=0, column=2, sticky="w", padx=(12, 0), pady=3)
         screening_help_button(axis_box, "axis_source").grid(
-            row=0, column=3, sticky="w", padx=6, pady=2
+            row=0, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
-        geometric_axis_frame = ttk.Frame(axis_box)
-        geometric_axis_frame.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(3, 0))
-        geometric_axis_frame.columnconfigure(1, weight=1)
+        geometric_axis_frame = sub_form(axis_box)
+        geometric_axis_frame.grid(row=1, column=0, columnspan=4, sticky="ew")
 
-        local_axis_range_frame = ttk.Frame(axis_box)
+        local_axis_range_frame = sub_form(axis_box)
         local_axis_range_frame.grid(
-            row=1, column=0, columnspan=4, sticky="ew", pady=(3, 0)
+            row=1, column=0, columnspan=4, sticky="ew"
         )
-        local_axis_range_frame.columnconfigure(1, weight=1)
-        ttk.Label(local_axis_range_frame, text="Local axis range(s)").grid(
-            row=0, column=0, sticky="w", pady=2
+        ttk.Label(local_axis_range_frame, text="Local axis range(s)", style="Field.TLabel").grid(
+            row=0, column=0, sticky="w", pady=3
         )
         ttk.Entry(
             local_axis_range_frame,
             textvariable=screen_local_axis_ranges_var,
             width=62,
-        ).grid(row=0, column=1, sticky="ew", padx=6, pady=2)
+        ).grid(row=0, column=1, columnspan=2, sticky="ew", pady=3)
         screening_help_button(local_axis_range_frame, "local_axis_ranges").grid(
-            row=0, column=2, sticky="w", padx=6, pady=2
+            row=0, column=3, sticky="e", padx=(8, 0), pady=3
         )
         ttk.Label(
             local_axis_range_frame,
             text="Example: A1-A35,B60-B26; A36-A60,B25-B1",
-        ).grid(row=1, column=1, sticky="w", padx=6, pady=(0, 2))
+            style="Hint.TLabel",
+        ).grid(row=1, column=1, columnspan=2, sticky="w", pady=(0, 3))
 
-        ttk.Label(geometric_axis_frame, text="Axis point source").grid(
-            row=0, column=0, sticky="w", pady=2
+        ttk.Label(geometric_axis_frame, text="Axis point source", style="Field.TLabel").grid(
+            row=0, column=0, sticky="w", pady=3
         )
         axis_point_source_combo = ttk.Combobox(
             geometric_axis_frame,
@@ -5502,34 +5670,36 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             state="readonly",
             width=22,
         )
-        axis_point_source_combo.grid(row=0, column=1, sticky="w", padx=6, pady=2)
+        axis_point_source_combo.grid(row=0, column=1, sticky="w", pady=3)
         screening_help_button(geometric_axis_frame, "axis_point_source").grid(
-            row=0, column=2, sticky="w", padx=6, pady=2
+            row=0, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
         axis_point_host = ttk.Frame(geometric_axis_frame)
-        axis_point_host.grid(row=1, column=0, columnspan=4, sticky="ew", pady=2)
-        axis_point_xyz_frame = ttk.Frame(axis_point_host)
-        ttk.Label(axis_point_xyz_frame, text="Axis point XYZ").pack(side="left")
-        for label, variable in zip(("x", "y", "z"), screen_axis_point_xyz_vars):
-            ttk.Label(axis_point_xyz_frame, text=label).pack(side="left", padx=(6, 0))
-            ttk.Entry(axis_point_xyz_frame, textvariable=variable, width=12).pack(
-                side="left", padx=(2, 0)
-            )
-        screening_help_button(axis_point_xyz_frame, "axis_point_xyz").pack(
-            side="left", padx=(8, 0)
+        axis_point_host.grid(row=1, column=0, columnspan=4, sticky="ew")
+        axis_point_xyz_frame = sub_form(axis_point_host)
+        ttk.Label(axis_point_xyz_frame, text="Axis point XYZ", style="Field.TLabel").grid(
+            row=0, column=0, sticky="w", pady=3
         )
-        axis_point_atom_frame = ttk.Frame(axis_point_host)
-        ttk.Label(axis_point_atom_frame, text="Axis point atom").pack(side="left")
+        xyz_entries(axis_point_xyz_frame, screen_axis_point_xyz_vars, 12).grid(
+            row=0, column=1, columnspan=2, sticky="w", pady=3
+        )
+        screening_help_button(axis_point_xyz_frame, "axis_point_xyz").grid(
+            row=0, column=3, sticky="e", padx=(8, 0), pady=3
+        )
+        axis_point_atom_frame = sub_form(axis_point_host)
+        ttk.Label(axis_point_atom_frame, text="Axis point atom", style="Field.TLabel").grid(
+            row=0, column=0, sticky="w", pady=3
+        )
         ttk.Entry(
             axis_point_atom_frame, textvariable=screen_axis_point_atom_var, width=34
-        ).pack(side="left", padx=6)
-        screening_help_button(axis_point_atom_frame, "axis_point_atom").pack(
-            side="left"
+        ).grid(row=0, column=1, sticky="w", pady=3)
+        screening_help_button(axis_point_atom_frame, "axis_point_atom").grid(
+            row=0, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
-        ttk.Label(geometric_axis_frame, text="Axis vector source").grid(
-            row=2, column=0, sticky="w", pady=2
+        ttk.Label(geometric_axis_frame, text="Axis vector source", style="Field.TLabel").grid(
+            row=2, column=0, sticky="w", pady=3
         )
         axis_vector_source_combo = ttk.Combobox(
             geometric_axis_frame,
@@ -5543,73 +5713,66 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             state="readonly",
             width=28,
         )
-        axis_vector_source_combo.grid(row=2, column=1, sticky="w", padx=6, pady=2)
+        axis_vector_source_combo.grid(row=2, column=1, sticky="w", pady=3)
         screening_help_button(geometric_axis_frame, "axis_vector_source").grid(
-            row=2, column=2, sticky="w", padx=6, pady=2
+            row=2, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
         axis_vector_host = ttk.Frame(geometric_axis_frame)
-        axis_vector_host.grid(row=3, column=0, columnspan=4, sticky="ew", pady=2)
-        direct_vector_frame = ttk.Frame(axis_vector_host)
-        ttk.Label(direct_vector_frame, text="Axis vector").pack(side="left")
-        for label, variable in zip(("x", "y", "z"), screen_axis_vector_vars):
-            ttk.Label(direct_vector_frame, text=label).pack(side="left", padx=(6, 0))
-            ttk.Entry(direct_vector_frame, textvariable=variable, width=12).pack(
-                side="left", padx=(2, 0)
-            )
-        screening_help_button(direct_vector_frame, "direct_vector").pack(
-            side="left", padx=(8, 0)
+        axis_vector_host.grid(row=3, column=0, columnspan=4, sticky="ew")
+        direct_vector_frame = sub_form(axis_vector_host)
+        ttk.Label(direct_vector_frame, text="Axis vector", style="Field.TLabel").grid(
+            row=0, column=0, sticky="w", pady=3
+        )
+        xyz_entries(direct_vector_frame, screen_axis_vector_vars, 12).grid(
+            row=0, column=1, columnspan=2, sticky="w", pady=3
+        )
+        screening_help_button(direct_vector_frame, "direct_vector").grid(
+            row=0, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
-        two_xyz_frame = ttk.Frame(axis_vector_host)
+        # The two-point, two-atom and two-vector inputs take one row each.
+        two_xyz_frame = sub_form(axis_vector_host)
         for point_index in range(2):
-            ttk.Label(two_xyz_frame, text=f"Point {point_index + 1}").pack(
-                side="left", padx=(0 if point_index == 0 else 12, 0)
+            ttk.Label(two_xyz_frame, text=f"Point {point_index + 1}", style="Field.TLabel").grid(
+                row=point_index, column=0, sticky="w", pady=3
             )
             offset = point_index * 3
-            for coordinate_index, label in enumerate(("x", "y", "z")):
-                ttk.Label(two_xyz_frame, text=label).pack(side="left", padx=(5, 0))
-                ttk.Entry(
-                    two_xyz_frame,
-                    textvariable=screen_axis_two_xyz_vars[offset + coordinate_index],
-                    width=10,
-                ).pack(side="left", padx=(2, 0))
-        screening_help_button(two_xyz_frame, "two_xyz_points").pack(
-            side="left", padx=(8, 0)
+            xyz_entries(
+                two_xyz_frame, screen_axis_two_xyz_vars[offset:offset + 3], 10
+            ).grid(row=point_index, column=1, columnspan=2, sticky="w", pady=3)
+        screening_help_button(two_xyz_frame, "two_xyz_points").grid(
+            row=0, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
-        two_atoms_frame = ttk.Frame(axis_vector_host)
+        two_atoms_frame = sub_form(axis_vector_host)
         for atom_index in range(2):
-            ttk.Label(two_atoms_frame, text=f"Atom {atom_index + 1}").pack(
-                side="left", padx=(0 if atom_index == 0 else 12, 0)
+            ttk.Label(two_atoms_frame, text=f"Atom {atom_index + 1}", style="Field.TLabel").grid(
+                row=atom_index, column=0, sticky="w", pady=3
             )
             ttk.Entry(
                 two_atoms_frame,
                 textvariable=screen_axis_two_atom_vars[atom_index],
                 width=28,
-            ).pack(side="left", padx=5)
-        screening_help_button(two_atoms_frame, "two_overlay_atoms").pack(
-            side="left", padx=(8, 0)
+            ).grid(row=atom_index, column=1, sticky="w", pady=3)
+        screening_help_button(two_atoms_frame, "two_overlay_atoms").grid(
+            row=0, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
-        normal_vectors_frame = ttk.Frame(axis_vector_host)
+        normal_vectors_frame = sub_form(axis_vector_host)
         for vector_index in range(2):
-            ttk.Label(normal_vectors_frame, text=f"Vector {vector_index + 1}").pack(
-                side="left", padx=(0 if vector_index == 0 else 12, 0)
+            ttk.Label(normal_vectors_frame, text=f"Vector {vector_index + 1}", style="Field.TLabel").grid(
+                row=vector_index, column=0, sticky="w", pady=3
             )
             offset = vector_index * 3
-            for coordinate_index, label in enumerate(("x", "y", "z")):
-                ttk.Label(normal_vectors_frame, text=label).pack(side="left", padx=(5, 0))
-                ttk.Entry(
-                    normal_vectors_frame,
-                    textvariable=screen_axis_normal_vars[offset + coordinate_index],
-                    width=9,
-                ).pack(side="left", padx=(2, 0))
-        ttk.Label(normal_vectors_frame, text="axis = vector 1 × vector 2").pack(
-            side="left", padx=(12, 0)
+            xyz_entries(
+                normal_vectors_frame, screen_axis_normal_vars[offset:offset + 3], 9
+            ).grid(row=vector_index, column=1, sticky="w", pady=3)
+        ttk.Label(normal_vectors_frame, text="axis = vector 1 × vector 2", style="Hint.TLabel").grid(
+            row=1, column=2, sticky="w", padx=(12, 0), pady=3
         )
-        screening_help_button(normal_vectors_frame, "normal_vectors").pack(
-            side="left", padx=(8, 0)
+        screening_help_button(normal_vectors_frame, "normal_vectors").grid(
+            row=0, column=3, sticky="e", padx=(8, 0), pady=3
         )
 
         screening_note_label = ttk.Label(
@@ -5621,11 +5784,10 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
                 "and automatically writes the best -ori PDB."
             ),
             wraplength=920,
+            style="Muted.TLabel",
         )
-        screening_note_label.grid(row=4, column=0, sticky="ew", pady=(0, 8))
-
-        button_row = ttk.Frame(outer)
-        button_row.grid(row=5, column=0, sticky="e")
+        screening_note_label.grid(row=5, column=0, sticky="ew", pady=(0, 4))
+        wrapped_labels.append((screening_note_label, 40))
 
         def close_dialog(restore_snapshot: bool = False) -> None:
             for variable, trace_id in grid_trace_handles:
@@ -5666,14 +5828,10 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             )
             close_dialog(restore_snapshot=False)
 
-        ttk.Button(button_row, text="Save settings", command=save_settings).pack(
-            side="left", padx=(0, 6)
+        dialog_footer.add_button(
+            "Cancel", lambda: close_dialog(restore_snapshot=True)
         )
-        ttk.Button(
-            button_row,
-            text="Cancel",
-            command=lambda: close_dialog(restore_snapshot=True),
-        ).pack(side="left")
+        dialog_footer.add_button("Save settings", save_settings, primary=True)
 
         point2_frames = {
             "Atom": point2_atom_frame,
@@ -5765,6 +5923,10 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
         )
         refresh_dialog_fields()
         mode_combo.focus_set()
+        # Window background and light title bar, set after the first layout
+        # pass above: macOS warns when the appearance of a window that has not
+        # been laid out yet is changed.
+        ui.style_window(dialog)
 
     screen_block_state = {"reason": screening_block_reason()}
 
@@ -6086,8 +6248,8 @@ def launch_gui(defaults: Optional[Dict[str, str]] = None) -> int:
             parent=root,
         )
 
-    ttk.Button(button_frame, text="Run", command=run_from_gui).grid(row=0, column=0, padx=(0, 6))
-    ttk.Button(button_frame, text="Close", command=root.destroy).grid(row=0, column=1)
+    footer.add_button("Close", root.destroy)
+    footer.add_button("Run", run_from_gui, primary=True)
 
     input_entry.focus_set()
     root.mainloop()

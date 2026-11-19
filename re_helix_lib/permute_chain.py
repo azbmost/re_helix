@@ -598,19 +598,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def run_gui(initial_path: Optional[str] = None) -> int:
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox, scrolledtext, ttk
+        from tkinter import filedialog, messagebox, ttk
     except Exception as exc:
         print(f"Error: GUI mode requires tkinter ({exc}).", file=sys.stderr)
         return 1
+    try:
+        from re_helix_lib import azbmost_ui as ui
+    except ImportError:  # pragma: no cover - direct script execution fallback
+        import azbmost_ui as ui
 
     root = tk.Tk()
     root.title(f"{TOOL_NAME} V{VERSION}")
     apply_optional_icon(root, __file__)
-    root.geometry("780x500")
+    ui.tool_window(root, TOOL_NAME, tool="permute_chain", version=f"V{VERSION}")
+    root.geometry("820x720")
 
     style = ttk.Style(root)
-    style.configure("ToolTitle.TLabel", font=("TkDefaultFont", 12, "bold"))
-    style.configure("Tool.TLabelframe.Label", font=("TkDefaultFont", 10, "bold"))
 
     signed_shift_help = (
         "+n: POSITIVE SHIFT\n\n"
@@ -643,17 +646,8 @@ def run_gui(initial_path: Optional[str] = None) -> int:
     )
 
     def make_help_button(parent, title: str, message: str):
-        return tk.Button(
+        return ui.HelpButton(
             parent,
-            text="?",
-            width=2,
-            padx=0,
-            pady=0,
-            bg="#d9ecff",
-            activebackground="#c4e0ff",
-            highlightbackground="#d9ecff",
-            relief="raised",
-            bd=1,
             command=lambda: messagebox.showinfo(title, message, parent=root),
         )
 
@@ -666,17 +660,27 @@ def run_gui(initial_path: Optional[str] = None) -> int:
     if input_var.get().strip():
         output_var.set(str(default_output_path(Path(input_var.get().strip()))))
 
-    outer = ttk.Frame(root, padding=10)
+    # The status line and the run buttons share the bottom bar.
+    footer = ui.Footer(root, textvariable=status_var)
+    footer.status.configure(wraplength=520, justify="left")
+    footer.status.bind(
+        "<Configure>",
+        lambda event: footer.status.configure(wraplength=max(240, event.width)),
+        add="+",
+    )
+    footer.pack(side="bottom", fill="x")
+
+    outer = ttk.Frame(root, padding=(18, 12, 18, 12))
     outer.pack(fill="both", expand=True)
-    outer.columnconfigure(1, weight=1)
+    outer.columnconfigure(0, weight=1)
     outer.rowconfigure(5, weight=1)
 
-    ttk.Label(outer, text=f"{TOOL_NAME} V{VERSION}", style="ToolTitle.TLabel").grid(
-        row=0, column=0, columnspan=3, sticky="w", pady=(0, 8)
-    )
+    files = ui.Card(outer, "Input and output")
+    files.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+    files.columnconfigure(1, weight=1)
 
-    ttk.Label(outer, text="Input PDB").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
-    ttk.Entry(outer, textvariable=input_var, width=70).grid(row=1, column=1, sticky="ew", pady=4)
+    ttk.Label(files, text="Input PDB", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=3)
+    ttk.Entry(files, textvariable=input_var, width=70).grid(row=1, column=1, sticky="ew", pady=3)
 
     def browse_input() -> None:
         path = filedialog.askopenfilename(
@@ -687,12 +691,12 @@ def run_gui(initial_path: Optional[str] = None) -> int:
             input_var.set(path)
             output_var.set(str(default_output_path(Path(path))))
 
-    ttk.Button(outer, text="Browse...", command=browse_input).grid(
-        row=1, column=2, sticky="ew", padx=(6, 0), pady=4
+    ttk.Button(files, text="Browse...", command=browse_input).grid(
+        row=1, column=2, sticky="ew", padx=(8, 0), pady=3
     )
 
-    ttk.Label(outer, text="Output PDB").grid(row=2, column=0, sticky="e", padx=(0, 6), pady=4)
-    ttk.Entry(outer, textvariable=output_var, width=70).grid(row=2, column=1, sticky="ew", pady=4)
+    ttk.Label(files, text="Output PDB", style="Field.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=3)
+    ttk.Entry(files, textvariable=output_var, width=70).grid(row=2, column=1, sticky="ew", pady=3)
 
     def browse_output() -> None:
         path = filedialog.asksaveasfilename(
@@ -703,17 +707,17 @@ def run_gui(initial_path: Optional[str] = None) -> int:
         if path:
             output_var.set(path)
 
-    ttk.Button(outer, text="Save as...", command=browse_output).grid(
-        row=2, column=2, sticky="ew", padx=(6, 0), pady=4
+    ttk.Button(files, text="Save as...", command=browse_output).grid(
+        row=2, column=2, sticky="ew", padx=(8, 0), pady=3
     )
 
-    settings = ttk.LabelFrame(outer, text="Permutation", padding=8, style="Tool.TLabelframe")
-    settings.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 4))
+    settings = ui.Card(outer, "Permutation")
+    settings.grid(row=3, column=0, sticky="ew", pady=(0, 10))
     settings.columnconfigure(0, weight=1)
 
     site_header = ttk.Frame(settings)
-    site_header.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-    ttk.Label(site_header, text="Number of permutation sites").pack(side="left")
+    site_header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+    ttk.Label(site_header, text="Number of permutation sites", style="Field.TLabel").pack(side="left")
     site_count_spinbox = ttk.Spinbox(
         site_header,
         from_=1,
@@ -721,10 +725,10 @@ def run_gui(initial_path: Optional[str] = None) -> int:
         width=6,
         textvariable=site_count_var,
     )
-    site_count_spinbox.pack(side="left", padx=(6, 12))
-    ttk.Label(site_header, text="Signed shift (+n / -n)").pack(side="left")
+    site_count_spinbox.pack(side="left", padx=(10, 24))
+    ttk.Label(site_header, text="Signed shift (+n / -n)", style="Field.TLabel").pack(side="left")
     make_help_button(site_header, "Signed shift (+n / -n)", signed_shift_help).pack(
-        side="left", padx=(4, 0)
+        side="left", padx=(8, 0)
     )
 
     site_area = ttk.Frame(settings)
@@ -733,14 +737,15 @@ def run_gui(initial_path: Optional[str] = None) -> int:
     site_canvas = tk.Canvas(
         site_area,
         height=132,
-        highlightthickness=0,
+        highlightthickness=1,
+        highlightbackground=ui.C.BORDER,
         background=style.lookup("TFrame", "background"),
     )
     site_scrollbar = ttk.Scrollbar(site_area, orient="vertical", command=site_canvas.yview)
     site_canvas.configure(yscrollcommand=site_scrollbar.set)
     site_canvas.grid(row=0, column=0, sticky="ew")
-    site_scrollbar.grid(row=0, column=1, sticky="ns")
-    site_rows_frame = ttk.Frame(site_canvas)
+    site_scrollbar.grid(row=0, column=1, sticky="ns", padx=(2, 0))
+    site_rows_frame = ttk.Frame(site_canvas, padding=(10, 6, 10, 6))
     site_window = site_canvas.create_window((0, 0), window=site_rows_frame, anchor="nw")
 
     def refresh_site_scrollregion(_event=None) -> None:
@@ -766,12 +771,12 @@ def run_gui(initial_path: Optional[str] = None) -> int:
         ]
         for child in site_rows_frame.winfo_children():
             child.destroy()
-        ttk.Label(site_rows_frame, text="#", width=4).grid(row=0, column=0, sticky="w")
-        ttk.Label(site_rows_frame, text="Chain ID", width=12).grid(
+        ttk.Label(site_rows_frame, text="#", width=4, style="Hint.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(site_rows_frame, text="Chain ID", width=12, style="Hint.TLabel").grid(
             row=0, column=1, sticky="w"
         )
-        ttk.Label(site_rows_frame, text="Signed shift").grid(
-            row=0, column=2, sticky="w"
+        ttk.Label(site_rows_frame, text="Signed shift", style="Hint.TLabel").grid(
+            row=0, column=2, sticky="w", padx=(12, 0)
         )
         site_vars = []
         for site_index in range(target_count):
@@ -782,14 +787,14 @@ def run_gui(initial_path: Optional[str] = None) -> int:
             )
             chain_var = tk.StringVar(value=old_chain)
             shift_var = tk.StringVar(value=old_shift)
-            ttk.Label(site_rows_frame, text=str(site_index + 1), width=4).grid(
+            ttk.Label(site_rows_frame, text=str(site_index + 1), width=4, style="Field.TLabel").grid(
                 row=site_index + 1, column=0, sticky="w", pady=2
             )
             ttk.Entry(site_rows_frame, textvariable=chain_var, width=10).grid(
                 row=site_index + 1, column=1, sticky="w", pady=2
             )
             ttk.Entry(site_rows_frame, textvariable=shift_var, width=14).grid(
-                row=site_index + 1, column=2, sticky="w", pady=2
+                row=site_index + 1, column=2, sticky="w", padx=(12, 0), pady=2
             )
             site_vars.append((chain_var, shift_var))
         root.after_idle(refresh_site_scrollregion)
@@ -798,14 +803,9 @@ def run_gui(initial_path: Optional[str] = None) -> int:
     site_count_spinbox.configure(command=render_site_rows)
     render_site_rows()
 
-    ttk.Label(outer, textvariable=status_var, wraplength=740).grid(
-        row=4, column=0, columnspan=3, sticky="ew", pady=4
-    )
-    log_widget = scrolledtext.ScrolledText(outer, wrap="word", height=14)
-    log_widget.grid(row=5, column=0, columnspan=3, sticky="nsew", pady=(4, 8))
-
-    buttons = ttk.Frame(outer)
-    buttons.grid(row=6, column=0, columnspan=3, sticky="ew")
+    log_view = ui.LogView(outer, wrap="word", height=10)
+    log_view.grid(row=5, column=0, sticky="nsew")
+    log_widget = log_view.text
 
     def run_from_gui() -> None:
         try:
@@ -853,8 +853,8 @@ def run_gui(initial_path: Optional[str] = None) -> int:
             print(f"Error: {exc}", flush=True)
             messagebox.showerror(TOOL_NAME, str(exc), parent=root)
 
-    ttk.Button(buttons, text="Run", command=run_from_gui).pack(side="left")
-    ttk.Button(buttons, text="Close", command=root.destroy).pack(side="left", padx=(6, 0))
+    footer.add_button("Close", root.destroy)
+    footer.add_button("Run", run_from_gui, primary=True)
 
     root.mainloop()
     return 0

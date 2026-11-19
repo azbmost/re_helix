@@ -870,33 +870,25 @@ HELP_TEXTS = {
 def run_gui(initial_path: Optional[str] = None) -> int:
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox, scrolledtext
+        from tkinter import filedialog, messagebox
         from tkinter import ttk
     except Exception as exc:
         print("Error: GUI mode requires tkinter (%s)." % exc, file=sys.stderr)
         return 1
+    try:
+        from re_helix_lib import azbmost_ui as ui
+    except ImportError:  # pragma: no cover - direct script execution fallback
+        import azbmost_ui as ui
 
     root = tk.Tk()
     root.title(f"{TOOL_NAME} V{VERSION}")
     apply_optional_icon(root, __file__)
-    root.geometry("940x760")
-
-    style = ttk.Style(root)
-    style.configure("ToolTitle.TLabel", font=("TkDefaultFont", 12, "bold"))
-    style.configure("Tool.TLabelframe.Label", font=("TkDefaultFont", 10, "bold"))
+    ui.tool_window(root, TOOL_NAME, tool="check_clashes", version=f"V{VERSION}")
+    root.geometry("980x880")
 
     def make_help_button(parent, title: str, message: str):
-        return tk.Button(
+        return ui.HelpButton(
             parent,
-            text="?",
-            width=2,
-            padx=0,
-            pady=0,
-            bg="#d9ecff",
-            activebackground="#c4e0ff",
-            highlightbackground="#d9ecff",
-            relief="raised",
-            bd=1,
             command=lambda: messagebox.showinfo(title, message, parent=root),
         )
 
@@ -914,16 +906,27 @@ def run_gui(initial_path: Optional[str] = None) -> int:
     output_var = tk.StringVar()
     status_var = tk.StringVar(value="Choose a PDB file and press Run.")
 
-    outer = ttk.Frame(root, padding=10)
-    outer.pack(fill="both", expand=True)
-    outer.columnconfigure(1, weight=1)
-
-    ttk.Label(outer, text=f"{TOOL_NAME} V{VERSION}", style="ToolTitle.TLabel").grid(
-        row=0, column=0, columnspan=4, sticky="w", pady=(0, 8)
+    # The status line and the run buttons share the bottom bar.
+    footer = ui.Footer(root, textvariable=status_var)
+    footer.status.configure(wraplength=560, justify="left")
+    footer.status.bind(
+        "<Configure>",
+        lambda event: footer.status.configure(wraplength=max(240, event.width)),
+        add="+",
     )
+    footer.pack(side="bottom", fill="x")
 
-    ttk.Label(outer, text="Input PDB").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
-    ttk.Entry(outer, textvariable=input_var, width=70).grid(row=1, column=1, sticky="ew", pady=4)
+    outer = ttk.Frame(root, padding=(18, 12, 18, 12))
+    outer.pack(fill="both", expand=True)
+    outer.columnconfigure(0, weight=1)
+
+    # Both paths sit together in one card, like the other RE_Helix tools.
+    files = ui.Card(outer, "Input and output")
+    files.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+    files.columnconfigure(1, weight=1)
+
+    ttk.Label(files, text="Input PDB", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=3)
+    ttk.Entry(files, textvariable=input_var, width=70).grid(row=1, column=1, sticky="ew", pady=3)
 
     def browse_input() -> None:
         path = filedialog.askopenfilename(
@@ -933,25 +936,25 @@ def run_gui(initial_path: Optional[str] = None) -> int:
         if path:
             input_var.set(path)
 
-    ttk.Button(outer, text="Browse...", command=browse_input).grid(
-        row=1, column=2, sticky="ew", padx=(6, 0), pady=4
+    ttk.Button(files, text="Browse...", command=browse_input).grid(
+        row=1, column=2, sticky="ew", padx=(8, 0), pady=3
     )
-    make_help_button(outer, "Input PDB", HELP_TEXTS["input"]).grid(row=1, column=3, padx=(6, 0))
+    make_help_button(files, "Input PDB", HELP_TEXTS["input"]).grid(row=1, column=3, padx=(8, 0))
 
-    options_box = ttk.LabelFrame(outer, text="Clash criteria", padding=8, style="Tool.TLabelframe")
-    options_box.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(8, 4))
+    options_box = ui.Card(outer, "Clash criteria")
+    options_box.grid(row=2, column=0, sticky="ew", pady=(0, 10))
     options_box.columnconfigure(1, weight=1)
     options_box.columnconfigure(4, weight=1)
 
     def add_option_row(row: int, column: int, label: str, variable, help_key: str, width: int = 16):
-        ttk.Label(options_box, text=label).grid(
-            row=row, column=column, sticky="e", padx=(0, 6), pady=4
+        ttk.Label(options_box, text=label, style="Field.TLabel").grid(
+            row=row, column=column, sticky="w", padx=(0 if column == 0 else 28, 12), pady=3
         )
         ttk.Entry(options_box, textvariable=variable, width=width).grid(
-            row=row, column=column + 1, sticky="w", pady=4
+            row=row, column=column + 1, sticky="ew", pady=3
         )
         make_help_button(options_box, label, HELP_TEXTS[help_key]).grid(
-            row=row, column=column + 2, padx=(6, 12)
+            row=row, column=column + 2, padx=(8, 0)
         )
 
     add_option_row(0, 0, "Cutoff (A)", cutoff_var, "cutoff")
@@ -968,12 +971,10 @@ def run_gui(initial_path: Optional[str] = None) -> int:
         text="Exclude residue pairs joined by a LINK record",
         variable=link_var,
     ).pack(side="left")
-    make_help_button(link_row, "LINK exclusion", HELP_TEXTS["link"]).pack(side="left", padx=(6, 0))
+    make_help_button(link_row, "LINK exclusion", HELP_TEXTS["link"]).pack(side="left", padx=(8, 0))
 
-    select_box = ttk.LabelFrame(
-        outer, text="Chimera / ChimeraX select commands", padding=8, style="Tool.TLabelframe"
-    )
-    select_box.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(4, 4))
+    select_box = ui.Card(outer, "Chimera / ChimeraX select commands")
+    select_box.grid(row=3, column=0, sticky="ew", pady=(0, 10))
 
     select_row = ttk.Frame(select_box)
     select_row.pack(fill="x")
@@ -983,21 +984,21 @@ def run_gui(initial_path: Optional[str] = None) -> int:
         variable=select_var,
     ).pack(side="left")
     make_help_button(select_row, "Select commands", HELP_TEXTS["select"]).pack(
-        side="left", padx=(6, 16)
+        side="left", padx=(8, 28)
     )
-    ttk.Label(select_row, text="Chimera model #").pack(side="left")
-    ttk.Entry(select_row, textvariable=chimera_model_var, width=5).pack(side="left", padx=(4, 0))
+    ttk.Label(select_row, text="Chimera model #", style="Field.TLabel").pack(side="left")
+    ttk.Entry(select_row, textvariable=chimera_model_var, width=5).pack(side="left", padx=(8, 0))
     make_help_button(select_row, "Chimera model number", HELP_TEXTS["chimera_model"]).pack(
-        side="left", padx=(4, 16)
+        side="left", padx=(8, 28)
     )
-    ttk.Label(select_row, text="ChimeraX model #").pack(side="left")
-    ttk.Entry(select_row, textvariable=chimerax_model_var, width=5).pack(side="left", padx=(4, 0))
+    ttk.Label(select_row, text="ChimeraX model #", style="Field.TLabel").pack(side="left")
+    ttk.Entry(select_row, textvariable=chimerax_model_var, width=5).pack(side="left", padx=(8, 0))
     make_help_button(select_row, "ChimeraX model number", HELP_TEXTS["chimerax_model"]).pack(
-        side="left", padx=(4, 0)
+        side="left", padx=(8, 0)
     )
 
-    ttk.Label(outer, text="Report file").grid(row=4, column=0, sticky="e", padx=(0, 6), pady=4)
-    ttk.Entry(outer, textvariable=output_var, width=70).grid(row=4, column=1, sticky="ew", pady=4)
+    ttk.Label(files, text="Report file", style="Field.TLabel").grid(row=4, column=0, sticky="w", padx=(0, 12), pady=3)
+    ttk.Entry(files, textvariable=output_var, width=70).grid(row=4, column=1, sticky="ew", pady=3)
 
     def browse_output() -> None:
         path = filedialog.asksaveasfilename(
@@ -1008,26 +1009,31 @@ def run_gui(initial_path: Optional[str] = None) -> int:
         if path:
             output_var.set(path)
 
-    ttk.Button(outer, text="Save as...", command=browse_output).grid(
-        row=4, column=2, sticky="ew", padx=(6, 0), pady=4
+    ttk.Button(files, text="Save as...", command=browse_output).grid(
+        row=4, column=2, sticky="ew", padx=(8, 0), pady=3
     )
-    make_help_button(outer, "Report file", HELP_TEXTS["output"]).grid(row=4, column=3, padx=(6, 0))
+    make_help_button(files, "Report file", HELP_TEXTS["output"]).grid(row=4, column=3, padx=(8, 0))
 
-    results_box = ttk.LabelFrame(outer, text="Report", padding=8, style="Tool.TLabelframe")
-    results_box.grid(row=5, column=0, columnspan=4, sticky="nsew", pady=(8, 4))
+    results_box = ui.Card(outer, "Report")
+    results_box.grid(row=5, column=0, sticky="nsew")
     results_box.columnconfigure(0, weight=1)
     results_box.rowconfigure(0, weight=1)
     outer.rowconfigure(5, weight=1)
-    results_text = scrolledtext.ScrolledText(results_box, height=16, wrap="none")
-    results_text.grid(row=0, column=0, sticky="nsew")
+    results_view = ui.LogView(results_box, wrap="none", height=16, horizontal=True)
+    results_view.grid(row=0, column=0, sticky="nsew")
+    results_text = results_view.text
+    # Hint on the left, the two copy buttons on the right.
+    results_bar = ttk.Frame(results_box)
+    results_bar.grid(row=1, column=0, sticky="ew", pady=(8, 0))
     ttk.Label(
-        results_box,
+        results_bar,
         text="Double-click any select command to highlight the whole command and copy it.",
-    ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        style="Hint.TLabel",
+    ).pack(side="left")
 
     # Select commands are tagged so a double-click can take the whole command
     # instead of the single word Tk would pick out of the punctuation.
-    results_text.tag_configure("select_command", background="#e8f2ff")
+    results_text.tag_configure("select_command", background=ui.C.ACCENT_SOFT)
 
     def tag_select_commands() -> None:
         results_text.tag_remove("select_command", "1.0", tk.END)
@@ -1075,12 +1081,6 @@ def run_gui(initial_path: Optional[str] = None) -> int:
 
     results_text.tag_bind("select_command", "<Double-Button-1>", on_command_double_click)
 
-    ttk.Label(outer, textvariable=status_var, wraplength=840).grid(
-        row=6, column=0, columnspan=4, sticky="ew", pady=4
-    )
-
-    buttons = ttk.Frame(outer)
-    buttons.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(8, 0))
 
     # Filled in by each run so the copy buttons always hold the latest commands.
     last_commands: Dict[str, str] = {"chimera": "", "chimerax": ""}
@@ -1210,22 +1210,35 @@ def run_gui(initial_path: Optional[str] = None) -> int:
             status_var.set("Error: %s" % exc)
             messagebox.showerror(TOOL_NAME, str(exc), parent=root)
 
-    ttk.Button(buttons, text="Run", command=run_from_gui).pack(side="left")
-    ttk.Button(buttons, text="Close", command=root.destroy).pack(side="left", padx=(6, 0))
+    # Line the inputs of the first two cards up in one column.
+    root.update_idletasks()
+    label_width = 12 + max(
+        widget.winfo_reqwidth()
+        for card in (files, options_box)
+        for widget in card.grid_slaves(column=0)
+        if widget.winfo_class() == "TLabel"
+    )
+    for card in (files, options_box):
+        card.columnconfigure(0, minsize=label_width)
+
+    footer.add_button("Close", root.destroy)
+    footer.add_button("Run", run_from_gui, primary=True)
     copy_buttons["chimera"] = ttk.Button(
-        buttons,
+        results_bar,
         text="Copy Chimera select",
         command=make_copy_command("chimera", "Chimera command"),
         state="disabled",
+        style="Small.TButton",
     )
-    copy_buttons["chimera"].pack(side="left", padx=(18, 0))
     copy_buttons["chimerax"] = ttk.Button(
-        buttons,
+        results_bar,
         text="Copy ChimeraX select",
         command=make_copy_command("chimerax", "ChimeraX command"),
         state="disabled",
+        style="Small.TButton",
     )
-    copy_buttons["chimerax"].pack(side="left", padx=(6, 0))
+    copy_buttons["chimerax"].pack(side="right")
+    copy_buttons["chimera"].pack(side="right", padx=(0, 8))
 
     root.mainloop()
     return 0

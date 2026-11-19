@@ -1269,10 +1269,20 @@ def run_gui(initial_path: Optional[str] = None) -> None:
         print(f"        {e}")
         sys.exit(1)
 
+    try:
+        from re_helix_lib import azbmost_ui as ui
+    except ImportError:  # pragma: no cover - direct script execution fallback
+        import azbmost_ui as ui
+
     class ScrollableFrame(ttk.Frame):
-        def __init__(self, container: tk.Widget):
+        def __init__(self, container: tk.Widget, height: Optional[int] = None):
             super().__init__(container)
-            canvas = tk.Canvas(self)
+            canvas = tk.Canvas(
+                self,
+                highlightthickness=1,
+                highlightbackground=ui.C.BORDER,
+                **({"height": height} if height else {}),
+            )
             scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
             self.scrollable_frame = ttk.Frame(canvas)
 
@@ -1281,18 +1291,19 @@ def run_gui(initial_path: Optional[str] = None) -> None:
                 lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
             )
 
-            canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+            canvas.create_window((6, 4), window=self.scrollable_frame, anchor="nw")
             canvas.configure(yscrollcommand=scrollbar.set)
 
             canvas.pack(side="left", fill="both", expand=True)
-            scrollbar.pack(side="right", fill="y")
+            scrollbar.pack(side="right", fill="y", padx=(2, 0))
 
     class App(tk.Tk):
         def __init__(self):
             super().__init__()
             self.title(f"{TOOL_NAME} V{VERSION}")
             apply_optional_icon(self, __file__)
-            self.geometry("1000x820")
+            ui.tool_window(self, TOOL_NAME, tool="add_link", version=f"V{VERSION}")
+            self.geometry("1000x860")
 
             self.inp_path_var = tk.StringVar(value=initial_path or "")
             self.out_path_var = tk.StringVar(value="")
@@ -1320,47 +1331,42 @@ def run_gui(initial_path: Optional[str] = None) -> None:
         def _build_widgets(self) -> None:
             pad = 6
 
-            style = ttk.Style(self)
-            style.configure("ToolTitle.TLabel", font=("TkDefaultFont", 12, "bold"))
-            style.configure("Tool.TLabelframe.Label", font=("TkDefaultFont", 10, "bold"))
+            # Chain rows are padded into columns, so they read best in the
+            # monospace face.
+            ttk.Style(self).configure("Mono.TCheckbutton", font="AzbMono")
 
-            ttk.Label(
-                self,
-                text=f"{TOOL_NAME} V{VERSION}",
-                style="ToolTitle.TLabel",
-            ).pack(anchor="w", padx=pad, pady=(pad, 0))
+            # Bottom bar: list helpers on the left, Quit and Run on the right.
+            row3 = ttk.Frame(self, style="Footer.TFrame", padding=(20, 10, 20, 10))
+            row3.pack(side="bottom", fill="x")
+            body = ttk.Frame(self, padding=(18, 12, 18, 12))
+            body.pack(side="top", fill="both", expand=True)
 
-            row1 = ttk.Frame(self)
-            row1.pack(fill="x", padx=pad, pady=pad)
+            files = ui.Card(body, "Input and output")
+            files.pack(fill="x", pady=(0, 10))
+            files.columnconfigure(1, weight=1)
 
-            ttk.Label(row1, text="Input PDB:").pack(side="left")
-            ent = ttk.Entry(row1, textvariable=self.inp_path_var, width=82)
-            ent.pack(side="left", padx=(pad, pad), fill="x", expand=True)
-            ttk.Button(row1, text="Browse...", command=self._browse).pack(side="left")
+            ttk.Label(files, text="Input PDB:", style="Field.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=3)
+            ent = ttk.Entry(files, textvariable=self.inp_path_var, width=82)
+            ent.grid(row=0, column=1, sticky="ew", pady=3)
+            ttk.Button(files, text="Browse...", command=self._browse).grid(row=0, column=2, padx=(8, 0), pady=3)
 
-            row2 = ttk.Frame(self)
-            row2.pack(fill="x", padx=pad, pady=(0, pad))
-            ttk.Label(row2, text="Output:").pack(side="left")
-            out_ent = ttk.Entry(row2, textvariable=self.out_path_var, width=82, state="readonly")
-            out_ent.pack(side="left", padx=(pad, pad), fill="x", expand=True)
+            ttk.Label(files, text="Output:", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=3)
+            out_ent = ttk.Entry(files, textvariable=self.out_path_var, width=82, state="readonly")
+            out_ent.grid(row=1, column=1, columnspan=2, sticky="ew", pady=3)
 
-            automatic_box = ttk.LabelFrame(
-                self,
-                text="Automatic terminal LINK creation",
-                style="Tool.TLabelframe",
-            )
-            automatic_box.pack(fill="x", padx=pad, pady=(0, pad))
+            automatic_box = ui.Card(body, "Automatic terminal LINK creation")
+            automatic_box.pack(fill="x", pady=(0, 10))
 
             mode_row = ttk.Frame(automatic_box)
-            mode_row.pack(fill="x", padx=pad, pady=(pad, 2))
-            ttk.Label(mode_row, text="Molecule type:").pack(side="left")
+            mode_row.pack(fill="x", pady=(0, 2))
+            ttk.Label(mode_row, text="Molecule type:", style="Field.TLabel").pack(side="left")
             ttk.Radiobutton(
                 mode_row,
                 text="Nucleic acid (5' P to 3' O3')",
                 variable=self.auto_link_mode_var,
                 value="nucleic",
                 command=self._on_auto_mode_changed,
-            ).pack(side="left", padx=(8, 12))
+            ).pack(side="left", padx=(12, 18))
             ttk.Radiobutton(
                 mode_row,
                 text="Peptide (N-terminus N to C-terminus C)",
@@ -1372,28 +1378,25 @@ def run_gui(initial_path: Optional[str] = None) -> None:
             ttk.Label(
                 automatic_box,
                 text="Check the chains to cyclize; the terminal-atom distance is shown below.",
-            ).pack(anchor="w", padx=pad, pady=(2, 2))
+                style="Hint.TLabel",
+            ).pack(anchor="w", pady=(2, 6))
 
-            self.auto_scroll = ScrollableFrame(automatic_box)
-            self.auto_scroll.pack(fill="both", expand=False, padx=pad, pady=(0, pad))
+            self.auto_scroll = ScrollableFrame(automatic_box, height=150)
+            self.auto_scroll.pack(fill="both", expand=False)
 
-            manual_box = ttk.LabelFrame(
-                self,
-                text="Manual LINK creation (stage a LINK first)",
-                style="Tool.TLabelframe",
-            )
-            manual_box.pack(fill="x", padx=pad, pady=(0, pad))
+            manual_box = ui.Card(body, "Manual LINK creation (stage a LINK first)")
+            manual_box.pack(fill="both", expand=True)
 
             manual_mode_row = ttk.Frame(manual_box)
-            manual_mode_row.pack(fill="x", padx=pad, pady=(pad, 4))
-            ttk.Label(manual_mode_row, text="Link type:").pack(side="left")
+            manual_mode_row.pack(fill="x", pady=(0, 6))
+            ttk.Label(manual_mode_row, text="Link type:", style="Field.TLabel").pack(side="left")
             ttk.Radiobutton(
                 manual_mode_row,
                 text="Nucleic acid (P to O3')",
                 variable=self.manual_link_mode_var,
                 value="nucleic",
                 command=self._on_manual_mode_changed,
-            ).pack(side="left", padx=(8, 12))
+            ).pack(side="left", padx=(12, 18))
             ttk.Radiobutton(
                 manual_mode_row,
                 text="Peptide (N to C)",
@@ -1403,39 +1406,52 @@ def run_gui(initial_path: Optional[str] = None) -> None:
             ).pack(side="left")
 
             grid = ttk.Frame(manual_box)
-            grid.pack(fill="x", padx=pad, pady=(0, pad))
+            grid.pack(fill="x", pady=(0, pad))
+            # Wide enough for either mode's endpoint labels, so nothing shifts
+            # when the link type changes.
+            label_font = ui.ensure_fonts(self)["AzbBody"]
+            grid.columnconfigure(
+                0,
+                minsize=8 + max(
+                    label_font.measure(text)
+                    for text in (
+                        "P (5') atom of residue",
+                        "O3' (3') atom of residue",
+                        "N atom of residue",
+                        "C atom of residue",
+                    )
+                ),
+            )
 
-            ttk.Label(grid, textvariable=self.manual_endpoint1_label_var).grid(row=0, column=0, sticky="w")
-            ttk.Entry(grid, textvariable=self.manual_endpoint1_res_var, width=10).grid(row=0, column=1, sticky="w", padx=(4, 8))
-            ttk.Label(grid, text="in chain").grid(row=0, column=2, sticky="w")
-            ttk.Entry(grid, textvariable=self.manual_endpoint1_chain_var, width=8).grid(row=0, column=3, sticky="w", padx=(4, 16))
+            ttk.Label(grid, textvariable=self.manual_endpoint1_label_var, style="Field.TLabel").grid(row=0, column=0, sticky="w")
+            ttk.Entry(grid, textvariable=self.manual_endpoint1_res_var, width=10).grid(row=0, column=1, sticky="w", padx=(4, 10))
+            ttk.Label(grid, text="in chain", style="Field.TLabel").grid(row=0, column=2, sticky="w")
+            ttk.Entry(grid, textvariable=self.manual_endpoint1_chain_var, width=8).grid(row=0, column=3, sticky="w", padx=(8, 16))
 
-            ttk.Label(grid, textvariable=self.manual_endpoint2_label_var).grid(row=1, column=0, sticky="w", pady=(6, 0))
-            ttk.Entry(grid, textvariable=self.manual_endpoint2_res_var, width=10).grid(row=1, column=1, sticky="w", padx=(4, 8), pady=(6, 0))
-            ttk.Label(grid, text="in chain").grid(row=1, column=2, sticky="w", pady=(6, 0))
-            ttk.Entry(grid, textvariable=self.manual_endpoint2_chain_var, width=8).grid(row=1, column=3, sticky="w", padx=(4, 16), pady=(6, 0))
+            ttk.Label(grid, textvariable=self.manual_endpoint2_label_var, style="Field.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
+            ttk.Entry(grid, textvariable=self.manual_endpoint2_res_var, width=10).grid(row=1, column=1, sticky="w", padx=(4, 10), pady=(6, 0))
+            ttk.Label(grid, text="in chain", style="Field.TLabel").grid(row=1, column=2, sticky="w", pady=(6, 0))
+            ttk.Entry(grid, textvariable=self.manual_endpoint2_chain_var, width=8).grid(row=1, column=3, sticky="w", padx=(8, 16), pady=(6, 0))
 
             ttk.Button(grid, text="Add Link", command=self._add_manual_link).grid(
-                row=0, column=4, rowspan=2, sticky="ns", padx=(8, 0), pady=(2, 0)
+                row=0, column=4, rowspan=2, sticky="w", padx=(8, 0), pady=(2, 0)
             )
             grid.columnconfigure(5, weight=1)
 
             ttk.Label(
-                self,
+                manual_box,
                 text="Staged manual LINK records (default checked; uncheck any you do not want to write):",
-            ).pack(anchor="w", padx=pad, pady=(2, 2))
+                style="Field.TLabel",
+            ).pack(anchor="w", pady=(6, 6))
 
-            self.manual_scroll = ScrollableFrame(self)
-            self.manual_scroll.pack(fill="both", expand=True, padx=pad, pady=(0, pad))
+            self.manual_scroll = ScrollableFrame(manual_box)
+            self.manual_scroll.pack(fill="both", expand=True)
 
-            row3 = ttk.Frame(self)
-            row3.pack(fill="x", padx=pad, pady=(0, pad))
-
-            ttk.Button(row3, text="Select all automatic", command=self._select_all_auto).pack(side="left")
-            ttk.Button(row3, text="Clear automatic", command=self._clear_all_auto).pack(side="left", padx=(pad, 0))
-            ttk.Button(row3, text="Clear manual", command=self._clear_manual).pack(side="left", padx=(pad, 0))
-            ttk.Button(row3, text="Run", command=self._run).pack(side="right")
-            ttk.Button(row3, text="Quit", command=self.destroy).pack(side="right", padx=(0, pad))
+            ttk.Button(row3, text="Select all automatic", command=self._select_all_auto, style="Footer.TButton").pack(side="left")
+            ttk.Button(row3, text="Clear automatic", command=self._clear_all_auto, style="Footer.TButton").pack(side="left", padx=(8, 0))
+            ttk.Button(row3, text="Clear manual", command=self._clear_manual, style="Footer.TButton").pack(side="left", padx=(8, 0))
+            ttk.Button(row3, text="Run", command=self._run, style="Accent.TButton").pack(side="right")
+            ttk.Button(row3, text="Quit", command=self.destroy, style="Footer.TButton").pack(side="right", padx=(0, 8))
 
         def _browse(self) -> None:
             path = filedialog.askopenfilename(
@@ -1495,7 +1511,7 @@ def run_gui(initial_path: Optional[str] = None) -> None:
             self.auto_chain_vars = {}
 
             if not self.chain_info:
-                ttk.Label(self.auto_scroll.scrollable_frame, text="(no chains loaded)").pack(anchor="w")
+                ttk.Label(self.auto_scroll.scrollable_frame, text="(no chains loaded)", style="Muted.TLabel").pack(anchor="w")
                 return
 
             for chain in sorted(self.chain_info.keys()):
@@ -1531,7 +1547,7 @@ def run_gui(initial_path: Optional[str] = None) -> None:
                         f"3' {info.last_resName}{info.last_resSeq}   "
                         f"|P - O3'| = {dist_str} Å{missing}"
                     )
-                cb = ttk.Checkbutton(self.auto_scroll.scrollable_frame, text=txt, variable=var)
+                cb = ttk.Checkbutton(self.auto_scroll.scrollable_frame, text=txt, variable=var, style="Mono.TCheckbutton")
                 cb.pack(anchor="w")
 
         def _populate_manual_items(self) -> None:
@@ -1539,7 +1555,7 @@ def run_gui(initial_path: Optional[str] = None) -> None:
                 w.destroy()
 
             if not self.manual_items:
-                ttk.Label(self.manual_scroll.scrollable_frame, text="(no manual LINK records added yet)").pack(anchor="w")
+                ttk.Label(self.manual_scroll.scrollable_frame, text="(no manual LINK records added yet)", style="Muted.TLabel").pack(anchor="w")
                 return
 
             for idx, item in enumerate(self.manual_items, start=1):

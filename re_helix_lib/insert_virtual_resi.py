@@ -442,20 +442,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def run_gui(initial_path: Optional[str] = None) -> int:
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox, scrolledtext
+        from tkinter import filedialog, messagebox
         from tkinter import ttk
     except Exception as exc:
         print("Error: GUI mode requires tkinter (%s)." % exc, file=sys.stderr)
         return 1
+    try:
+        from re_helix_lib import azbmost_ui as ui
+    except ImportError:  # pragma: no cover - direct script execution fallback
+        import azbmost_ui as ui
 
     root = tk.Tk()
     root.title(f"{TOOL_NAME} V{VERSION}")
     apply_optional_icon(root, __file__)
-    root.geometry("780x500")
-
-    style = ttk.Style(root)
-    style.configure("ToolTitle.TLabel", font=("TkDefaultFont", 12, "bold"))
-    style.configure("Tool.TLabelframe.Label", font=("TkDefaultFont", 10, "bold"))
+    ui.tool_window(root, TOOL_NAME, tool="insert_virtual_resi", version=f"V{VERSION}")
+    root.geometry("820x620")
 
     input_var = tk.StringVar(value=initial_path or "")
     output_var = tk.StringVar()
@@ -469,16 +470,26 @@ def run_gui(initial_path: Optional[str] = None) -> int:
 
     refresh_default_output()
 
-    outer = ttk.Frame(root, padding=10)
-    outer.pack(fill="both", expand=True)
-    outer.columnconfigure(1, weight=1)
-
-    ttk.Label(outer, text=f"{TOOL_NAME} V{VERSION}", style="ToolTitle.TLabel").grid(
-        row=0, column=0, columnspan=3, sticky="w", pady=(0, 8)
+    # The status line and the run buttons share the bottom bar.
+    footer = ui.Footer(root, textvariable=status_var)
+    footer.status.configure(wraplength=520, justify="left")
+    footer.status.bind(
+        "<Configure>",
+        lambda event: footer.status.configure(wraplength=max(240, event.width)),
+        add="+",
     )
+    footer.pack(side="bottom", fill="x")
 
-    ttk.Label(outer, text="Input PDB").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
-    ttk.Entry(outer, textvariable=input_var, width=70).grid(row=1, column=1, sticky="ew", pady=4)
+    outer = ttk.Frame(root, padding=(18, 12, 18, 12))
+    outer.pack(fill="both", expand=True)
+    outer.columnconfigure(0, weight=1)
+
+    files = ui.Card(outer, "Input and output")
+    files.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+    files.columnconfigure(1, weight=1)
+
+    ttk.Label(files, text="Input PDB", style="Field.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=3)
+    ttk.Entry(files, textvariable=input_var, width=70).grid(row=1, column=1, sticky="ew", pady=3)
 
     def browse_input() -> None:
         path = filedialog.askopenfilename(
@@ -489,10 +500,10 @@ def run_gui(initial_path: Optional[str] = None) -> int:
             input_var.set(path)
             output_var.set(str(default_output_path(Path(path))))
 
-    ttk.Button(outer, text="Browse...", command=browse_input).grid(row=1, column=2, sticky="ew", padx=(6, 0), pady=4)
+    ttk.Button(files, text="Browse...", command=browse_input).grid(row=1, column=2, sticky="ew", padx=(8, 0), pady=3)
 
-    ttk.Label(outer, text="Output PDB").grid(row=2, column=0, sticky="e", padx=(0, 6), pady=4)
-    ttk.Entry(outer, textvariable=output_var, width=70).grid(row=2, column=1, sticky="ew", pady=4)
+    ttk.Label(files, text="Output PDB", style="Field.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=3)
+    ttk.Entry(files, textvariable=output_var, width=70).grid(row=2, column=1, sticky="ew", pady=3)
 
     def browse_output() -> None:
         path = filedialog.asksaveasfilename(
@@ -503,10 +514,10 @@ def run_gui(initial_path: Optional[str] = None) -> int:
         if path:
             output_var.set(path)
 
-    ttk.Button(outer, text="Save as...", command=browse_output).grid(row=2, column=2, sticky="ew", padx=(6, 0), pady=4)
+    ttk.Button(files, text="Save as...", command=browse_output).grid(row=2, column=2, sticky="ew", padx=(8, 0), pady=3)
 
-    specs_box = ttk.LabelFrame(outer, text="Virtual residue insertions", padding=8, style="Tool.TLabelframe")
-    specs_box.grid(row=3, column=0, columnspan=3, sticky="nsew", pady=(8, 4))
+    specs_box = ui.Card(outer, "Virtual residue insertions")
+    specs_box.grid(row=3, column=0, sticky="nsew")
     specs_box.columnconfigure(0, weight=1)
     specs_box.rowconfigure(1, weight=1)
     outer.rowconfigure(3, weight=1)
@@ -514,20 +525,23 @@ def run_gui(initial_path: Optional[str] = None) -> int:
     ttk.Label(
         specs_box,
         text="One insertion per line: A55 3, A.55 3, 55A 3, 55.A 3, or A55:3",
-    ).grid(row=0, column=0, sticky="w", pady=(0, 4))
-    specs_text = scrolledtext.ScrolledText(specs_box, height=8, wrap="word")
-    specs_text.grid(row=1, column=0, sticky="nsew")
+        style="Hint.TLabel",
+    ).grid(row=0, column=0, sticky="w", pady=(0, 6))
+    specs_view = ui.LogView(specs_box, wrap="word", height=8)
+    specs_view.grid(row=1, column=0, sticky="nsew")
+    specs_text = specs_view.text
+    # An input box, not a log: plain field background and a focus ring.
+    specs_text.configure(
+        background=ui.C.BG,
+        highlightbackground=ui.C.BORDER_INPUT,
+        highlightcolor=ui.C.ACCENT,
+    )
 
     ttk.Checkbutton(
         specs_box,
         text="Write REMARK 950 RE_SCRIPT VIRTUAL_INSERT records (chain, anchor, count, range)",
         variable=remark_var,
-    ).grid(row=2, column=0, sticky="w", pady=(6, 0))
-
-    ttk.Label(outer, textvariable=status_var, wraplength=720).grid(row=4, column=0, columnspan=3, sticky="ew", pady=4)
-
-    buttons = ttk.Frame(outer)
-    buttons.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+    ).grid(row=2, column=0, sticky="w", pady=(8, 0))
 
     def run_from_gui() -> None:
         try:
@@ -561,8 +575,8 @@ def run_gui(initial_path: Optional[str] = None) -> int:
             status_var.set("Error: %s" % exc)
             messagebox.showerror(TOOL_NAME, str(exc), parent=root)
 
-    ttk.Button(buttons, text="Run", command=run_from_gui).pack(side="left")
-    ttk.Button(buttons, text="Close", command=root.destroy).pack(side="left", padx=(6, 0))
+    footer.add_button("Close", root.destroy)
+    footer.add_button("Run", run_from_gui, primary=True)
 
     root.mainloop()
     return 0

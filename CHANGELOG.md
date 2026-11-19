@@ -1,5 +1,13 @@
 # Changelog
 
+## V4.7 - 2026-11-19
+
+- Bumped `re_helix` to V4.7 for a redesign of every window in the shared AZBMOST look, the same one the launcher, BNP_NA and Curve_It now use. The look lives in `re_helix_lib/azbmost_ui.py` (theme and window parts) and `re_helix_lib/azbmost_icons.py` (icons drawn as vector art), identical copies of the files shipped with the other modules.
+- The main window has a header with the RE_Helix icon, version and purpose; Inputs, Options, Exchange pairs, Axis definitions and Alignment mode as cards on the left; the `Other tools` as a list with an icon, a one-line purpose and a round `?` per tool on the right, with the `Run log` beneath it, so the log is always in view instead of below the fold; and `Close` and `Run` in a footer.
+- Restyled all nine bundled tool windows to match, keeping each tool's own version: Bend Helix (V3.1, including its screening window, which now scrolls instead of clipping its lowest rows on a short screen), Do Symmetry, Add PDB LINK Record, Insert Virtual Resi, Permute Chain, Generate Lattice, Get Phenix Restraints, Reverse Strand Direction and Check Clashes. Each has a tool header, its settings in cards, round `?` buttons that open the same help as before, its log in a quiet monospace box, and its buttons in a footer with the main action on the right.
+- Redrew the RE_Helix icon in the new AZBMOST icon family.
+- Only the look changed: every field, option, default, help text, command, output file and log line is as before. Two checks in `tests/test_bend_helix_screening.py` that pinned the old look (the light-blue `?` colour and the parent frame of the shift entries) now pin the new one.
+
 ## Bend Helix V3.1 - 2026-10-17
 
 - Bumped the bundled Bend Helix tool to V3.1 while keeping the main `re_helix` application at V4.6.

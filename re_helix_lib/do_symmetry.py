@@ -47,11 +47,12 @@ except ImportError:  # pragma: no cover - direct script execution fallback
 
 try:
     import tkinter as tk
-    from tkinter import filedialog, messagebox
+    from tkinter import filedialog, messagebox, ttk
 except Exception:  # Tkinter is optional for CLI mode.
     tk = None
     filedialog = None
     messagebox = None
+    ttk = None
 
 VERSION = "1.1"
 
@@ -804,6 +805,12 @@ class SymmetryGUI(object):
         defaults = defaults or {}
         root.title("Do Symmetry V%s" % VERSION)
         apply_optional_icon(root, __file__)
+        try:
+            from re_helix_lib import azbmost_ui as ui
+        except ImportError:  # pragma: no cover - direct script execution fallback
+            import azbmost_ui as ui
+        self.ui = ui
+        ui.tool_window(root, "Do Symmetry", tool="do_symmetry", version="V%s" % VERSION)
         self.input_var = tk.StringVar(value=defaults.get("input_pdb", ""))
         self.output_var = tk.StringVar(value=defaults.get("output_base", ""))
         self.mode_var = tk.StringVar(value=defaults.get("mode", "groups"))
@@ -819,96 +826,110 @@ class SymmetryGUI(object):
         self._build()
 
     def _build(self):
-        pad = {"padx": 6, "pady": 4}
-        row = 0
+        ui = self.ui
+        pad = {"pady": 3}
+        label_pad = {"padx": (0, 12), "pady": 3}
 
-        tk.Label(
-            self.root,
-            text="Do Symmetry V%s" % VERSION,
-            font=("TkDefaultFont", 11, "bold"),
-        ).grid(row=row, column=0, columnspan=3, sticky="w", padx=6, pady=(8, 4))
-        row += 1
+        # The status line and the run button share the bottom bar.
+        footer = ui.Footer(self.root, textvariable=self.status_var)
+        footer.status.configure(wraplength=560, justify="left")
+        footer.status.bind(
+            "<Configure>",
+            lambda event: footer.status.configure(wraplength=max(240, event.width)),
+            add="+",
+        )
+        footer.pack(side="bottom", fill="x")
+        body = ttk.Frame(self.root, padding=(18, 12, 18, 14))
+        body.pack(side="top", fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
 
-        tk.Label(self.root, text="Input PDB").grid(row=row, column=0, sticky="e", **pad)
-        tk.Entry(self.root, textvariable=self.input_var, width=55).grid(row=row, column=1, sticky="we", **pad)
-        tk.Button(self.root, text="Browse", command=self.browse_input).grid(row=row, column=2, **pad)
-        row += 1
+        files = ui.Card(body, "Input and output")
+        files.grid(row=0, column=0, sticky="we", pady=(0, 10))
+        files.columnconfigure(1, weight=1)
+        ttk.Label(files, text="Input PDB", style="Field.TLabel").grid(row=0, column=0, sticky="w", **label_pad)
+        ui.Entry(files, textvariable=self.input_var, width=55).grid(row=0, column=1, sticky="we", **pad)
+        ui.Button(files, text="Browse", command=self.browse_input).grid(row=0, column=2, padx=(8, 0), **pad)
 
-        tk.Label(self.root, text="Output base").grid(row=row, column=0, sticky="e", **pad)
-        tk.Entry(self.root, textvariable=self.output_var, width=55).grid(row=row, column=1, sticky="we", **pad)
-        tk.Button(self.root, text="Browse", command=self.browse_output).grid(row=row, column=2, **pad)
-        row += 1
+        ttk.Label(files, text="Output base", style="Field.TLabel").grid(row=1, column=0, sticky="w", **label_pad)
+        ui.Entry(files, textvariable=self.output_var, width=55).grid(row=1, column=1, sticky="we", **pad)
+        ui.Button(files, text="Browse", command=self.browse_output).grid(row=1, column=2, padx=(8, 0), **pad)
 
-        mode_frame = tk.LabelFrame(self.root, text="Symmetry definition", font=("TkDefaultFont", 10, "bold"))
-        mode_frame.grid(row=row, column=0, columnspan=3, sticky="we", padx=6, pady=6)
-        tk.Radiobutton(
+        mode_frame = ui.Card(body, "Symmetry definition")
+        mode_frame.grid(row=1, column=0, sticky="we", pady=(0, 10))
+        mode_frame.columnconfigure(1, weight=1)
+        ui.Radiobutton(
             mode_frame,
             text="Explicit chain groups",
             variable=self.mode_var,
             value="groups",
             command=self.update_control_states,
         ).grid(
-            row=0, column=0, sticky="w", **pad
+            row=0, column=0, sticky="w", padx=(0, 16), **pad
         )
-        self.groups_entry = tk.Entry(mode_frame, textvariable=self.groups_var, width=48)
-        self.groups_entry.grid(row=0, column=1, columnspan=3, sticky="we", **pad)
-        self.groups_example_label = tk.Label(mode_frame, text="Example: ABCDMNOP EFGHQRST IJKLUVWX")
+        self.groups_entry = ui.Entry(mode_frame, textvariable=self.groups_var, width=48)
+        self.groups_entry.grid(row=0, column=1, sticky="we", **pad)
+        self.groups_example_label = ttk.Label(
+            mode_frame, text="Example: ABCDMNOP EFGHQRST IJKLUVWX", style="Hint.TLabel"
+        )
         self.groups_example_label.grid(
-            row=1, column=1, columnspan=3, sticky="w", **pad
+            row=1, column=1, sticky="w", pady=(0, 6)
         )
 
-        tk.Radiobutton(
+        ui.Radiobutton(
             mode_frame,
             text="Fold + continuous chain range",
             variable=self.mode_var,
             value="fold",
             command=self.update_control_states,
         ).grid(
-            row=2, column=0, sticky="w", **pad
+            row=2, column=0, sticky="w", padx=(0, 16), **pad
         )
-        self.fold_label = tk.Label(mode_frame, text="Fold")
-        self.fold_label.grid(row=2, column=1, sticky="e", **pad)
-        self.fold_entry = tk.Entry(mode_frame, textvariable=self.fold_var, width=8)
-        self.fold_entry.grid(row=2, column=2, sticky="w", **pad)
-        self.chains_label = tk.Label(mode_frame, text="Chains")
-        self.chains_label.grid(row=2, column=3, sticky="e", **pad)
-        self.chains_entry = tk.Entry(mode_frame, textvariable=self.chains_var, width=12)
-        self.chains_entry.grid(row=2, column=4, sticky="w", **pad)
-        row += 1
+        fold_row = ttk.Frame(mode_frame)
+        fold_row.grid(row=2, column=1, sticky="w", **pad)
+        self.fold_label = ttk.Label(fold_row, text="Fold", style="Field.TLabel")
+        self.fold_label.pack(side="left", padx=(0, 8))
+        self.fold_entry = ui.Entry(fold_row, textvariable=self.fold_var, width=8)
+        self.fold_entry.pack(side="left")
+        self.chains_label = ttk.Label(fold_row, text="Chains", style="Field.TLabel")
+        self.chains_label.pack(side="left", padx=(20, 8))
+        self.chains_entry = ui.Entry(fold_row, textvariable=self.chains_var, width=12)
+        self.chains_entry.pack(side="left")
 
-        options = tk.LabelFrame(self.root, text="Options", font=("TkDefaultFont", 10, "bold"))
-        options.grid(row=row, column=0, columnspan=3, sticky="we", padx=6, pady=6)
-        self.fit_atoms_label = tk.Label(options, text="Fit atoms")
-        self.fit_atoms_label.grid(row=0, column=0, sticky="e", **pad)
-        self.fit_atoms_menu = tk.OptionMenu(options, self.fit_atoms_var, "all", "p", "phosphorus", "ca", "calpha", "backbone")
+        options = ui.Card(body, "Options")
+        options.grid(row=2, column=0, sticky="we")
+        self.fit_atoms_label = ttk.Label(options, text="Fit atoms", style="Field.TLabel")
+        self.fit_atoms_label.grid(row=0, column=0, sticky="w", **label_pad)
+        self.fit_atoms_menu = ui.OptionMenu(options, self.fit_atoms_var, "all", "p", "phosphorus", "ca", "calpha", "backbone")
         self.fit_atoms_menu.grid(
             row=0, column=1, sticky="w", **pad
         )
-        tk.Checkbutton(
+        ui.Checkbutton(
             options,
             text="Skip alignment",
             variable=self.no_align_var,
             command=self.update_control_states,
-        ).grid(row=0, column=2, sticky="w", **pad)
-        tk.Checkbutton(options, text="Keep intermediate files", variable=self.keep_var).grid(
+        ).grid(row=0, column=2, sticky="w", padx=(32, 0), **pad)
+        ui.Checkbutton(options, text="Keep intermediate files", variable=self.keep_var).grid(
             row=1, column=0, columnspan=2, sticky="w", **pad
         )
-        tk.Checkbutton(options, text="Ignore residue names when matching", variable=self.ignore_resname_var).grid(
-            row=1, column=2, columnspan=2, sticky="w", **pad
+        ui.Checkbutton(options, text="Ignore residue names when matching", variable=self.ignore_resname_var).grid(
+            row=1, column=2, columnspan=2, sticky="w", padx=(32, 0), **pad
         )
-        tk.Checkbutton(options, text="Allow missing atoms", variable=self.allow_missing_var).grid(
+        ui.Checkbutton(options, text="Allow missing atoms", variable=self.allow_missing_var).grid(
             row=2, column=0, columnspan=2, sticky="w", **pad
         )
-        row += 1
 
-        tk.Button(self.root, text="Run symmetry averaging", command=self.run).grid(
-            row=row, column=0, columnspan=3, pady=8
+        footer.add_button("Run symmetry averaging", self.run, primary=True)
+
+        # Line the inputs of the first two cards up in one column.
+        self.root.update_idletasks()
+        label_width = 16 + max(
+            widget.winfo_reqwidth()
+            for card in (files, mode_frame)
+            for widget in card.grid_slaves(column=0)
         )
-        row += 1
-        tk.Label(self.root, textvariable=self.status_var, anchor="w", justify="left", wraplength=600).grid(
-            row=row, column=0, columnspan=3, sticky="we", padx=6, pady=6
-        )
-        self.root.columnconfigure(1, weight=1)
+        for card in (files, mode_frame):
+            card.columnconfigure(0, minsize=label_width)
         self.mode_var.trace_add("write", lambda *_args: self.update_control_states())
         self.no_align_var.trace_add("write", lambda *_args: self.update_control_states())
         self.update_control_states()

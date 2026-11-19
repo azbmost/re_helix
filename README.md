@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from real P-atom or chain-associated virtual-atom pairs and then applies reciprocal exchanges when every endpoint is real. It can also run reciprocal exchange only, without alignment.
 
-Current version: V4.5
+Current version: V4.7
 
 ## Contents
 
@@ -210,7 +210,7 @@ After the coarse pass, Bend Helix identifies every local coarse minimum as a pro
 
 By default, only the best solution and its origin-overlay PDB are written. Enable **Write all reported solutions** to write every additional solution under numbered names such as `model_P10Bm20T30_scr_sol002.pdb`; each additional model also receives a corresponding `-ori.pdb` overlay. All reported solutions use the selected `--align y` or `--align n` behavior during screening and output generation.
 
-Every argument or source choice in the screening popup has a light-blue **?** button that opens a focused explanation and example.
+Every argument or source choice in the screening popup has a round **?** button that opens a focused explanation and example.
 
 The screening window provides two target modes:
 
