@@ -2,6 +2,19 @@
 """
 re_helix.py
 
+V4.8 update (2026-11-23):
+- Add --xo_faces (GUI: Crossovers on faces), off by default. After the exchange,
+  every crossing strand is traced: when its phosphate one step before the
+  crossing and its phosphate one step after lie on the same face of the plane
+  through the two helix axes (a parallel crossover), the atoms of the crossing
+  are put on that face, as in Han et al. 2017 Fig. 1B. Antiparallel crossings
+  (in on one face, out on the other) are left as built. The entering phosphate
+  is turned about its gamma and beta bonds, with small sugar or base-pair turns
+  when those suffice; bond lengths and angles inside each nucleotide are kept,
+  bases stay paired and links are not lengthened or closed. A crossover is
+  placed whole or left exactly as built, and each one is reported
+  (re_helix_lib/crossover_faces.py, also usable on its own).
+
 V4.7 update (2026-11-19):
 - Redesign the GUI in the shared AZBMOST look (azbmost_ui): a header with the
   module icon and version, the inputs and options in cards on the left, the
@@ -441,10 +454,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V4.7"
+SOFTWARE_VERSION = "V4.8"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V4.7: AZBMOST Package Module #2 - "
+    "re_helix V4.8: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -490,6 +503,37 @@ def _load_rex_module():
 
 
 rex = _load_rex_module()
+
+
+def _xo_faces_reference(rec_list) -> List[Tuple[str, str, float, float, float]]:
+    """Chain, atom name and coordinates of every atom before the exchange, for --xo_faces."""
+    return [(a.chainID, a.name, a.x, a.y, a.z) for a in rec_list if a.recordName in ("ATOM", "HETATM")]
+
+
+def _xo_faces_helix_of_chain(rec_list, helix_defs) -> "Dict[str, HelixID]":
+    """Chain -> helix for --xo_faces: the explicit or replicated helix definitions when there are any, otherwise
+    the duplexes RE_Helix pairs automatically.  Every chain of the pre-exchange model must lie in one helix."""
+    if helix_defs:
+        return {ch: tuple(h) for h in helix_defs for ch in h}
+    _c2r, _r2p, chain_to_P = build_nucleic_acid_maps(rec_list)
+    if len(chain_to_P) == 3:
+        raise ValueError("--xo_faces needs helix definitions such as (AB) (CD) for a three-chain input.")
+    return compute_chain_partner_map(chain_to_P)
+
+
+def _apply_xo_faces(output_path: str, reference, helix_of_chain: "Dict[str, HelixID]", min_face: float) -> None:
+    """Rewrite output_path with every parallel crossover on its faces (re_helix_lib/crossover_faces.py)."""
+    from re_helix_lib import crossover_faces as xof
+    with open(output_path, "r") as fin:
+        lines = fin.readlines()
+    lookup = xof.helix_lookup_from_atoms(reference, helix_of_chain)
+    new, cs, pairs, sep, model, placer = xof.place_crossovers_on_faces(lines, lookup, min_face)
+    with open(output_path, "w") as fout:
+        fout.writelines(new)
+    print(f"[re_helix] --xo_faces ({xof.TOOL_NAME} {xof.TOOL_VERSION}): {len(cs)} crossing strand(s) in "
+          f"'{output_path}'")
+    for line in xof.summary_lines(model, cs, pairs, sep, placer):
+        print(f"[re_helix] {line}")
 
 
 # ---------------------------------------------------------------------------
@@ -4655,6 +4699,26 @@ cyclic strand covalently circularized.
 
 Units: nt
 Default: 8""",
+    "xo_faces": """Trace every crossing strand after the exchange and keep the
+strand on its face at parallel crossovers.
+
+A strand that crosses between two helices comes in on one face of the plane
+through their axes. At a parallel crossover it also leaves on that face, so
+it should stay on that face at the crossover (Han et al. 2017, Fig. 1B). A
+plain exchange leaves one atom there, the leaving O3' or the entering
+phosphate, 0.1-2 A on the other side, where the two crossing strands meet.
+With this option those atoms are put back on the strand's face: the entering
+phosphate is turned about its gamma and beta bonds, with small sugar or
+base-pair turns when those suffice. Bond lengths and angles inside each
+nucleotide are kept, bases stay paired, and links are neither lengthened nor
+closed.
+
+Antiparallel crossings, which come in on one face and leave on the other,
+are left as built. A crossover is placed whole or left exactly as built;
+every crossing strand is reported in the run log and in REMARK 950 XO_FACES
+lines. Each input chain must lie in one helix (as in an aligned model).
+
+Default: off""",
     "min_link_records": """Choose output strand direction primarily to minimize
 the number of topology LINK records written for that orientation.
 
@@ -5098,6 +5162,7 @@ def _build_equivalent_cli_command(
     axis_definition_text: str = "",
     min_link_records: bool = False,
     alignment_mode: str = "standard",
+    xo_faces: bool = False,
     restrained_translation_source: str = "vector",
     restrained_translation_vector: Optional[List[str]] = None,
     restrained_translation_points: Optional[List[str]] = None,
@@ -5417,6 +5482,9 @@ def _build_equivalent_cli_command(
     if min_link_records:
         cmd.append("--min_link_records")
 
+    if xo_faces:
+        cmd.append("--xo_faces")
+
     linker_phosphate_resname = linker_phosphate_resname.strip()
     if linker_phosphate_resname and linker_phosphate_resname.upper() != "X33":
         cmd.extend(["--linker_phosphate_resname", linker_phosphate_resname])
@@ -5470,6 +5538,7 @@ def _launch_gui() -> None:
     re_only_var = tk.BooleanVar(value=False)
     cir_shift_var = tk.StringVar(value="8")
     min_link_records_var = tk.BooleanVar(value=False)
+    xo_faces_var = tk.BooleanVar(value=False)
     linker_phosphate_resname_var = tk.StringVar(value="X33")
     pair_args_var = tk.StringVar()
     axis_definition_line_var = tk.StringVar()
@@ -5665,7 +5734,13 @@ def _launch_gui() -> None:
         text="Min LINK records",
         variable=min_link_records_var,
     ).pack(side="left")
-    make_help_button(checks, "Min LINK records", "min_link_records").pack(side="left", padx=(6, 0))
+    make_help_button(checks, "Min LINK records", "min_link_records").pack(side="left", padx=(6, 22))
+    ttk.Checkbutton(
+        checks,
+        text="Crossovers on faces",
+        variable=xo_faces_var,
+    ).pack(side="left")
+    make_help_button(checks, "Crossovers on faces", "xo_faces").pack(side="left", padx=(6, 0))
 
     # Exchange pairs -------------------------------------------------------------------
     pairs_box = ui.Card(outer, "Exchange pairs")
@@ -6339,6 +6414,7 @@ def _launch_gui() -> None:
                 linker_phosphate_resname_var.get(),
                 axis_definition_text=axis_definition_line_var.get(),
                 min_link_records=bool(min_link_records_var.get()),
+                xo_faces=bool(xo_faces_var.get()),
                 alignment_mode=alignment_mode_var.get(),
                 restrained_translation_source=restrained_translation_source_var.get(),
                 restrained_translation_vector=[
@@ -6797,6 +6873,28 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--xo_faces",
+        "--xo-faces",
+        dest="xo_faces",
+        action="store_true",
+        help=(
+            "After the exchange, trace every crossing strand: at a parallel crossover (the strand comes in and "
+            "leaves on the same face of the plane through the two helix axes) put the atoms of the crossing on that "
+            "face, by turning the entering phosphate (gamma, beta) and, when that suffices, a small sugar or "
+            "base-pair turn. Antiparallel crossings are left as built. Bond lengths and angles inside each "
+            "nucleotide are kept and links are not lengthened. A crossover is placed whole or left as built, and "
+            "each is reported. Default: off."
+        ),
+    )
+    parser.add_argument(
+        "--xo_min_face",
+        "--xo-min-face",
+        dest="xo_min_face",
+        type=float,
+        default=0.5,
+        help="With --xo_faces: how far (A) every crossing atom must sit on its face (default: 0.5).",
+    )
+    parser.add_argument(
         "--linker_phosphate_resname",
         "--linker-phosphate-resname",
         default=None,
@@ -7100,6 +7198,12 @@ def main() -> None:
         sys.stderr.write("[re_helix] Warning: user-defined alignment axis is ignored in RE-only mode.\n")
 
     if args.re_only and not args.replicate:
+        xo_reference = _xo_faces_reference(rec_list) if args.xo_faces else None
+        try:
+            xo_helices = _xo_faces_helix_of_chain(rec_list, helix_defs) if args.xo_faces else None
+        except ValueError as exc:
+            print(f"Error during --xo_faces: {exc}", file=sys.stderr)
+            sys.exit(1)
         try:
             write_reciprocal_exchange_output(
                 rec_list,
@@ -7120,6 +7224,12 @@ def main() -> None:
             sys.exit(1)
 
         print(f"Wrote RE-only PDB to '{pdb_out_rex_only}'.")
+        if args.xo_faces:
+            try:
+                _apply_xo_faces(pdb_out_rex_only, xo_reference, xo_helices, args.xo_min_face)
+            except Exception as exc:
+                print(f"Error during --xo_faces: {exc}", file=sys.stderr)
+                sys.exit(1)
         return
 
     # Minimal maps for replication decision
@@ -7207,6 +7317,8 @@ def main() -> None:
         helix_defs_for_align = helix_defs if helix_defs else (axis_coupled_helices0 if axis_coupled_helices0 else None)
 
     if args.re_only:
+        xo_reference = _xo_faces_reference(rec_list) if args.xo_faces else None
+        xo_helices = _xo_faces_helix_of_chain(rec_list, helix_defs_for_align) if args.xo_faces else None
         try:
             write_reciprocal_exchange_output(
                 rec_list,
@@ -7227,6 +7339,12 @@ def main() -> None:
             sys.exit(1)
 
         print(f"Wrote RE-only PDB to '{pdb_out_rex_only}'.")
+        if args.xo_faces:
+            try:
+                _apply_xo_faces(pdb_out_rex_only, xo_reference, xo_helices, args.xo_min_face)
+            except Exception as exc:
+                print(f"Error during --xo_faces: {exc}", file=sys.stderr)
+                sys.exit(1)
         return
 
     _chain_to_res_atoms_curr, _residue_to_P_atom_curr, chain_to_P_atoms_curr = build_nucleic_acid_maps(rec_list)
@@ -7347,6 +7465,8 @@ def main() -> None:
         return
 
     # 3) Real-only runs apply reciprocal exchanges to generate *_aligned_rex.pdb.
+    xo_reference = _xo_faces_reference(rec_list) if args.xo_faces else None
+    xo_helices = _xo_faces_helix_of_chain(rec_list, helix_defs_for_align) if args.xo_faces else None
     try:
         write_reciprocal_exchange_output(
             rec_list,
@@ -7367,6 +7487,12 @@ def main() -> None:
         sys.exit(1)
 
     print(f"Wrote aligned+RE PDB to '{pdb_out_aligned_rex}'.")
+    if args.xo_faces:
+        try:
+            _apply_xo_faces(pdb_out_aligned_rex, xo_reference, xo_helices, args.xo_min_face)
+        except Exception as exc:
+            print(f"Error during --xo_faces: {exc}", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":

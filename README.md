@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from real P-atom or chain-associated virtual-atom pairs and then applies reciprocal exchanges when every endpoint is real. It can also run reciprocal exchange only, without alignment.
 
-Current version: V4.7
+Current version: V4.8
 
 ## Contents
 
@@ -18,6 +18,7 @@ Current version: V4.7
 - `re_helix_lib/reverse_strand_direction.py`: bundled topology-aware Reverse Strand Direction tool for reversing selected nucleic-acid chain serializations without moving atoms.
 - `re_helix_lib/generate_lattice.py`: bundled Generate Lattice tool for writing a P1 CRYST1 lattice record from three lattice vectors.
 - `re_helix_lib/get_phenix_restraints.py`: bundled Get Phenix Restraints tool for converting LINK records into Phenix geometry restraints, optional junction movement-selection params, and linker support files.
+- `re_helix_lib/crossover_faces.py`: the `--xo_faces` step (also usable on its own), which keeps each strand of a parallel crossover on its own face of the plane through the two helix axes.
 - `re_helix_lib/check_pdb_clashes.py`: bundled Check Clashes tool for counting close heavy-atom contacts in any PDB structure, with LINK-aware, alternate-conformation, and sequence-adjacency exclusions.
 - `assets/icon.png`: optional GUI/task-menu icon. The main GUI and bundled helper GUIs use it when present and fall back to the default Tk icon when it is missing.
 
@@ -626,6 +627,43 @@ Example:
 python3 re_helix.py input.pdb '(AB)' '(CD)' 26A 9C 90 d --axis_parallel n -o angled_model
 ```
 
+## Crossovers On Faces (--xo_faces)
+
+A strand that crosses from one helix to another comes in on one face of the plane through the two helix axes. At a
+parallel crossover it also leaves on that face, so it should stay on that face at the crossover: the two crossing
+strands pass one above the other (Han et al. 2017, Science 358, eaao2648, Fig. 1B). At an antiparallel crossover it
+leaves on the other face and goes through the plane by design. Because a reciprocal exchange rewires bonds without
+moving atoms, at a parallel crossover one atom of each crossing strand, the leaving O3' or the entering phosphate, is
+left 0.1-2 A on the other side of the plane, where the two crossing strands meet.
+
+`--xo_faces` (GUI: **Crossovers on faces**, off by default) traces every crossing strand after the exchange. *In* is
+its phosphate one step before the crossing and *out* its phosphate one step after; when both lie on the same face, the
+atoms of the crossing are put on that face (at least 0.5 A from the plane; `--xo_min_face` changes this):
+
+- the entering phosphate (O5', P, OP1, OP2) is turned about C4'-C5' (gamma) and C5'-O5' (beta);
+- when that is not enough, the leaving sugar is turned a little about its glycosidic bond, or the leaving base pair a
+  few degrees about the helix axis, and the phosphates next to it are turned to keep their bonds at the model's own
+  O3'-P length and angles.
+
+Every move is a rigid turn about a bond or the helix axis, so bond lengths and angles inside each nucleotide are kept
+and bases stay paired. Crossover links are never lengthened (by more than 0.3 A) and are not closed; moved atoms keep
+2.5 A from every atom more than three bonds away. Antiparallel crossings are left as built. A crossover is placed
+whole or left exactly as built, and every crossing strand is reported in the run log and in
+`REMARK 950 RE_SCRIPT XO_FACES` lines. Each input chain must lie in one helix, as in an aligned model.
+
+Crossovers whose leaving O3' sits on the wrong face would need a local change of helix twist over several base
+pairs; the option does not make that change and leaves them as built (on the lab's A-RNA models: the Han-type sheet
+34 of 36 crossing strands placed, DPE 4 of 4, DPOW, DPON and the 7:4 PX none; B-DNA DPON 4 of 4, DPE 2 of 4, DPOW
+none). Minimize afterwards (Get Phenix Restraints, Phenix) when bond geometry matters.
+
+On its own:
+
+```bash
+python3 re_helix_lib/crossover_faces.py model_aligned_rex.pdb --reference model_aligned.pdb --helix AB --helix CD
+```
+
+writes `model_aligned_rex_faces.pdb` and prints one line per crossing strand.
+
 ## Common Options
 
 - `-o, --output`: output base path. A `.pdb` suffix is stripped before output suffixes are added.
@@ -655,6 +693,8 @@ python3 re_helix.py input.pdb '(AB)' '(CD)' 26A 9C 90 d --axis_parallel n -o ang
 - `--cir_shift 8`: apply an exact signed residue rotation, modulo cycle length, when serializing cyclic reciprocal-exchange strands; the shifted break remains open. `--cir_shift 0` preserves the canonical input-provenance start with no circular permutation.
 - `--cir_shift 8c` or `--cir_shift 8C`: apply the same shift and add an explicit closing `LINK` across the output `TER` boundary, keeping each resulting cyclic strand covalently circularized. The suffix also works with other signed integers, such as `0c` or `-4C`.
 - `--min_link_records` or `--min-link-records`: opt in to choosing each strand direction primarily by the topology `LINK` records that output would contain. This can reverse an entire output strand. Cycles are compared after the exact `cir_shift`, counting the omitted edge of a plain open cycle or the explicit closure of `c`/`C` mode correctly; generated inverted, bowtie, and phosphate-bridge links participate, while preserved non-topology input links do not. The default is off so closely related structures retain consistent terminal strand directions even when different cut positions change their interior fragment lengths.
+- `--xo_faces` or `--xo-faces`: after the exchange, keep each strand of a parallel crossover on its own face (see Crossovers On Faces). Default off.
+- `--xo_min_face 0.5`: with `--xo_faces`, how far every crossing atom must sit on its face (A).
 - `--linker_phosphate_resname X33|NAME|DA`: choose the residue name for phosphate-only 3'-3' bowtie linker residues. `X33` is the default `HETATM` custom residue; any other 1-3 character name is written as `HETATM` by default; `DA`/`dA` writes regular `ATOM DA` while keeping only `P`, `OP1`, and `OP2`.
 - `--linker_phosphate_record ATOM|HETATM`: advanced override for the inserted linker phosphate record type.
 
