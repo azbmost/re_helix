@@ -6,9 +6,10 @@ stacks them in the order given, fits every junction as one base-pair step, joins
 the joined model with a JSON report.
 
 How each junction is joined: the chain sense rule
-    Each end pair gets a chirality-aware frame: x towards the major groove, y towards the C1' of the strand that
-    ends there with its 3' end, z = x cross y.  In B-DNA and A-RNA z points out of the segment, along that strand
-    (chain sense +1).  In Z-DNA it points back into the segment (-1).  A mirror image flips the sign: L-DNA and L-RNA
+    Each end pair gets a frame much like the standard base-pair frame (Olson et al. 2001): x runs from the midpoint of
+    the two C1' atoms towards the bases (the major-groove edge of the pair), y runs towards the C1' of strand I, here
+    the strand that ends there with its 3' end, and z = x cross y stands perpendicular to the pair.  In B-DNA and A-RNA
+    z points out of the segment, along strand I (chain sense +1).  In Z-DNA it points back into the segment (-1).  A mirror image flips the sign: L-DNA and L-RNA
     (the mirror images of B-DNA and A-RNA) are -1, and L-Z-DNA (the mirror image of Z-DNA) is +1.
       same chain sense      matched -> continuous: two ordinary 3'-5' links, both strands run on 5'->3'
                             (B|B, Z|Z, L-DNA|Z-DNA, ...)
@@ -2066,7 +2067,7 @@ HELP_TEXTS = {
     "tool": """Build Heterohelix Junction joins two or more duplex segments end to end and builds the junctions between them. A segment can be any duplex form, such as B-DNA, A-RNA or Z-DNA, with D or L sugars, as BNP_NA writes it. Each segment stays a rigid copy of its file; only the phosphates of the junctions are built.
 
 The chain sense rule
-Every end base pair gets a frame: x towards the major groove, y towards the nucleotide that ends there with its 3' end, and z = x cross y. In B-DNA and A-RNA, z points out of the segment (chain sense +1). In Z-DNA, z points back into it (chain sense -1). A mirror image flips the sign, so L-DNA and L-RNA are -1, and L-Z-DNA is +1.
+Every base pair gets a frame of three axes, much like the standard base-pair frame (Olson et al. 2001): x runs from the midpoint of the two C1' atoms towards the bases (the major-groove edge of the pair), y runs towards the C1' of one chosen strand, called strand I, and z = x cross y stands perpendicular to the pair. At the end of a segment, strand I is the strand whose 3' end is there, so that strand I runs 5'->3' out of the segment. In B-DNA and A-RNA, z points out of the segment (chain sense +1). In Z-DNA, z points back into it (chain sense -1). A mirror image flips the sign, so L-DNA and L-RNA are -1, and L-Z-DNA is +1.
   Matched (same chain sense): a continuous junction, two ordinary 3'-5' links.
   Opposite chain sense: a bowtie junction, one 3'-3' link through an X33 phosphate and one 5'-5' link. A strand that ran straight on would meet the next base pairs from their other face.
 
