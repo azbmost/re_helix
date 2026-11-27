@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from real P-atom or chain-associated virtual-atom pairs and then applies reciprocal exchanges when every endpoint is real. It can also run reciprocal exchange only, without alignment.
 
-Current version: V4.8
+Current version: V4.9
 
 ## Contents
 
@@ -20,12 +20,14 @@ Current version: V4.8
 - `re_helix_lib/get_phenix_restraints.py`: bundled Get Phenix Restraints tool for converting LINK records into Phenix geometry restraints, optional junction movement-selection params, and linker support files.
 - `re_helix_lib/crossover_faces.py`: the `--xo_faces` step (also usable on its own), which keeps each strand of a parallel crossover on its own face of the plane through the two helix axes.
 - `re_helix_lib/check_pdb_clashes.py`: bundled Check Clashes tool for counting close heavy-atom contacts in any PDB structure, with LINK-aware, alternate-conformation, and sequence-adjacency exclusions.
+- `re_helix_lib/build_heterohelix_junction.py`: bundled Build Heterohelix Junction tool for joining duplex segments of any helix form (B-, A-, Z-forms, D or L sugars) with junctions fitted as one base-pair step, continuous or bowtie as the chain senses of the two ends decide.
 - `assets/icon.png`: optional GUI/task-menu icon. The main GUI and bundled helper GUIs use it when present and fall back to the default Tk icon when it is missing.
 
 ## Requirements
 
 - Python 3.9 or newer is recommended.
 - No third-party Python packages are required for the command-line workflow.
+- The bundled Build Heterohelix Junction tool needs numpy, scipy and shapely.
 - Tkinter is required only for GUI mode. Most python.org and system Python installs include it.
 
 ## Quick Start
@@ -36,7 +38,7 @@ Launch the GUI:
 python3 re_helix.py
 ```
 
-In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, `Insert Virtual Resi` opens the residue-numbering-gap helper, `Permute Chain` opens the cyclic chain-rearrangement helper, `Reverse Strand Direction` opens the topology-preserving strand-serialization helper, `Generate Lattice` opens the P1 lattice/CRYST1 helper, `Get Phenix Restraints` opens the Phenix restraint-generation helper, and `Check Clashes` opens the heavy-atom clash checker. Every tool button has a light-blue `?` button beside it that explains what that tool does, the inputs it expects, and the files it writes. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
+In the GUI, use the `Other tools` area to open bundled helper tools. `Bend Helix` opens the helix-bending GUI, `Do Symmetry` opens the symmetry-averaging GUI, `Add PDB LINK Record` opens the LINK-record/topology helper, `Insert Virtual Resi` opens the residue-numbering-gap helper, `Permute Chain` opens the cyclic chain-rearrangement helper, `Reverse Strand Direction` opens the topology-preserving strand-serialization helper, `Generate Lattice` opens the P1 lattice/CRYST1 helper, `Get Phenix Restraints` opens the Phenix restraint-generation helper, `Check Clashes` opens the heavy-atom clash checker, and `Build Heterohelix Junction` opens the junction builder that joins duplex segments of any helix form. Every tool button has a light-blue `?` button beside it that explains what that tool does, the inputs it expects, and the files it writes. If an input PDB is already selected in `re_helix`, the helper window is opened with that input pre-filled.
 
 When the input PDB changes, the GUI updates the default `Output base` automatically unless that field has been changed to a custom value. For large exchange specifications, the `CLI pair args` field below the pair rows can be filled with the same concatenated pair tokens used on the command line; when it is filled, the individual pair rows are ignored. Likewise, `Axis definitions line` accepts a compact value such as `A,B | C,D; E,F`: semicolons separate rows, and `|` separates an axis definition from its optional `move with axis` value. When filled, it replaces the individual Axis definition rows. The **Alignment mode** area between **Axis definitions** and **Other tools** selects **Standard**, **Restrained translation**, or **Restrained rotation**. Standard mode hides the restrained controls. Each restrained mode displays only its applicable point, direction, and vector-source fields.
 
@@ -569,6 +571,97 @@ These commands are full of punctuation that a text widget treats as word boundar
 - **Triple-click a select-everything line**, in the GUI or in the saved report file. Those commands sit alone on their own line for exactly this reason.
 
 The per-pair commands in the `closest_clashes` table are separated by tabs, so a line selection there would also pick up the distance and atom labels. Double-click those instead.
+
+## Build Heterohelix Junction Tool
+
+The bundled Build Heterohelix Junction tool (V1.0) joins two or more duplex segments end to end and builds the junctions between them. A segment can be any duplex form: B-DNA, A-RNA, Z-DNA or another, with D or L sugars, written as BNP_NA writes duplexes (two chains, strand A running 5'->3' from the bottom end to the top end, strand B back down, strand A's i-th residue paired with strand B's i-th from the other end). Each segment stays a rigid copy of its file. Only the phosphates of the junctions are built, and the O5' atoms they bond are turned about their C4'-C5' bond.
+
+The fitter started as Junction_Fit V1.0, written for the AZBMOST B-Z bowtie and L-Z junction examples. It was fixed on 2026-11-26: a junction is now fitted the same way whichever end is read first and wherever its files sit in space (the search score counts contacts from both sides and samples its quick phosphates in frames attached to the atoms; the real phosphates are minimized in such frames from many starts), every junction is searched from both of its ends with a second pass, and equal junctions share one fit.
+
+### The chain sense rule
+
+Every end base pair gets a frame: x towards the major groove, y towards the nucleotide that ends there with its 3' end, and z = x × y. In B-DNA and A-RNA, z points out of the segment: chain sense +1. In Z-DNA, z points back into the segment: chain sense -1. A mirror image flips the sign. So L-DNA and L-RNA, the mirror images of B-DNA and A-RNA, are -1, and L-Z-DNA, the mirror image of Z-DNA, is +1. The chain senses of the two ends decide each junction:
+
+- matched (B|B, Z|Z, L-DNA|Z-DNA): a **continuous** junction, two ordinary 3'-5' links. Both strands run on 5'->3'.
+- opposite (B|Z, D-DNA|L-DNA): a **bowtie** junction, one 3'-3' link through an X33 phosphate and one 5'-5' link through one phosphate. A strand that ran straight on would meet the next base pairs from their other face (the chain sense paradox), so the strands turn back instead.
+
+`--link bowtie` or `--link continuous` can name the kind, but only the kind the chain senses allow. The other kind would turn one base pair over, so it is refused before any fitting.
+
+The chain sense is checked before fitting and after building. Every result goes into the run log and the JSON report.
+
+- Before fitting, a `Chain sense check` block lists every junction with both of its ends (segment number and file, end, 3' and 5' residues, sugars, chain sense) and the result, such as `matched -> continuous`.
+- Before fitting, every segment must have the same chain sense all along. Each base pair gets its frame with y towards strand A, and the z axes of neighbouring pairs may not turn by more than 90 degrees. A segment with a pair turned over is refused, and the message names the pairs. A segment also needs at least two base pairs, since one pair alone has no direction.
+- Before fitting, the residues each link joins must have the atoms the link bonds: O3' and C3' at a 3' end, C4', C5' and O5' at a 5' end. A missing atom is named.
+- After building, each output chain is walked. Every paired nucleotide (X33 skipped) gets its base-pair frame with y towards that chain's residue. Two things are measured. First, the turn between the z axes of neighbouring pairs, inside the segments and across each junction. In a correct model every pair faces the same way along a chain, so every turn stays small; a turn above 90 degrees is an error (`chain sense not matched at ...`). Second, the cos between each z axis and the helix axis of its segment, taken in the chain's file order. It shows which way each chain runs through its pairs: about +1 in every segment of a B-Z bowtie model, and about -1 in every segment of an L-Z continuous model. A chain whose pairs face along it in one segment and against it in another is an error too.
+
+### How a junction is fitted
+
+1. The two end pairs get frames whose z axes both point from the lower segment into the upper one.
+2. The upper end is placed on the lower one by one base-pair step: tilt, roll, twist, shift, slide and rise.
+3. A step is scored on heavy atoms closer than 2.9 A across the junction, on the gaps the two links must span (each with a quick phosphate), on how parallel and how far apart (3.5 A) the two end pairs are, and on how much their bases overlap.
+4. Powell searches start from a grid of twists (-180 to 160 degrees in 20-degree steps), shifts and slides (-2, 0 and 2 A): 162 starts, and every junction is searched from both of its ends. A second pass starts again from eight small fixed nudges around each of the 12 best different results.
+5. The 16 best different results get real phosphates, minimized in frames attached to the atoms from many starts, and the one with the lowest stacking score plus phosphate energies is kept.
+
+Junctions of one model that join the same two end pairs, in the same order or turned 180 degrees about the duplex dyad (for example junctions 1 and 2 of L21-Z24-L21-Z24), are fitted together: their searches are pooled and all of them get the step with the lowest summed total, so equal junctions come out equal. `--separate` fits each of them on its own. A junction that repeats another one with the same files and the same ends is fitted once.
+
+### Using it
+
+Open it from the `Other tools` list of the main window, which passes the current input PDB as the first segment, or directly:
+
+```bash
+python3 re_helix_lib/build_heterohelix_junction.py --gui
+python3 re_helix_lib/build_heterohelix_junction.py --gui L21.pdb Z24.pdb
+```
+
+The window asks only for what the tool cannot work out itself:
+
+- **Segments, bottom to top**: one row per segment, with the PDB file, an `upside down` box (the junction below it then meets its top end) and, once a file is chosen, a grey line saying what was read: residues per strand, D or L sugars, the chain sense at the bottom and at the top, and whether every base pair faces the same way. A file that cannot be used says why, in red. `Add segment`, `Remove`, `Move up` and `Move down` act on the selected row.
+- **Output**: the output PDB, by default `<first segment>_heterohelix.pdb` beside the first segment. A name without a folder goes beside the first segment too, and an empty field goes back to the default. The report file is shown grey under it, because it follows the output name.
+- **Junctions**: grey rows worked out from the segments, such as `Junction 1: segment 1 (L21.pdb) top -> segment 2 (Z24.pdb) bottom; chain senses -1 and -1: matched -> continuous (two ordinary 3'-5' links)`, and which junctions are fitted together. The kind of each junction is not an input.
+- **Options**: the rise aimed at (3.5 A), the number of processes (all but one), `Fit junctions that join the same end pairs together` (on), and `Reuse fits from an earlier report` (off). When reuse is on, the earlier report becomes an input: it starts as the output's own report, and `Browse...` picks another one.
+
+`Run` starts the command line in its own process, shows the exact command first and streams the output into the run log; `Stop` ends it. When a run fails, the footer shows the error with its first reason. The `?` buttons explain each part, and `How it works` explains the whole tool.
+
+From the command line:
+
+```bash
+python3 re_helix_lib/build_heterohelix_junction.py L21.pdb Z24.pdb
+python3 re_helix_lib/build_heterohelix_junction.py B21.pdb Z24.pdb B21.pdb Z24.pdb -o B21_Z24_B21_Z24.pdb
+python3 re_helix_lib/build_heterohelix_junction.py D.pdb L.pdb:flip -o D_L.pdb
+```
+
+The first writes `L21_heterohelix.pdb` beside `L21.pdb`. In the last, `:flip` turns `L.pdb` upside down, so the top of D meets the top of L.
+
+Useful Build Heterohelix Junction options:
+
+- `-o` or `--out`: the joined model. Default: `<first segment stem>_heterohelix.pdb` in the first segment's folder.
+- `--link auto|bowtie|continuous`: one value, or one per junction separated by commas. Default `auto`; a kind the chain senses do not allow is refused before fitting.
+- `--cores N`: processes for the searches. Default: all but one.
+- `--rise A`: the stacking distance aimed at. Default `3.5`; within 0.15 A of it costs nothing.
+- `--separate`: fit every junction on its own, also those that join the same two end pairs.
+- `--reuse`: take the fits from this output's own report (the `--report` file, or the default one) instead of fitting again. This works only when that report holds fits of exactly the same junctions, made the same way: by this version of the tool, from the same segment files (unchanged), on the same search grid, with the same junctions fitted together. Use it to write a model again under the same name. Otherwise the junctions are fitted again, and the log says why.
+- `--reuse-from REPORT`: the same, with the fits taken from an earlier report, for example the report of the same build under another output name. The new report is still written to the output's own report path.
+- `--report FILE`: the JSON report. Default: `tmp_file/<output stem>_heterohelix_junction.json` beside the output. For the default output, `<first segment>_heterohelix.pdb`, it is `tmp_file/<first segment>_heterohelix_junction.json`.
+- `--gui`: open the window; segments given on the command line fill its rows.
+- `-v` or `--version`: show the tool version.
+
+### Outputs
+
+- The joined model, with chains A, B, ... numbered from 1. `LINK` records are written for every bond that is not an ordinary 5'->3' step in file order: X33 links, 5'-5' links, and the steps of a strand that runs through a segment against its file order after a bowtie. `REMARK 900` lines record the segments, each junction's step and the L-sugar residues. `REMARK 950 RE_SCRIPT` lines record the tool (`SOFTWARE`, `COMMAND`, `OUTPUT_STAGE`) and one `JUNCTION` line per link: the 3' and 5' residues of each 3'-5' link, the two 3' ends with the X33 between them, and the two 5' ends. Get Phenix Restraints reads these lines and frees the sugars of those residues in its `_junctions.params`.
+- The JSON report: every search, the candidates with real phosphates, the chosen steps, the phosphate geometry (and the backbone torsions of continuous links), the helical axes at each junction, the bond and contact checks, the chain sense checks before and after building, and what the fits were made from (tool version, search grid, junctions fitted together, and a checksum of each segment file), which `--reuse` compares.
+
+The run log gives one line per junction (step, stacking, phosphates, axis bend), the chain sense check after building, and the bond and contact summary of the written model.
+
+### Run time and limits
+
+- About 5 minutes per junction on 9 processes: every junction is searched from both of its ends (324 searches), then the second pass (up to 96 more); junctions fitted together pool their searches, so each one still adds its own. A junction that repeats another one (same files, same ends) is fitted once.
+- The score changes slowly with twist, so read a fitted twist with care; the report lists every candidate. For the L21|Z24 continuous junction the best candidate (twist -30.8 degrees) is more than 1.0 below every other one; for the B21|Z24 bowtie a second candidate lies within 1.0 of the best, 4 degrees of twist away (-5.9 against -10.1).
+- Fitted from either end, an L21|Z24 continuous junction gave the same step to 0.001 degrees, and with the L21 file turned and moved in space to 0.004 degrees and 0.0004 A. A B21|Z24 bowtie junction gave the same step from either end; with the B21 file turned in space it moved by 1.0 degree and 0.22 A, because the turned file's coordinates are rounded to 0.001 A and the bowtie score is very flat near its best step.
+- The search can miss a better step. Fitted on its own, the B21 bottom | Z24 top bowtie junction reached a total of 6.98 (twist -6.3 degrees), although the step it shares with the B21 top | Z24 bottom junction in the B21-Z24-B21-Z24 model gives it 6.28 (twist -10.1 degrees): only one of its 420 searches ended near that step. The quick 5'-5' phosphate of the search score is a rough guess (one phosphate 1 A out from the two C5'), so the step with the best real energy does not always sit at a minimum of the search score. Junctions fitted together pool their searches, which is what found the better step here; when a junction matters, fit its equal partners with it or compare runs.
+- Models are as built, not minimized.
+- L residues keep the D residue names, as BNP_NA writes them; the `REMARK 900` lines list them. Phenix restrains those names with D chirality, so L residues would need L restraints before minimization.
+- Before minimizing a bowtie model, check `link_distance_cutoff` in the params files. In a B21-Z24-B21-Z24 bowtie model, 6.5 A (Get Phenix Restraints) or 7.0 A (`min_P_C5.params`) let Phenix bond an O3' to the P of the next residue in file order across each 5'-5' junction, 5.5 A apart; 3.0 A avoided it.
+- Needs numpy, scipy and shapely. Without them the tool stops with a one-line message (and a message box when it was opened as a window).
 
 ## What Reciprocal Exchange Means
 

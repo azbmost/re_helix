@@ -2,6 +2,21 @@
 """
 re_helix.py
 
+V4.9 update (2026-11-26):
+- Add Build Heterohelix Junction to the GUI Other tools area. The bundled
+  re_helix_lib/build_heterohelix_junction.py tool (V1.0, the Junction_Fit
+  fitter with its 2026-11-26 fixes) joins two or more duplex segments of any helix
+  form (B-DNA, A-RNA, Z-DNA, D or L sugars) end to end. The chain senses of
+  the two ends decide each junction: matched gives a continuous junction (two
+  3'-5' links), opposite gives a bowtie (a 3'-3' link through an X33
+  phosphate and a 5'-5' link). Each junction is fitted as one base-pair step
+  from both of its ends, junctions that join the same end pairs share one
+  fit, and the model is written with LINK records, REMARK 950 RE_SCRIPT lines
+  (including JUNCTION lines for Get Phenix Restraints) and a JSON report.
+- The chain sense is checked before fitting (every junction end, and every
+  base pair of every segment) and again along each chain of the built model.
+- The tool window opens with the current input PDB as the first segment.
+
 V4.8 update (2026-11-23):
 - Add --xo_faces (GUI: Crossovers on faces), off by default. After the exchange,
   every crossing strand is traced: when its phosphate one step before the
@@ -454,10 +469,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V4.8"
+SOFTWARE_VERSION = "V4.9"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V4.8: AZBMOST Package Module #2 - "
+    "re_helix V4.9: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 
@@ -5112,6 +5127,37 @@ labeling. Raise the cutoff, for example to 2.2 A, to flag softer contacts.
 The report lists the atom counts, active criteria, how many pairs each exclusion
 removed, the clash count, the minimum clash distance, and the closest pairs. It
 can be saved to a text file.""",
+    "tool_build_heterohelix_junction": """Build Heterohelix Junction: join duplex segments of any helix
+form end to end, with fitted junctions.
+
+Give two or more duplex segments in stacking order, bottom first: B-DNA, A-RNA,
+Z-DNA or another duplex, with D or L sugars, as BNP_NA writes them. A segment can
+be turned upside down. Each segment stays a rigid copy of its file; only the
+junction phosphates are built.
+
+The chain senses of the two ends decide each junction:
+  matched (B|B, Z|Z, L-DNA|Z-DNA): continuous, two ordinary 3'-5' links;
+  opposite (B|Z, D-DNA|L-DNA): bowtie, a 3'-3' link through an X33 phosphate
+  and a 5'-5' link, since a strand that ran straight on would meet the next
+  base pairs from their other face.
+B-DNA and A-RNA have chain sense +1 and Z-DNA -1. A mirror image flips the
+sign, so L-DNA and L-RNA are -1 and L-Z-DNA is +1.
+This is checked before any fitting, together with every base pair of every
+segment and the atoms each link bonds, and again along each chain of the built
+model.
+
+Each junction is fitted as one base-pair step from both of its ends: searches
+from a grid of twists, shifts and slides, a second pass around the best
+results, then real phosphates for the 16 best. Junctions that join the same two end pairs share one fit. The score
+changes little with twist, so read the fitted twist as uncertain by several
+degrees; the report lists every candidate.
+
+Writes <first segment>_heterohelix.pdb (as built, not minimized) with LINK
+records and REMARK 950 RE_SCRIPT lines, including JUNCTION lines that Get
+Phenix Restraints reads, and a JSON report in tmp_file/. About 5 minutes per
+junction.
+
+The current input PDB, if any, opens as the first segment.""",
 }
 
 
@@ -6066,6 +6112,9 @@ def _launch_gui() -> None:
     check_clashes_button = add_tool_button(
         other_tools_box, "Check Clashes", "tool_check_clashes", icon="check_clashes"
     )
+    heterohelix_junction_button = add_tool_button(
+        other_tools_box, "Build Heterohelix Junction", "tool_build_heterohelix_junction", icon="heterohelix_junction"
+    )
 
     log_box = ttk.Frame(side)
     log_box.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
@@ -6172,6 +6221,12 @@ def _launch_gui() -> None:
         current_pdb = pdb_var.get().strip()
         extra_args = [current_pdb] if current_pdb else []
         launch_bundled_gui_tool("Check Clashes", "check_pdb_clashes.py", extra_args)
+
+    def launch_build_heterohelix_junction_tool() -> None:
+        # The current input PDB opens as the first segment; the tool asks for the others.
+        current_pdb = pdb_var.get().strip()
+        extra_args = [current_pdb] if current_pdb else []
+        launch_bundled_gui_tool("Build Heterohelix Junction", "build_heterohelix_junction.py", extra_args)
 
     row_targets = {"pair": 3, "axis": 0}
     render_state = {"pair_pending": False, "axis_pending": False}
@@ -6498,6 +6553,7 @@ def _launch_gui() -> None:
     permute_chain_button.configure(command=launch_permute_chain_tool)
     reverse_strand_direction_button.configure(command=launch_reverse_strand_direction_tool)
     check_clashes_button.configure(command=launch_check_clashes_tool)
+    heterohelix_junction_button.configure(command=launch_build_heterohelix_junction_tool)
     generate_lattice_button.configure(command=launch_generate_lattice_tool)
     get_phenix_restraints_button.configure(command=launch_get_phenix_restraints_tool)
     render_pair_rows()
