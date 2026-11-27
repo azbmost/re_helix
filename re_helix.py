@@ -2,6 +2,16 @@
 """
 re_helix.py
 
+V4.10 update (2026-11-26):
+- Build Heterohelix Junction V1.1: a new option, --pick J=K, builds junction J
+  (and the junctions fitted together with it) from candidate K of its fit
+  instead of the best; with --reuse nothing is fitted again. For near-ties the
+  score cannot tell apart, such as the two mirror-image solutions of a D|L
+  junction, whose helix axes are set off to opposite sides (a closed D/L ring
+  needs the D->L and L->D offsets on opposite sides to lie flat). The fits are
+  made as before (fitter V1.0), so earlier reports stay reusable; the report
+  records the picks and keeps the fits.
+
 V4.9 update (2026-11-26):
 - Add Build Heterohelix Junction to the GUI Other tools area. The bundled
   re_helix_lib/build_heterohelix_junction.py tool (V1.0, the Junction_Fit
@@ -469,10 +479,10 @@ import importlib.util
 from pathlib import Path
 
 SOFTWARE_NAME = "re_helix"
-SOFTWARE_VERSION = "V4.9"
+SOFTWARE_VERSION = "V4.10"
 SOFTWARE_DEVELOPER = "DiLiuLab"
 APP_TITLE = (
-    "re_helix V4.9: AZBMOST Package Module #2 - "
+    "re_helix V4.10: AZBMOST Package Module #2 - "
     "Align Helices and Performing Reciprocal Exchanges"
 )
 

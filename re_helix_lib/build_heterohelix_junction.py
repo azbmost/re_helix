@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Heterohelix Junction V1.0 (an RE_Helix tool): join duplex segments of any helix form with fitted junctions.
+"""Build Heterohelix Junction V1.1 (an RE_Helix tool): join duplex segments of any helix form with fitted junctions.
 
 Give it two or more duplex segments (PDB files of any helix form: B-DNA, A-RNA, Z-DNA, with D or L sugars).  It
 stacks them in the order given, fits every junction as one base-pair step, joins the strands across it and writes
@@ -69,6 +69,10 @@ Run
                         the same way: this tool version, unchanged segment files, the same search grid and the same
                         junctions fitted together (otherwise the junctions are fitted again and the log says why)
     --reuse-from REPORT the same, from an earlier report (for example the same build under another output name)
+    --pick J=K[,J=K]    build junction J, and the junctions fitted together with it, from candidate K of its fit
+                        (the report's candidate list, best first) instead of the best; with --reuse nothing is
+                        fitted again.  For near-ties the score cannot tell apart, such as the two mirror-image
+                        solutions of a D|L junction, whose helix axes are set off to opposite sides
 
 Output
     OUT.pdb       default <first segment>_heterohelix.pdb beside the first segment.  Chains A, B numbered from 1;
@@ -98,7 +102,8 @@ import traceback
 from pathlib import Path
 
 TOOL_NAME = "Build Heterohelix Junction"
-VERSION = "1.0"
+VERSION = "1.1"
+FIT_VERSION = "1.0"   # how junctions are fitted (search, score, phosphates): reports with this fitter stay reusable
 NEEDED_PACKAGES = "numpy, scipy and shapely"
 
 
@@ -1704,7 +1709,7 @@ def _grid_values(text, default, integral=False):
 
 def build_cli_command(segments, out=None, link="auto", cores=None, report=None, reuse=False, rise=RISE,
                       separate=False, twists=None, shifts=None, candidates=None, executable="python3", script=None,
-                      reuse_from=None):
+                      reuse_from=None, pick=None):
     """The command line that repeats a run (shell-quoted)."""
     parts = [executable, script or Path(__file__).name, *[str(s) for s in segments]]
     if out:
@@ -1721,6 +1726,8 @@ def build_cli_command(segments, out=None, link="auto", cores=None, report=None, 
         parts.append("--reuse")
     if reuse_from:
         parts += ["--reuse-from", str(reuse_from)]
+    if pick:
+        parts += ["--pick", str(pick)]
     if report:
         parts += ["--report", str(report)]
     for flag, val in (("--twists", twists), ("--shifts", shifts), ("--candidates", candidates)):
@@ -1751,6 +1758,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--reuse-from", default=None, metavar="REPORT", help="the same as --reuse, with the fits taken "
                                                                          "from an earlier report of this tool")
     ap.add_argument("--rise", type=float, default=RISE, help=f"stacking distance aimed at (A, default {RISE})")
+    ap.add_argument("--pick", default=None, metavar="J=K",
+                    help="build junction J (and those fitted together with it) from candidate K of its fit instead "
+                         "of the best; several as 2=2,4=1; with --reuse nothing is fitted again")
     ap.add_argument("--separate", action="store_true", help="fit every junction on its own, also those that join "
                                                             "the same two end pairs (by default they share one fit)")
     # A smaller search grid, for tests and quick trials only (the default grid is the fit the tool is made for).
@@ -1793,6 +1803,52 @@ def fit_groups(juncs, share=True, tol=SAME_END_RMS) -> list:
     return groups
 
 
+def parse_picks(text, n_junctions) -> dict:
+    """--pick 'J=K[,J=K]' -> {J: K} (both counted from 1), checked against the number of junctions."""
+    picks = {}
+    for item in (text or "").replace(" ", "").split(","):
+        if not item:
+            continue
+        try:
+            j, k = (int(v) for v in item.split("="))
+        except ValueError:
+            raise JunctionError(f"--pick: '{item}' is not J=K (junction number = candidate number, e.g. 2=2)") from None
+        if not 1 <= j <= n_junctions:
+            raise JunctionError(f"--pick {item}: there are {n_junctions} junctions")
+        if k < 1:
+            raise JunctionError(f"--pick {item}: candidates are counted from 1")
+        picks[j] = k
+    return picks
+
+
+def apply_picks(fits, specs, uniq, picks, log=print) -> list:
+    """The fits to build with (one per junction, in model order): junction J, and every junction fitted together with
+    it, takes candidate K of its own candidate list instead of the best.  The fits themselves (and the report's copy
+    of them) are not changed, so a later --reuse without --pick builds the best candidates again."""
+    out = list(fits)
+    done = {}
+    for j, k in sorted(picks.items()):
+        f = fits[j - 1]
+        cands = f.get("candidates") or []
+        if k > len(cands):
+            raise JunctionError(f"--pick {j}={k}: junction {j} has {len(cands)} candidates")
+        members = set(f["group"]["members"])
+        together = [i + 1 for i, s in enumerate(specs) if uniq.index(s) in members]
+        for i in together:
+            if done.get(i, k) != k:
+                raise JunctionError(f"--pick: junction {i} is fitted together with junction {j}; pick it once")
+            g = fits[i - 1]
+            c = g["candidates"][k - 1]
+            out[i - 1] = dict(g, step=c["step"], total=c["total"], stack=c["stack"], metrics=c["metrics"],
+                              bridges=c["bridges"], picked=k)
+            done[i] = k
+        best, c = cands[0], cands[k - 1]
+        who = f"junction {j}" if len(together) == 1 else "junctions " + ", ".join(map(str, together))
+        log(f"--pick {j}={k}: {who} built from candidate {k} of {len(cands)} (total {c['total']:.3f}; the best "
+            f"{best['total']:.3f}, {c['total'] - best['total']:+.3f})")
+    return out
+
+
 def fitting_record(uniq, weights, groups, grid, share) -> dict:
     """What the fits of a run are made from (written to the report): the fitter, the search grid, the distinct
     junctions with how often each occurs, the groups fitted together and an md5 of every segment file.  --reuse and
@@ -1802,7 +1858,7 @@ def fitting_record(uniq, weights, groups, grid, share) -> dict:
         for f in (s["seg1"], s["seg2"]):
             if f not in files:
                 files[f] = file_md5(f)
-    return json.loads(json.dumps(dict(fitter=f"{TOOL_NAME} V{VERSION}", grid=grid, same_end_rms=SAME_END_RMS,
+    return json.loads(json.dumps(dict(fitter=f"{TOOL_NAME} V{FIT_VERSION}", grid=grid, same_end_rms=SAME_END_RMS,
                                       share=bool(share), junctions=uniq, weights=weights, groups=groups, files=files)))
 
 
@@ -1869,7 +1925,8 @@ def build_model(a, log=print):
     n_cand = a.candidates or N_CAND
     grid = dict(twists=[float(v) for v in twists], shifts=[float(v) for v in shifts], candidates=n_cand)
     command = build_cli_command(a.segments, out, a.link, a.cores, a.report, a.reuse, a.rise, a.separate,
-                                a.twists, a.shifts, a.candidates, reuse_from=reuse_from)
+                                a.twists, a.shifts, a.candidates, reuse_from=reuse_from,
+                                pick=getattr(a, "pick", None))
     log("Equivalent CLI command:")
     log(command)
     pieces = [Piece(get_segment(str(Path(p).expanduser())), flip) for p, flip in segs]
@@ -1968,6 +2025,9 @@ def build_model(a, log=print):
                 + (", turned 180 deg" if gr["how"] == "reversed" else "")
                 + f" (ends match within {max(gr['end_rms']):.3f} A): fitted together, one step")
     fits = [old[key(s)] for s in specs]
+    picks = parse_picks(getattr(a, "pick", None), len(specs))
+    if picks:
+        fits = apply_picks(fits, specs, uniq, picks, log)
     # the model
     place_pieces(pieces, juncs, fits)
     links = build_links(pieces, juncs)
@@ -1977,7 +2037,8 @@ def build_model(a, log=print):
         st = canonical_step(f["step"])
         remarks.append(f"Junction {j + 1}: {J.e1.seg.label()} {J.e1.which} -> {J.e2.seg.label()} {J.e2.which}, "
                        f"{J.link}; step " + " ".join(f"{v:.2f}" for v in st)
-                       + " (tilt roll twist deg, shift slide rise A)")
+                       + " (tilt roll twist deg, shift slide rise A)"
+                       + (f"; candidate {f['picked']} of its fit (--pick)" if f.get("picked") else ""))
     num = output_numbering(trace_chains(pieces, juncs)[0])
     jres = junction_residues(pieces, juncs, num)
     head950 = provenance_remark_lines(command) + junction_remark_lines(juncs, jres)
@@ -2021,6 +2082,7 @@ def build_model(a, log=print):
                                       segments=[[str(p.seg.path), p.flip] for p in pieces], grid=grid,
                                       fitting=fitting, junctions=rows,
                                       fits=[old[json.dumps(s, sort_keys=True)] for s in uniq],
+                                      picks={str(j): k for j, k in sorted(picks.items())},
                                       checks=dict(bonds=checks["bonds"], contacts=checks["contacts"]),
                                       chain_sense=dict(before=before, after=after),
                                       segment_of=seg_of, chains=[len(p) for p in paths]),

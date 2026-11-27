@@ -4,7 +4,7 @@
 
 It aligns nucleic-acid helices from real P-atom or chain-associated virtual-atom pairs and then applies reciprocal exchanges when every endpoint is real. It can also run reciprocal exchange only, without alignment.
 
-Current version: V4.9
+Current version: V4.10
 
 ## Contents
 
@@ -574,7 +574,7 @@ The per-pair commands in the `closest_clashes` table are separated by tabs, so a
 
 ## Build Heterohelix Junction Tool
 
-The bundled Build Heterohelix Junction tool (V1.0) joins two or more duplex segments end to end and builds the junctions between them. A segment can be any duplex form: B-DNA, A-RNA, Z-DNA or another, with D or L sugars, written as BNP_NA writes duplexes (two chains, strand A running 5'->3' from the bottom end to the top end, strand B back down, strand A's i-th residue paired with strand B's i-th from the other end). Each segment stays a rigid copy of its file. Only the phosphates of the junctions are built, and the O5' atoms they bond are turned about their C4'-C5' bond.
+The bundled Build Heterohelix Junction tool (V1.1) joins two or more duplex segments end to end and builds the junctions between them. A segment can be any duplex form: B-DNA, A-RNA, Z-DNA or another, with D or L sugars, written as BNP_NA writes duplexes (two chains, strand A running 5'->3' from the bottom end to the top end, strand B back down, strand A's i-th residue paired with strand B's i-th from the other end). Each segment stays a rigid copy of its file. Only the phosphates of the junctions are built, and the O5' atoms they bond are turned about their C4'-C5' bond.
 
 The fitter started as Junction_Fit V1.0, written for the AZBMOST B-Z bowtie and L-Z junction examples. It was fixed on 2026-11-26: a junction is now fitted the same way whichever end is read first and wherever its files sit in space (the search score counts contacts from both sides and samples its quick phosphates in frames attached to the atoms; the real phosphates are minimized in such frames from many starts), every junction is searched from both of its ends with a second pass, and equal junctions share one fit.
 
@@ -641,6 +641,7 @@ Useful Build Heterohelix Junction options:
 - `--separate`: fit every junction on its own, also those that join the same two end pairs.
 - `--reuse`: take the fits from this output's own report (the `--report` file, or the default one) instead of fitting again. This works only when that report holds fits of exactly the same junctions, made the same way: by this version of the tool, from the same segment files (unchanged), on the same search grid, with the same junctions fitted together. Use it to write a model again under the same name. Otherwise the junctions are fitted again, and the log says why.
 - `--reuse-from REPORT`: the same, with the fits taken from an earlier report, for example the report of the same build under another output name. The new report is still written to the output's own report path.
+- `--pick J=K[,J=K]` (V1.1): build junction J, and the junctions fitted together with it, from candidate K of its fit (the report's candidate list, best first) instead of the best. With `--reuse` nothing is fitted again. Use it for near-ties the score cannot tell apart: a D|L junction is its own mirror image, so its best step comes as two mirror-image solutions with the same score, their helix axes set off to opposite sides, and a closed D/L ring lies flat only when the D->L and L->D offsets point to opposite sides (`D31.pdb L42.pdb:flip D42.pdb L52.pdb:flip D21.pdb --reuse --pick 2=2`). The report records the picks and keeps the fits as fitted.
 - `--report FILE`: the JSON report. Default: `tmp_file/<output stem>_heterohelix_junction.json` beside the output. For the default output, `<first segment>_heterohelix.pdb`, it is `tmp_file/<first segment>_heterohelix_junction.json`.
 - `--gui`: open the window; segments given on the command line fill its rows.
 - `-v` or `--version`: show the tool version.

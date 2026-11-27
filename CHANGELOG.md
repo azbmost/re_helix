@@ -1,5 +1,13 @@
 # Changelog
 
+## V4.10 - 2026-11-26
+
+- Bumped `re_helix` to V4.10 for Build Heterohelix Junction **V1.1**, which adds `--pick J=K[,J=K]`: build junction J, and the junctions fitted together with it, from candidate K of its fit (the report's candidate list, best first) instead of the best. With `--reuse` or `--reuse-from` nothing is fitted again, so a pick takes seconds.
+- Why: the score cannot tell some candidates apart. A D|L junction (a D segment joined to its own L mirror image) is its own mirror image, so its best step comes as two mirror-image solutions with the same score, their helix axes set off to opposite sides. In the D/L minicircles of the AZBMOST junction_fit_azbmost example (Example 3) the tool kept, for both junction kinds, the solutions whose offsets point the same way round the ring, 2.4-2.6 A each, so the ring cannot lie flat, and Curve_It's corner mode bought flatness with up to 3.5 deg per step of extra twist on the B-DNA ring. With the runner-up of the L->D junctions 2 and 4 (`--pick 2=2`: +0.007 in total for B-DNA, +0.657 for A-RNA) the offsets alternate, as in the RNA gallery's own D/L fit, both junctions lie within 0.7-1.2 A (RMS) of that fit, and the rings lie flat (within 0.1 deg) with at most 1.4 deg (B-DNA) and 0.14 deg (A-RNA) of extra twist per step.
+- The fits are made exactly as before: the reports record fitter V1.0 (`FIT_VERSION`), so every report written by V1.0 stays reusable. A report written with `--pick` records the picks (`picks`) and keeps the fits as fitted, so a later `--reuse` without `--pick` builds the best candidates again. The model's REMARK 900 junction lines and the log name the candidate used, and the recorded command includes `--pick`.
+- The tool window builds with the best candidates; take a runner-up on the command line.
+- Tests: 5 new (`PickTest`: parsing, one pick for every junction fitted together, other groups left alone, refusals, the recorded command); the two version checks now read the version from the tool. 32 tests pass.
+
 ## V4.9 - 2026-11-26
 
 - Bumped `re_helix` to V4.9 for a new bundled tool, **Build Heterohelix Junction** (V1.0, `re_helix_lib/build_heterohelix_junction.py`). It is the last entry of the `Other tools` list. Every other function, option and output of `re_helix` is unchanged.

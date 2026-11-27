@@ -495,14 +495,14 @@ class BuildTest(unittest.TestCase):
         bonds = self.bzb_report["checks"]["bonds"]
         self.assertTrue(1.5 <= bonds["min"] <= bonds["max"] <= 1.7, bonds)
         head = [l for l in text.splitlines() if l.startswith("REMARK 950 RE_SCRIPT")]
-        self.assertTrue(head[0].startswith("REMARK 950 RE_SCRIPT SOFTWARE name=build_heterohelix_junction version=1.0"))
+        self.assertTrue(head[0].startswith(f"REMARK 950 RE_SCRIPT SOFTWARE name=build_heterohelix_junction version={JF.VERSION}"))
         self.assertTrue(head[1].startswith("REMARK 950 RE_SCRIPT COMMAND text=python3 build_heterohelix_junction.py"))
         self.assertEqual(head[2], "REMARK 950 RE_SCRIPT OUTPUT_STAGE name=build_heterohelix_junction")
         junctions = [l for l in head if " JUNCTION " in l]
         self.assertEqual(len(junctions), 4)
         self.assertEqual([gpr.parse_remark_key_values(l)["link"] for l in junctions], ["3to3", "5to5"] * 2)
         self.assertTrue(all(":X33" in gpr.parse_remark_key_values(l)["residues"] for l in junctions[::2]))
-        self.assertTrue(text.index("REMARK 900 Built by RE_Helix Build Heterohelix Junction V1.0")
+        self.assertTrue(text.index(f"REMARK 900 Built by RE_Helix Build Heterohelix Junction V{JF.VERSION}")
                         < text.index("REMARK 950") < text.index("LINK"))
 
     def test_junction_residues_are_the_residues_the_links_join(self):
@@ -841,6 +841,56 @@ class WindowTest(unittest.TestCase):
         self.assertTrue(seen["status"].startswith("Failed (exit code 1): refused before fitting: segment 1 "
                                                   "(B8_turned.pdb): the chain sense is not uniform: pairs A3-B6 and "
                                                   "A4-B5 turn"), seen["status"])
+
+
+class PickTest(unittest.TestCase):
+    """--pick: build a junction (and the junctions fitted with it) from a lower-ranked candidate of its fit."""
+
+    @staticmethod
+    def fit(name, members, n=3):
+        cands = [dict(step=[float(i)] * 6, total=10.0 + i, stack=1.0 + i, metrics=dict(dmin=2.5 + i),
+                      bridges=[dict(name=f"{name}{i}")]) for i in range(n)]
+        return dict(spec=name, step=cands[0]["step"], total=cands[0]["total"], stack=cands[0]["stack"],
+                    metrics=cands[0]["metrics"], bridges=cands[0]["bridges"], candidates=cands,
+                    group=dict(members=members, reference=members[0]))
+
+    def test_parse_picks(self):
+        self.assertEqual(JF.parse_picks("2=2, 4=1", 4), {2: 2, 4: 1})
+        self.assertEqual(JF.parse_picks(None, 4), {})
+        for bad in ("2", "x=1", "5=1", "0=1", "2=0"):
+            with self.assertRaises(JF.JunctionError):
+                JF.parse_picks(bad, 4)
+
+    def test_pick_applies_to_every_junction_fitted_together(self):
+        fa, fb = self.fit("a", [0, 1]), self.fit("b", [0, 1])           # two distinct junctions fitted together
+        uniq, specs = ["a", "b"], ["a", "b", "a"]
+        fits = [fa, fb, fa]
+        out = JF.apply_picks(fits, specs, uniq, {2: 3}, log=lambda *_: None)
+        for i in range(3):
+            self.assertEqual(out[i]["step"], [2.0] * 6)
+            self.assertEqual(out[i]["picked"], 3)
+            self.assertEqual(out[i]["bridges"], fits[i]["candidates"][2]["bridges"])
+        self.assertEqual(fa["step"], [0.0] * 6)                          # the fits themselves are left alone
+        self.assertNotIn("picked", fa)
+
+    def test_pick_leaves_other_groups_alone(self):
+        fa, fb = self.fit("a", [0]), self.fit("b", [1])
+        out = JF.apply_picks([fa, fb], ["a", "b"], ["a", "b"], {1: 2}, log=lambda *_: None)
+        self.assertEqual(out[0]["step"], [1.0] * 6)
+        self.assertIs(out[1], fb)
+
+    def test_pick_beyond_the_candidates_or_twice_in_a_group_is_refused(self):
+        fa, fb = self.fit("a", [0, 1]), self.fit("b", [0, 1])
+        with self.assertRaises(JF.JunctionError):
+            JF.apply_picks([fa, fb], ["a", "b"], ["a", "b"], {1: 4}, log=lambda *_: None)
+        with self.assertRaises(JF.JunctionError):
+            JF.apply_picks([fa, fb], ["a", "b"], ["a", "b"], {1: 2, 2: 3}, log=lambda *_: None)
+
+    def test_command_line_records_the_pick(self):
+        cmd = JF.build_cli_command(["D.pdb", "L.pdb:flip"], out="DL.pdb", reuse=True, pick="1=2")
+        self.assertIn("--pick 1=2", cmd)
+        self.assertIn("--reuse", cmd)
+        self.assertEqual(JF.FIT_VERSION, "1.0")                       # reports from V1.0 stay reusable
 
 
 if __name__ == "__main__":
